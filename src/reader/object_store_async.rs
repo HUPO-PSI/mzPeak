@@ -583,13 +583,13 @@ impl<
     /// - A mapping from spectrum index to scan start time.
     pub async fn extract_peaks(
         &mut self,
-        time_range: SimpleInterval<f32>,
+        time_range: SimpleInterval<f64>,
         mz_range: Option<SimpleInterval<f64>>,
         ion_mobility_range: Option<SimpleInterval<f64>>,
         ms_level_range: Option<SimpleInterval<u8>>,
     ) -> io::Result<(
         BoxStream<'_, Result<RecordBatch, ArrowError>>,
-        HashMap<u64, f32, BuildIdentityHasher<u64>>,
+        HashMap<u64, f64, BuildIdentityHasher<u64>>,
     )> {
         let (time_index, index_range) = self
             .get_spectrum_index_range_for_time_range(time_range, ms_level_range)
@@ -672,13 +672,13 @@ impl<
     /// - A mapping from spectrum index to scan start time.
     pub async fn query_peaks(
         &mut self,
-        time_range: SimpleInterval<f32>,
+        time_range: SimpleInterval<f64>,
         mz_range: Option<SimpleInterval<f64>>,
         ion_mobility_range: Option<SimpleInterval<f64>>,
         ms_level_range: Option<SimpleInterval<u8>>,
     ) -> io::Result<(
         BoxStream<'_, Result<RecordBatch, ArrowError>>,
-        HashMap<u64, f32, BuildIdentityHasher<u64>>,
+        HashMap<u64, f64, BuildIdentityHasher<u64>>,
     )> {
         let builder = self.handle.spectrum_peaks().await?;
         let meta_index = self.metadata.peak_indices.as_ref().ok_or(io::Error::new(
@@ -711,9 +711,9 @@ impl<
 
     pub async fn get_spectrum_index_range_for_time_range(
         &self,
-        time_range: SimpleInterval<f32>,
+        time_range: SimpleInterval<f64>,
         ms_level_range: Option<SimpleInterval<u8>>,
-    ) -> io::Result<(HashMap<u64, f32, BuildIdentityHasher<u64>>, MaskSet)> {
+    ) -> io::Result<(HashMap<u64, f64, BuildIdentityHasher<u64>>, MaskSet)> {
         let mut time_indexer = TimeIndexDecoder::new(time_range, ms_level_range);
         if let Some(cache) = self.spectrum_metadata_cache.as_ref() {
             time_indexer.from_descriptions(cache.as_slice());

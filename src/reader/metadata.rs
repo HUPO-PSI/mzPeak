@@ -1283,8 +1283,8 @@ impl<T: ChunkReader + 'static> BaseMetadataQuerySource for ChromatogramMetadataR
 
 #[derive(Debug)]
 pub struct TimeIndexDecoder {
-    times: HashMap<u64, f32, BuildIdentityHasher<u64>>,
-    time_range: SimpleInterval<f32>,
+    times: HashMap<u64, f64, BuildIdentityHasher<u64>>,
+    time_range: SimpleInterval<f64>,
     min: u64,
     max: u64,
     ms_level_range: Option<SimpleInterval<u8>>,
@@ -1293,7 +1293,7 @@ pub struct TimeIndexDecoder {
 
 impl TimeIndexDecoder {
     pub fn new(
-        time_range: SimpleInterval<f32>,
+        time_range: SimpleInterval<f64>,
         ms_level_range: Option<SimpleInterval<u8>>,
     ) -> Self {
         Self {
@@ -1311,7 +1311,7 @@ impl TimeIndexDecoder {
         let offset_start = match descriptions.binary_search_by(|descr| {
             self.time_range
                 .start()
-                .total_cmp(&(descr.acquisition.start_time() as f32))
+                .total_cmp(&(descr.acquisition.start_time() as f64))
                 .reverse()
         }) {
             Ok(i) => i,
@@ -1327,7 +1327,7 @@ impl TimeIndexDecoder {
                 .filter(|(_, v)| ms_level_range.contains(&v.ms_level))
             {
                 let i = i as u64;
-                let t = descr.acquisition.start_time() as f32;
+                let t = descr.acquisition.start_time();
                 if self.time_range.contains(&t) {
                     self.min = self.min.min(i);
                     self.max = self.max.max(i);
@@ -1340,7 +1340,7 @@ impl TimeIndexDecoder {
         } else {
             for (i, descr) in descriptions.iter().enumerate().skip(offset) {
                 let i = i as u64;
-                let t = descr.acquisition.start_time() as f32;
+                let t = descr.acquisition.start_time();
                 if self.time_range.contains(&t) {
                     self.min = self.min.min(i);
                     self.max = self.max.max(i);
@@ -1382,7 +1382,7 @@ impl TimeIndexDecoder {
                 $(
                     if let Some(time_arr) = time_arr.as_primitive_opt::<$dtype>() {
                         for (val, time) in arr.iter().flatten().zip(time_arr.iter().flatten()) {
-                            add!(val, time as f32);
+                            add!(val, time as f64);
                         }
                         return Ok(())
                     }
@@ -1401,7 +1401,7 @@ impl TimeIndexDecoder {
         .into())
     }
 
-    pub fn finish(self) -> (HashMap<u64, f32, BuildIdentityHasher<u64>>, MaskSet) {
+    pub fn finish(self) -> (HashMap<u64, f64, BuildIdentityHasher<u64>>, MaskSet) {
         let range = SimpleInterval::new(self.min, self.max);
         if self.ms_level_range.is_some() {
             log::debug!("Building mask set with {:?}", self.indices);

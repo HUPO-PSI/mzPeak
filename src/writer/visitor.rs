@@ -1524,7 +1524,7 @@ pub struct SpectrumDetailsBuilder {
     index: UInt64Builder,
     id: LargeStringBuilder,
     ms_level: UInt8Builder,
-    time: Float32Builder,
+    time: Float64Builder,
     polarity: Int8Builder,
     mz_signal_continuity: CURIEBuilder,
     spectrum_type: CURIEBuilder,
@@ -1556,7 +1556,7 @@ impl VisitorBase for SpectrumDetailsBuilder {
             field!("index", DataType::UInt64),
             field!("id", DataType::LargeUtf8),
             field!("MS_1000511_ms_level", DataType::UInt8),
-            field!("time", DataType::Float32),
+            field!("time", DataType::Float64),
             field!("MS_1000465_scan_polarity", DataType::Int8),
             field!(
                 "MS_1000525_spectrum_representation",
@@ -1742,7 +1742,7 @@ impl SpectrumDetailsBuilder {
         self.index.append_value(index);
         self.id.append_value(item.id());
         self.ms_level.append_value(item.ms_level());
-        self.time.append_value(item.start_time() as f32);
+        self.time.append_value(item.start_time());
         self.polarity.append_option(match item.polarity() {
             ScanPolarity::Positive => Some(1),
             ScanPolarity::Negative => Some(-1),

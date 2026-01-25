@@ -1208,7 +1208,7 @@ impl ChromatogramMetadataIndex {
 #[derive(Debug, Default, Clone)]
 pub struct QueryIndex {
     pub spectrum_index_index: PageIndex<u64>,
-    pub spectrum_time_index: PageIndex<f32>,
+    pub spectrum_time_index: PageIndex<f64>,
     pub spectrum_ms_level_index: PageIndex<u8>,
     pub spectrum_scan_index: PageIndex<u64>,
     pub spectrum_precursor_index: PageIndex<u64>,
@@ -1240,7 +1240,7 @@ impl QueryIndex {
             "spectrum.index",
         )
         .unwrap_or_default();
-        self.spectrum_time_index = read_f32_page_index_from(
+        self.spectrum_time_index = read_f64_page_index_from(
             spectrum_metadata_reader.metadata(),
             pq_schema,
             "spectrum.time",

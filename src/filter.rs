@@ -2805,4 +2805,22 @@ mod test {
 
         Ok(())
     }
+
+    #[test_log::test]
+    fn test_regression_from() -> io::Result<()> {
+        let mut reader = crate::MzPeakReader::new("small.mzpeak")?;
+        let spec = reader.get_spectrum(0).unwrap();
+        let arrays = spec.arrays.as_ref().unwrap();
+        let mzs = arrays.mzs().unwrap();
+        let ints = arrays.intensities().unwrap();
+
+        let weights_trans: Vec<f64> = ints.iter().map(|v| (*v as f64).sqrt()).collect();
+
+        let m = select_delta_model(&mzs, Some(&weights_trans));
+        assert_eq!(m.len(), 3);
+        for c in m {
+            assert!(c.abs() < 1e-6);
+        }
+        Ok(())
+    }
 }

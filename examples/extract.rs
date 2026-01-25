@@ -51,8 +51,8 @@ fn main() -> io::Result<()> {
     let has_ion_mobility = reader.metadata.spectrum_array_indices().has_ion_mobility();
 
     let time_range = SimpleInterval::new(
-        args.time_range.start.unwrap_or(0.0) as f32,
-        args.time_range.end.unwrap_or(f64::INFINITY) as f32,
+        args.time_range.start.unwrap_or(0.0) as f64,
+        args.time_range.end.unwrap_or(f64::INFINITY) as f64,
     );
 
     let mz_range = SimpleInterval::new(

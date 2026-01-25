@@ -9,7 +9,7 @@
     - [The schema](#the-schema)
     - [The metadata key-value pairs](#the-metadata-key-value-pairs)
     - [The columnar data](#the-columnar-data)
-      - [Index levles](#index-levles)
+      - [Index levels](#index-levels)
   - [Container](#container)
     - [ZIP archives](#zip-archives)
       - [Why not TAR?](#why-not-tar)
@@ -99,8 +99,9 @@ At the end of a Parquet file is a footer containing user-defined metadata along 
 
 Parquet is a strongly typed binary columnar data format with layered blocked compression that permits a degree of random access.
 
+As some languages do not have a concept of 64-bit addresses, all implementations _MUST_ handle both `large_*` and not `large_*` variants of collection arrays, `list`, `string`, and `binary` types.
 
-#### Index levles
+#### Index levels
 
 When writing an mzPeak archive, the writer **MUST** write a page index. Most libraries that write Parquet support writing the page index, even if they do not directly support reading informed by the page index.
 
@@ -1077,7 +1078,7 @@ Perhaps, but the top-level structure leaves the door open for two use-cases:
 
 # Index File - `mzpeak_index.json`
 
-An mzPeak archive is made up of multiple named files. To leave room for future files and avoid having to do complicated file name resolution, we use an index file that identifies the contents of each file. This broadly defines the kinds of schemas those files might have.
+An mzPeak archive is made up of multiple named files. To leave room for future files and avoid having to do complicated file name resolution, we use an index file that identifies the contents of each file. This broadly defines the kinds of schemas those files might have. The file _MUST_ be serialized with UTF8.
 
 ```json
 {
@@ -1187,9 +1188,9 @@ The [file level metadata](#file-level-metadata) for this Parquet file should inc
 This metadata table uses the [packed parallel metadata table](#packed-parallel-metadata-tables) schema. The parallel schemas are shown below. The general order of columns in unspecified, but `spectrum.index`, `scan.source_index`, `precursor.source_index`, and `selected_ion.source_index` _MUST_ be the first column of their respective schemas. Wherever these lists say _MAY_, that value may either be stored as a column or as an entry in the [parameter list](#the-parameters-list) but a column tends to make more sense if it is usually present.
 
 - `spectrum` (group)
-  - `index` (integer): The ascending 0-based index. This _MUST_ be incrementally increasing by 1 per entry and _SHOULD_ be written in time-sorted ascending order (QUESTION: Should there be a CV to denote this state?). This is the "primary key" for the `spectrum` schema, making it the root unit of addressability.
+  - `index` (uint64): The ascending 0-based index. This _MUST_ be incrementally increasing by 1 per entry and _SHOULD_ be written in time-sorted ascending order (QUESTION: Should there be a CV to denote this state?). This is the "primary key" for the `spectrum` schema, making it the root unit of addressability.
   - `id` (string): The "nativeID" string identifier for the spectrum, formatted according to to a [native identifier format](http://purl.obolibrary.org/obo/MS_1000767). The specific nativeID format _SHOULD_ be specified in the [file level metadata](#file-level-metadata) under `.file_description.source_files[0].parameters`, as in mzML.
-  - `time` (float): The starting time for data acquisition for this spectrum. This value _SHOULD_ be replicated from the parallel `scan` schema for simpler filtering, but when a spectrum has multiple scans, it _SHOULD_ refer to the minimum value if the run is defined in acquisition time order.
+  - `time` (float64): The starting time for data acquisition for this spectrum. This value _SHOULD_ be replicated from the parallel `scan` schema for simpler filtering, but when a spectrum has multiple scans, it _SHOULD_ refer to the minimum value if the run is defined in acquisition time order.
   - [`MS_1000511_ms_level`](http://purl.obolibrary.org/obo/MS_1000511) (integer): Stage number achieved in a multi stage mass spectrometry acquisition as an integer, or `null` for non-mass spectra.
   - `data_processing_ref` (string): The identifier for a `data_processing` that governs this spectrum if it deviates from the default method specified in [file level metadata](#file-level-metadata) under `.run.default_data_processing_id`, `null` otherwise.
   - `parameters` (list): A list of controlled or uncontrolled parameters that describe this spectrum. See [the parameter list section](#the-parameters-list) for more details.
@@ -1216,10 +1217,10 @@ This metadata table uses the [packed parallel metadata table](#packed-parallel-m
     - __Examples:__
       - [`MS_1000796_spectrum_title`](http://purl.obolibrary.org/obo/MS_1000796)
 - `scan` (group): Scan or acquisition from original raw file used to create a spectrum.
-  - `source_index` (integer): The `index` of the spectrum this scan belongs to. This is a foreign key.
+  - `source_index` (uint64): The `index` of the spectrum this scan belongs to. This is a foreign key.
   - `instrument_configuration_ref` (integer): The identifier for `instrument_configuration` that governs this scan.
   - `parameters` (list): A list of controlled or uncontrolled parameters that describe this scan. See [the parameter list section](#the-parameters-list) for more details.
-  - `ion_mobility` (float): Optional, the ion mobility measurement for this scan.
+  - `ion_mobility` (floatf64): Optional, the ion mobility measurement for this scan.
   - `ion_mobility_type` (CURIE): Optional, the kind of ion mobility being measured using a *child* of [MS:1002892](http://purl.obolibrary.org/obo/MS_1002892).
   - `scan_windows`
   - MAY supply a *child* term of [MS:1000503](http://purl.obolibrary.org/obo/MS_1000503) (scan attribute) one or more times
@@ -1227,8 +1228,8 @@ This metadata table uses the [packed parallel metadata table](#packed-parallel-m
   - MAY supply a *child* term of [MS:1000018](http://purl.obolibrary.org/obo/MS_1000018) (scan direction) only once
   - MAY supply a *child* term of [MS:1000019](http://purl.obolibrary.org/obo/MS_1000019) (scan law) only once
 - `precursor` (group): The method of precursor ion selection and activation
-  - `source_index` (integer): The `index` of the spectrum this precursor record belongs to. This is a foreign key.
-  - `precursor_index` (integer): The `index` of the spectrum that is the precursor record was created from. This is a foreign key.
+  - `source_index` (uint64): The `index` of the spectrum this precursor record belongs to. This is a foreign key.
+  - `precursor_index` (uint64): The `index` of the spectrum that is the precursor record was created from. This is a foreign key.
   - `precursor_id` (string): The `id` of the spectrum referenced by `precursor_index`.
   - `isolation_window` (group): The isolation (or 'selection') window configured to isolate one or more ions
     - `parameters` (list)
@@ -1242,9 +1243,9 @@ This metadata table uses the [packed parallel metadata table](#packed-parallel-m
     - MAY supply a *child* term of [MS:1000510](http://purl.obolibrary.org/obo/MS_1000510) (precursor activation attribute) one or more times
     - MUST supply term [MS:1000044](http://purl.obolibrary.org/obo/MS_1000044) (dissociation method) or any of its children one or more times
 - `selected_ion` (group): An ion isolated for dissociation.
-  - `source_index` (integer): The `index` of the spectrum this selected ion belongs to. This is a foreign key.
-  - `precursor_index` (integer): The `index` of the spectrum that is the selected ion was created from. This is a foreign key.
-  - `ion_mobility` (float): Optional, the ion mobility measurement for this ion.
+  - `source_index` (uint64): The `index` of the spectrum this selected ion belongs to. This is a foreign key.
+  - `precursor_index` (uint64): The `index` of the spectrum that is the selected ion was created from. This is a foreign key.
+  - `ion_mobility` (float64): Optional, the ion mobility measurement for this ion.
   - `ion_mobility_type` (CURIE): Optional, the kind of ion mobility being measured using a *child* of [MS:1002892](http://purl.obolibrary.org/obo/MS_1002892).
   - `parameters` (list): A list of controlled or uncontrolled parameters that describe this selected ion. See [the parameter list section](#the-parameters-list) for more details.
   - MUST supply a *child* term of [MS:1000455](http://purl.obolibrary.org/obo/MS_1000455) (ion selection attribute) one or more times
