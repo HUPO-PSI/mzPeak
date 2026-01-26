@@ -18,6 +18,7 @@
   - [Packed Parallel Metadata Tables](#packed-parallel-metadata-tables)
     - [Controlled Vocabulary Terms](#controlled-vocabulary-terms)
       - [The `parameters` list](#the-parameters-list)
+      - [Typing Parameter Values](#typing-parameter-values)
       - [Column Name Inflection](#column-name-inflection)
     - [Null Semantics for Metadata](#null-semantics-for-metadata)
     - [File-Level Metadata](#file-level-metadata)
@@ -263,6 +264,15 @@ __NOTE:__ Parquet columns _MUST_ be uniquely named, so if a parameter is present
 
 __NOTE:__ Writers are encouraged to, when sufficient context is available, encode parameters that are present in most rows of a table as columns. This is more space efficient and opens the door to easy predicate filtering.
 
+#### Typing Parameter Values
+
+When a term has a value, if it is stored in the `parameters` list, the value _MUST_ be stored using one of the provided value types as given by the fixed schema. When storing a term that has been encoded as a separate column, values can be stored in any data type supported by Parquet. This flexibility allows us to pick a physical type that uses an appropriate size and precision for the value being stored, but can also create a lot of redundant code to handle a column that we expect contains an integer but whether the file was written using an 8-, 16-, 32-, or 64-bit integer, and whether it was stored signed or unsigned. Some languages can handle these naturally using dynamic typing or templates, while others require manually repeat implementations for each type a column might use.
+
+- For integral value types that are _NOT_ indices or unique identifiers, prefer signed 32- or 64-bit values as needed to cover the domain of the value being stored.
+- For indices or unique identifiers represented as integers, prefer unsigned 32- or 64-bit types. Dictionary encoding will reduce the majority of cases to 8 bits per variant on disk in any case.
+- For floating point values, prefer 64-bit floats/doubles unless the value's precision is truly of no issue. If the value is repetitive, e.g. collision energy, dictionary encoding will reduce the storage cost below 32 bits per value on disk.
+- For strings and lists, prefer storing 64-bit offsets ("large strings" and "large lists"), but code must be written to support both 32-bit and 64-bit offsets. This is especially true of strings where the offset is in terms of total byte offsets, not item offsets but.
+
 #### Column Name Inflection
 
 When representing a controlled vocabulary term concept as a column in the table, the column name _SHOULD_ use the following inflection rules to construct the column name:
@@ -506,9 +516,7 @@ def find_where_not_zero_run(data: Sequence[Number]) -> Sequence[int]:
         v = data[i]
         if v is not None:
             if v == 0:
-                if (was_zero or (len(acc) == 0)) and (
-                    (i < n1 and data[i + 1] == 0) or i == n1
-                ):
+                if (was_zero or (len(acc) == 0)) and ((i < n1 and data[i + 1] == 0) or i == n1):
                     pass
                 else:
                     acc.append(i)
