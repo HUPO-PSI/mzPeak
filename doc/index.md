@@ -1315,7 +1315,7 @@ When selecting a [Parquet encoding](https://parquet.apache.org/docs/file-format/
   - `index` (integer): The ascending 0-based index. This _MUST_ be incrementally increasing by 1 per entry and _SHOULD_ be written in time-sorted ascending order (QUESTION: Should there be a CV to denote this state?). This is the "primary key" for the `chromatogram` schema, making it the root unit of addressability.
   - `id` (string): A unique string identifier for the chromatogram.
   - [`MS_1000465_scan_polarity`](http://purl.obolibrary.org/obo/MS_1000465) (integer): The polarity of the chromatogram represented as either a `1` (positive), `-1` (negative), or `null`. (QUESTION: This could also just be a CURIE)
-  - [MS_1000626_chromatogram_type](http://purl.obolibrary.org/obo/MS_1000626) (CURIE): stuff
+  - [MS_1000626_chromatogram_type](http://purl.obolibrary.org/obo/MS_1000626) (CURIE): The type of chromatogram measurement being represented.
     - __Examples:__
       - [MS:1000235](http://purl.obolibrary.org/obo/MS_1000235) "total ion current chromatogram"
       - [MS:1000627](http://purl.obolibrary.org/obo/MS_1000627) "selected ion current chromatogram"

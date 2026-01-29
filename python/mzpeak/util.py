@@ -250,19 +250,35 @@ class _NameCleaningNode:
                 if self.is_struct():
                     new_fields = [f.field for f in self.children]
                     self.field = self.field.with_type(pa.struct(new_fields))
+            # elif self.is_list():
+            #     self.field = self.field.with_type(pa.list_(self.children[0].field))
+            #     self.array.type.value_field = self.field.value_field
+            # elif self.is_large_list():
+            #     self.field = self.field.with_type(pa.large_list(self.children[0].field))
+            #     self.array.type.value_field = self.field.value_field
 
     def is_struct(self) -> bool:
         if not self.field:
             return False
         return isinstance(self.field.type, pa.StructType)
 
+    def is_list(self) -> bool:
+        if not self.field:
+            return False
+        return isinstance(self.field.type, pa.ListType)
+
+    def is_large_list(self) -> bool:
+        if not self.field:
+            return False
+        return isinstance(self.field.type, pa.LargeListType)
+
     @classmethod
     def from_array(cls, field: pa.Field, array: pa.Array, mapper: OntologyMapper):
         '''The main entry point'''
         if isinstance(array.type, pa.StructType):
             return cls.from_struct_array(field, array, mapper)
-        # elif isinstance(array.type, (pa.ListType, pa.LargeListType)):
-        #     pass
+        elif isinstance(array.type, (pa.ListType, pa.LargeListType)):
+            return cls.from_list_array(field, array, mapper)
         return cls(field, array, mapper)
 
     @classmethod
@@ -274,6 +290,16 @@ class _NameCleaningNode:
             nodes.append(cls.from_array(f, a, mapper))
         return cls(field, arrays, mapper, nodes)
 
+    @classmethod
+    def from_list_array(
+        cls, field: pa.Field, arrays: pa.ListArray, mapper: OntologyMapper
+    ):
+        nodes = []
+        nodes.append(
+            cls.from_array(field.type.value_field, arrays.values, mapper)
+        )
+        return cls(field, arrays, mapper, nodes)
+
     def clean(self):
         if self.is_struct() or self.field is None:
             fields = []
@@ -283,6 +309,12 @@ class _NameCleaningNode:
                 fields.append(f)
                 arrays.append(a)
             return (self.field, pa.StructArray.from_arrays(arrays, fields=fields))
+        # elif self.is_list():
+        #     f, a = self.children[0].clean()
+        #     return self.field, pa.ListArray.from_arrays(self.array.offsets, a)
+        # elif self.is_large_list():
+        #     f, a = self.children[0].clean()
+        #     return self.field, pa.ListArray.from_arrays(self.array.offsets, a)
         else:
             return (self.field, self.array)
 

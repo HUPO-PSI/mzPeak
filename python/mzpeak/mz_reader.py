@@ -7,8 +7,11 @@ from enum import Enum
 
 import numpy as np
 
-import pynumpress
 import pyarrow as pa
+try:
+    import pynumpress
+except ImportError:
+    pynumpress = None
 
 from pyarrow import compute as pc
 from pyarrow import parquet as pq
@@ -639,6 +642,8 @@ class _ChunkBatchCleaner:
             ):
                 n += len(chunk[f"{self.axis_prefix}_chunk_values"]) + 1
             elif encoding in (NUMPRESS_LINEAR, NUMPRESS_LINEAR_CURIE):
+                if pynumpress is None:
+                    raise ImportError("Decoding MS-Numpress compressed arrays requires the `pynumpress` library.")
                 raw = chunk[f"{self.axis_prefix}_numpress_linear_bytes"].as_py()
                 part = pynumpress.decode_linear(raw)
                 n += len(part)
@@ -778,9 +783,14 @@ class _ChunkBatchCleaner:
                         values = np.asarray(v.values)
                         if k in self.has_transforms:
                             if self.has_transforms[k] == NUMPRESS_SLOF_CURIE:
+                                if pynumpress is None:
+                                    raise ImportError("Decoding MS-Numpress compressed arrays requires the `pynumpress` library.")
                                 values = pynumpress.decode_slof(values)
                             elif self.has_transforms[k] == NUMPRESS_PIC_CURIE:
+                                if pynumpress is None:
+                                    raise ImportError("Decoding MS-Numpress compressed arrays requires the `pynumpress` library.")
                                 values = pynumpress.decode_pic(values)
+
                             elif self.has_transforms[k] in (NULL_INTERPOLATE, NULL_ZERO):
                                 # These transforms do not require any special handling
                                 pass

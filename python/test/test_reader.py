@@ -38,7 +38,7 @@ def common_checks(reader: MzPeakFile, subtests: pytest.Subtests):
 
     with subtests.test("chromatogram"):
         assert len(reader.chromatograms) == 1
-        assert len(reader.bpc()[0]) == 48
+        assert len(reader.extract_bpc()[0]) == 48
         assert len(reader.read_chromatogram(0)['time array']) == 48
 
     with subtests.test("spectrum 0"):

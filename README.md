@@ -24,6 +24,9 @@ Other languages are planned in the future in rough order of priority:
     - [Point Layout for Data Arrays](#point-layout-for-data-arrays)
     - [Chunked Layout for Data Arrays](#chunked-layout-for-data-arrays)
   - [Conversion Program](#conversion-program)
+  - [Using the Rust implementation](#using-the-rust-implementation)
+  - [Using the Python implementation](#using-the-python-implementation)
+  - [Using the R implementation](#using-the-r-implementation)
 
 ## High level overview
 
@@ -213,4 +216,89 @@ Options:
           Include an extra 'spectrum_time' array alongside the 'spectrum_index' array.
   -h, --help
           Print help
+```
+
+## Using the Rust implementation
+
+## Using the Python implementation
+
+The Python implementation has a high level API managed by the `MzPeakFile` class, given a path, it can open and read existing mzPeak files. See [python/](https://github.com/mobiusklein/mzpeak_prototyping/tree/main/python) for more details on how the library can be used.
+
+```python
+from mzpeak import MzPeakFile
+
+reader = MzPeakFile("small.mzpeak")
+
+spec = reader[2]
+print(spec)
+```
+```python
+{'id': 'controllerType=0 controllerNumber=1 scan=3',
+ 'ms level': 2,
+ 'time': 0.01121833361685276,
+ 'scan polarity': 1,
+ 'spectrum representation': 'MS:1000127',
+ 'spectrum type': 'MS:1000580',
+ 'lowest observed m/z': 231.3888397216797,
+ 'highest observed m/z': 1560.7198486328125,
+ 'number of data points': 485,
+ 'base peak m/z': 736.6370849609375,
+ 'base peak intensity': 161140.859375,
+ 'total ion current': 586279.0,
+ 'parameters': [],
+ 'number_of_auxiliary_arrays': 0,
+ 'mz_delta_model': None,
+ 'scans': [{'scan start time': 0.01121833361685276,
+   'preset scan configuration': 3,
+   'filter string': 'ITMS + c ESI d Full ms2 810.79@cid35.00 [210.00-1635.00]',
+   'ion injection time': 7.993005275726318,
+   'instrument_configuration_ref': 1,
+   'parameters': [{'value': 0,
+     'accession': None,
+     'name': '[Thermo Trailer Extra]Monoisotopic M/Z:',
+     'unit': None}],
+   'scan_windows': [{'MS_1000501_scan_window_lower_limit_unit_MS_1000040': 210.0,
+     'MS_1000500_scan_window_upper_limit_unit_MS_1000040': 1635.0,
+     'parameters': []}]}],
+ 'precursors': [{'precursor_index': 1,
+   'precursor_id': 'controllerType=0 controllerNumber=1 scan=2',
+   'isolation_window': {'isolation window target m/z': 810.7894287109375,
+    'isolation window lower offset': 809.7894287109375,
+    'isolation window upper offset': 811.7894287109375,
+    'parameters': []},
+   'activation': [{'value': None,
+     'accession': 'MS:1000133',
+     'name': 'collision-induced dissociation',
+     'unit': None},
+    {'value': 35.0,
+     'accession': 'MS:1000045',
+     'name': 'collision energy',
+     'unit': 'UO:0000266'}],
+   'selected ion m/z': 810.789428710938,
+   'peak intensity': 1994039.125,
+   'parameters': []}],
+ 'index': 2,
+ ...
+}
+```
+
+## Using the R implementation
+The Python implementation has a high level API managed by the `MZPeakFile` class, given a path, it can open and read existing mzPeak files. See [R/](https://github.com/mobiusklein/mzpeak_prototyping/tree/main/R) for more details on how the library can be used.
+
+```R
+require(mzpeak)
+
+reader <- MZPeakFile$new("small.chunked.mzpeak")
+
+mzIntens <- reader$read_spectrum(1)
+head(mzIntens)
+```
+```R
+        mz intensity
+1 202.6066     0.000
+2 202.6068  1938.117
+3 202.6071  2572.839
+4 202.6073  3392.107
+5 202.6076  3729.591
+6 202.6078  2819.127
 ```

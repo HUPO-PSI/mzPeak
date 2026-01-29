@@ -365,12 +365,36 @@ class MzPeakSpectrumMetadataReader(_PrecursorReadMixin):
         self._read_precursors()
         self._read_selected_ions()
 
-    def tic(self):
+    def extract_tic(self):
+        """
+        Extract the implicit total ion chromatogram (TIC) from the spectrum metadata table.
+
+        The TIC is read from the spectrum metadata table's "total ion current" column.
+
+        Returns
+        -------
+        np.ndarray : time_array
+            The time axis of the total ion chromatogram
+        np.ndarray : intensity_array
+            The intensity of the total ion chromatogram
+        """
         return np.array(self.spectra["time"]), np.array(
             self.spectra["total ion current"]
         )
 
-    def bpc(self):
+    def extract_bpc(self):
+        """
+        Extract the implicit base peak chromatogram (BPC) from the spectrum metadata table.
+
+        The BPC is read from the spectrum metadata table's "base peak intensity" column.
+
+        Returns
+        -------
+        np.ndarray : time_array
+            The time axis of the base peak chromatogram
+        np.ndarray : intensity_array
+            The intensity of the base peak chromatogram
+        """
         return np.array(self.spectra["time"]), np.array(
             self.spectra["base peak intensity"]
         )
@@ -994,14 +1018,39 @@ class MzPeakFile(Sequence[_SpectrumType]):
     def __len__(self):
         return len(self.spectrum_metadata)
 
-    def tic(self) -> tuple[np.ndarray, np.ndarray]:
-        return self.spectrum_metadata.tic()
+    def extract_tic(self) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Extract the implicit total ion chromatogram (TIC) from the spectrum metadata table.
 
-    def bpc(self) -> tuple[np.ndarray, np.ndarray]:
-        return self.spectrum_metadata.bpc()
+        The TIC is read from the spectrum metadata table's "total ion current" column.
+
+        Returns
+        -------
+        np.ndarray : time_array
+            The time axis of the total ion chromatogram
+        np.ndarray : intensity_array
+            The intensity of the total ion chromatogram
+        """
+        return self.spectrum_metadata.extract_tic()
+
+    def extract_bpc(self) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Extract the implicit base peak chromatogram (BPC) from the spectrum metadata table.
+
+        The BPC is read from the spectrum metadata table's "base peak intensity" column.
+
+        Returns
+        -------
+        np.ndarray : time_array
+            The time axis of the base peak chromatogram
+        np.ndarray : intensity_array
+            The intensity of the base peak chromatogram
+        """
+        return self.spectrum_metadata.extract_bpc()
 
     @property
     def has_secondary_peaks_data(self) -> bool:
+        """Detect if a separate table of centroid peaks has been stored alongside profile spectra."""
         return self.spectrum_peak_data is not None
 
     @property
