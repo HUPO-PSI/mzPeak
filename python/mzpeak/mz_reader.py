@@ -118,6 +118,7 @@ class _DataIndex:
 
     def _infer_schema_idx(self):
         self.row_group_index_ranges = []
+        max_index = 0
         if self.meta.num_row_groups:
             rg = self.meta.row_group(0)
             q = f"{self.prefix}.{self.namespace}_index"
