@@ -220,6 +220,21 @@ Options:
 
 ## Using the Rust implementation
 
+The Rust library uses the type system provided by [`mzdata`](https://github.com/mobiusklein/mzdata) for domain-specific data structures and common trait-based APIs. See [examples/](https://github.com/mobiusklein/mzpeak_prototyping/tree/main/examples/).
+
+```rust
+use std::io;
+use mzpeak_prototyping::MzPeakReader;
+use mzdata::prelude::*;
+
+fn main() -> io::Result<()> {
+    let mut reader = MzPeakReader::open_path("small.mzpeak")?;
+    let spec = reader.get_spectrum_by_index(2).unwrap();
+    println!("{:?}", spec.description());
+    Ok(())
+}
+```
+
 ## Using the Python implementation
 
 The Python implementation has a high level API managed by the `MzPeakFile` class, given a path, it can open and read existing mzPeak files. See [python/](https://github.com/mobiusklein/mzpeak_prototyping/tree/main/python) for more details on how the library can be used.

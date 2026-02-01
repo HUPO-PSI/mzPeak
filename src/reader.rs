@@ -944,10 +944,19 @@ impl<
         for bat in reader.flatten() {
             let root = bat.column(0);
             let root = root.as_struct();
-            let data = root.column(1).as_list::<i64>();
-            let data = data.values().as_struct();
-            let arrays = AuxiliaryArrayVisitor::default().visit(data);
-            results.extend(arrays);
+            if let Some(data) = root.column(1).as_list_opt::<i64>() {
+                let data = data.values().as_struct();
+                let arrays = AuxiliaryArrayVisitor::default().visit(data);
+                results.extend(arrays);
+            }
+            else if let Some(data) = root.column(1).as_list_opt::<i32>() {
+                let data = data.values().as_struct();
+                let arrays = AuxiliaryArrayVisitor::default().visit(data);
+                results.extend(arrays);
+            }
+            else {
+                panic!();
+            }
         }
 
         results

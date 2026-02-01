@@ -2,13 +2,11 @@ use std::collections::HashMap;
 
 use arrow::{
     array::{
-        Array, ArrayRef, AsArray, BooleanArray, Float32Array, Float64Array, Int8Array, Int32Array,
-        Int64Array, LargeListArray, LargeStringArray, StringArray, StructArray, UInt8Array,
-        UInt32Array, UInt64Array,
+        Array, ArrayRef, AsArray, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array, LargeStringArray, StringArray, StructArray, UInt8Array, UInt32Array, UInt64Array
     },
     buffer::NullBuffer,
     datatypes::{
-        DataType, FieldRef, Fields, Float32Type, Float64Type, Int32Type, Int64Type, UInt8Type, UInt32Type, UInt64Type
+        DataType, FieldRef, Fields, Float32Type, Float64Type, Int8Type, Int32Type, Int64Type, UInt8Type, UInt32Type, UInt64Type
     },
 };
 use itertools::Itertools;
@@ -274,9 +272,18 @@ impl<'a> ParameterVisitor<'a> {
         self.destination.resize(n, Default::default());
 
         if let Some(name) = self.root.column_by_name("name") {
-            let arr = name.as_string::<i64>();
-            for (i, v) in arr.iter().enumerate() {
-                self.destination[i].name = v.unwrap().to_string();
+
+            if let Some(arr) = name.as_string_opt::<i64>() {
+                for (i, v) in arr.iter().enumerate() {
+                    self.destination[i].name = v.unwrap().to_string();
+                }
+            }
+            else if let Some(arr) = name.as_string_opt::<i32>() {
+                for (i, v) in arr.iter().enumerate() {
+                    self.destination[i].name = v.unwrap().to_string();
+                }
+            } else {
+                panic!("Unsupported data type {:?}", name.data_type());
             }
         }
         if let Some(curie) = self
@@ -323,12 +330,22 @@ impl<'a> ParameterVisitor<'a> {
             }
             if let Some(ints) = values.column_by_name("string") {
                 if ints.null_count() != n {
-                    let ints = ints.as_string::<i64>();
-                    for i in 0..n {
-                        if ints.is_valid(i) {
-                            self.destination[i].value =
-                                mzdata::params::Value::String(ints.value(i).to_string());
+                    if let Some(ints) = ints.as_string_opt::<i64>() {
+                        for i in 0..n {
+                            if ints.is_valid(i) {
+                                self.destination[i].value =
+                                    mzdata::params::Value::String(ints.value(i).to_string());
+                            }
                         }
+                    } else if let Some(ints) = ints.as_string_opt::<i32>() {
+                        for i in 0..n {
+                            if ints.is_valid(i) {
+                                self.destination[i].value =
+                                    mzdata::params::Value::String(ints.value(i).to_string());
+                            }
+                        }
+                    } else {
+                        panic!("Unsupported data type {:?}", ints.data_type());
                     }
                 }
             }
@@ -417,36 +434,90 @@ impl<'a> MzSpectrumVisitor<'a> {
     }
 
     fn visit_id(&mut self, spec_arr: &StructArray, index: usize) {
-        let arr: &LargeStringArray = spec_arr.column(index).as_string();
-        for (i, descr) in self.iter_instances() {
-            let val = arr.value(i);
-            descr.id = val.to_string();
+        let arr = spec_arr.column(index);
+        if let Some(arr) = arr.as_string_opt::<i64>() {
+            for (i, descr) in self.iter_instances() {
+                let val = arr.value(i);
+                descr.id = val.to_string();
+            }
+        }
+        else if let Some(arr) = arr.as_string_opt::<i32>() {
+            for (i, descr) in self.iter_instances() {
+                let val = arr.value(i);
+                descr.id = val.to_string();
+            }
+        }
+        else {
+            panic!("Unsupported data type: {:?}", arr.data_type());
         }
     }
 
     fn visit_ms_level(&mut self, spec_arr: &StructArray, index: usize) {
-        let arr = spec_arr.column(index).as_primitive::<UInt8Type>();
-        for (i, descr) in self.iter_instances() {
-            if arr.is_null(i) {
-                continue;
+        let arr = spec_arr.column(index);
+
+        macro_rules! process {
+            ($arr:expr) => {
+                for (i, descr) in self.iter_instances() {
+                    if arr.is_null(i) {
+                        continue;
+                    };
+                    let ms_level_val = $arr.value(i);
+                    descr.ms_level = ms_level_val as u8;
+                }
+                return
             };
-            let ms_level_val = arr.value(i);
-            descr.ms_level = ms_level_val;
+        }
+
+        if let Some(arr) = arr.as_primitive_opt::<UInt8Type>() {
+            process!(arr);
+        } else if let Some(arr) = arr.as_primitive_opt::<UInt8Type>() {
+            process!(arr);
+        } else if let Some(arr) = arr.as_primitive_opt::<UInt32Type>() {
+            process!(arr);
+        } else if let Some(arr) = arr.as_primitive_opt::<UInt64Type>() {
+            process!(arr);
+        } else if let Some(arr) = arr.as_primitive_opt::<Int8Type>() {
+            process!(arr);
+        } else if let Some(arr) = arr.as_primitive_opt::<Int32Type>() {
+            process!(arr);
+        } else if let Some(arr) = arr.as_primitive_opt::<Int64Type>() {
+            process!(arr);
         }
     }
 
     fn visit_polarity(&mut self, spec_arr: &StructArray, index: usize) {
-        let polarity_arr: &Int8Array = spec_arr.column(index).as_any().downcast_ref().unwrap();
-        for (i, descr) in self.iter_instances() {
-            let polarity_val = polarity_arr.value(i);
-            match polarity_val {
-                1 => descr.polarity = ScanPolarity::Positive,
-                -1 => descr.polarity = ScanPolarity::Negative,
-                _ => {
-                    todo!("Don't know how to deal with polarity {polarity_val}")
-                }
-            }
+        let polarity_arr = spec_arr.column(index);
+        macro_rules! downcast_run {
+            ($($tp:ty)+) => {
+                $(
+                    if let Some(array) = polarity_arr.as_primitive_opt::<$tp>() {
+                        for (i, descr) in self
+                            .offsets
+                            .iter()
+                            .copied()
+                            .zip(self.descriptions.iter_mut())
+                        {
+                            let polarity_val = array.value(i);
+                            match polarity_val {
+                                1 => descr.polarity = ScanPolarity::Positive,
+                                -1 => descr.polarity = ScanPolarity::Negative,
+                                _ => {
+                                    descr.polarity = ScanPolarity::Unknown;
+                                }
+                            }
+                        }
+                        return;
+                    }
+                )+
+            };
         }
+
+        downcast_run!(
+            Int8Type
+            Int32Type
+            Int32Type
+            Int64Type
+        );
     }
 
     fn visit_mz_signal_continuity(&mut self, spec_arr: &StructArray, index: usize) {
@@ -835,6 +906,43 @@ impl<'a> CURIEStrArray<'a> {
     }
 }
 
+pub struct LargeCURIEStrArray<'a>(&'a LargeStringArray);
+
+impl<'a> From<&'a LargeStringArray> for LargeCURIEStrArray<'a> {
+    fn from(value: &'a LargeStringArray) -> Self {
+        Self(value)
+    }
+}
+
+impl<'a> LargeCURIEStrArray<'a> {
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    #[inline(always)]
+    pub fn is_null(&self, index: usize) -> bool {
+        self.0.is_null(index)
+    }
+
+    #[inline(always)]
+    pub fn value(&self, index: usize) -> Option<CURIE> {
+        if self.is_null(index) {
+            None
+        } else {
+            Some(self.0.value(index).parse().unwrap())
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = Option<CURIE>> {
+        self.0.iter().map(|v| v.map(|v| v.parse().unwrap()))
+    }
+}
+
+
 /// A deprecated struct-based encoding. To be removed before
 /// first stable release.
 pub struct CURIEStructArray<'a> {
@@ -905,6 +1013,7 @@ impl<'a> CURIEStructArray<'a> {
 pub enum AnyCURIEArray<'a> {
     Struct(CURIEStructArray<'a>),
     String(CURIEStrArray<'a>),
+    LargeString(LargeCURIEStrArray<'a>),
 }
 
 impl<'a> TryFrom<&'a ArrayRef> for AnyCURIEArray<'a> {
@@ -914,7 +1023,14 @@ impl<'a> TryFrom<&'a ArrayRef> for AnyCURIEArray<'a> {
         if let Some(arr) = value.as_struct_opt() {
             Ok(Self::from_struct_array(arr))
         } else {
-            Ok(Self::String(CURIEStrArray(value.as_string::<i32>())))
+            if let Some(arr) = value.as_string_opt::<i32>() {
+                Ok(Self::String(CURIEStrArray(arr)))
+            } else if let Some(arr) = value.as_string_opt::<i64>() {
+                Ok(Self::LargeString(LargeCURIEStrArray(arr)))
+            } else {
+                panic!("Unsupported data type: {:?}", value.data_type());
+            }
+
         }
     }
 }
@@ -928,6 +1044,7 @@ impl<'a> AnyCURIEArray<'a> {
         match self {
             AnyCURIEArray::Struct(curiearray) => curiearray.len(),
             AnyCURIEArray::String(curiestr_array) => curiestr_array.len(),
+            AnyCURIEArray::LargeString(curiestr_array) => curiestr_array.len(),
         }
     }
 
@@ -953,6 +1070,14 @@ impl<'a> AnyCURIEArray<'a> {
                 }
                 acc
             }
+            AnyCURIEArray::LargeString(curiestr_array) => {
+                let n = curiestr_array.len();
+                let mut acc: Vec<_> = Vec::with_capacity(n);
+                for i in 0..n {
+                    acc.push(curiestr_array.value(i).unwrap())
+                }
+                acc
+            }
         }
     }
 
@@ -961,6 +1086,7 @@ impl<'a> AnyCURIEArray<'a> {
         match self {
             AnyCURIEArray::Struct(curiearray) => curiearray.is_null(index),
             AnyCURIEArray::String(curiestr_array) => curiestr_array.is_null(index),
+            AnyCURIEArray::LargeString(curiestr_array) => curiestr_array.is_null(index),
         }
     }
 
@@ -969,6 +1095,7 @@ impl<'a> AnyCURIEArray<'a> {
         match self {
             AnyCURIEArray::Struct(curiearray) => curiearray.value(index),
             AnyCURIEArray::String(curiestr_array) => curiestr_array.value(index),
+            AnyCURIEArray::LargeString(curiestr_array) => curiestr_array.value(index),
         }
     }
 }
@@ -982,6 +1109,12 @@ impl<'a> From<CURIEStructArray<'a>> for AnyCURIEArray<'a> {
 impl<'a> From<CURIEStrArray<'a>> for AnyCURIEArray<'a> {
     fn from(value: CURIEStrArray<'a>) -> Self {
         Self::String(value)
+    }
+}
+
+impl<'a> From<LargeCURIEStrArray<'a>> for AnyCURIEArray<'a> {
+    fn from(value: LargeCURIEStrArray<'a>) -> Self {
+        Self::LargeString(value)
     }
 }
 
@@ -1201,23 +1334,34 @@ trait VisitorBuilderBase<'a, T> {
 
 trait VisitorBuilder1<'a, T: ParamDescribed>: VisitorBuilderBase<'a, T> {
     fn visit_parameters(&mut self, struct_arr: &StructArray, skip_params: &[CURIE]) {
-        let params_array: &LargeListArray =
-            struct_arr.column_by_name("parameters").unwrap().as_list();
+        let params_array = struct_arr.column_by_name("parameters").unwrap();
+        macro_rules! process {
+            ($params_array:expr) => {
+                for (i, descr) in self.iter_instances() {
+                    let params = $params_array.value(i);
+                    let params = ParameterVisitor::new(params.as_struct()).build();
 
-        for (i, descr) in self.iter_instances() {
-            let params = params_array.value(i);
-            let params = ParameterVisitor::new(params.as_struct()).build();
-
-            for p in params {
-                if let Some(acc) = p.curie() {
-                    if !skip_params.contains(&acc) {
-                        descr.add_param(p);
+                    for p in params {
+                        if let Some(acc) = p.curie() {
+                            if !skip_params.contains(&acc) {
+                                descr.add_param(p);
+                            }
+                        } else {
+                            descr.add_param(p);
+                        }
                     }
-                } else {
-                    descr.add_param(p);
                 }
-            }
+            };
         }
+        if let Some(params_array) = params_array.as_list_opt::<i64>() {
+            process!(params_array);
+        }
+        else if let Some(params_array) = params_array.as_list_opt::<i32>() {
+            process!(params_array);
+        } else {
+            panic!("{:?} not supported", params_array.data_type());
+        }
+
     }
 
     fn visit_as_param(&mut self, spec_arr: &StructArray, index: usize, metacol: &MetadataColumn) {
@@ -1270,8 +1414,13 @@ trait VisitorBuilder1<'a, T: ParamDescribed>: VisitorBuilderBase<'a, T> {
                 convert!(arr);
             }
             DataType::Utf8 => {
-                let arr: &LargeStringArray = spec_arr.column(index).as_string();
-                convert!(arr);
+                if let Some(arr) = spec_arr.column(index).as_string_opt::<i64>() {
+                    convert!(arr);
+                } else if let Some(arr) = spec_arr.column(index).as_string_opt::<i32>() {
+                    convert!(arr);
+                } else {
+                    panic!("Unsupported data type: {:?}", spec_arr.column(index).data_type());
+                }
             }
             DataType::UInt32 => {
                 let arr: &UInt32Array = spec_arr.column(index).as_primitive();
@@ -1352,8 +1501,13 @@ where
                 convert!(arr);
             }
             DataType::Utf8 => {
-                let arr: &LargeStringArray = spec_arr.column(index).as_string();
-                convert!(arr);
+                if let Some(arr) = spec_arr.column(index).as_string_opt::<i64>() {
+                    convert!(arr);
+                } else if let Some(arr) = spec_arr.column(index).as_string_opt::<i32>() {
+                    convert!(arr);
+                } else {
+                    panic!("Unsupported data type: {:?}", spec_arr.column(index).data_type());
+                }
             }
             DataType::UInt32 => {
                 let arr: &UInt32Array = spec_arr.column(index).as_primitive();
@@ -1370,18 +1524,30 @@ where
     }
 
     fn visit_parameters(&mut self, spec_arr: &StructArray) {
-        let params_array: &LargeListArray =
-            spec_arr.column_by_name("parameters").unwrap().as_list();
+        let params_array =
+            spec_arr.column_by_name("parameters").unwrap();
 
-        for (i, (_, descr)) in self.iter_instances() {
-            let params = params_array.value(i);
-            let params = params.as_struct();
+        macro_rules! process {
+            ($params_array:expr) => {
+                for (i, (_, descr)) in self.iter_instances() {
+                    let params = $params_array.value(i);
+                    let params = ParameterVisitor::new(params.as_struct()).build();
 
-            let params = ParameterVisitor::new(params).build();
+                    for p in params {
+                        descr.add_param(p);
+                    }
+                }
+            };
+        }
 
-            for p in params {
-                descr.add_param(p);
-            }
+        if let Some(arr) = params_array.as_list_opt::<i64>() {
+            process!(arr);
+        }
+        else if let Some(arr) = params_array.as_list_opt::<i32>() {
+            process!(arr);
+        }
+        else {
+            panic!("Unsupported data type: {:?}", params_array.data_type());
         }
     }
 }
@@ -1452,8 +1618,13 @@ where
                 convert!(arr);
             }
             DataType::Utf8 => {
-                let arr: &LargeStringArray = spec_arr.column(index).as_string();
-                convert!(arr);
+                if let Some(arr) = spec_arr.column(index).as_string_opt::<i64>() {
+                    convert!(arr);
+                } else if let Some(arr) = spec_arr.column(index).as_string_opt::<i32>() {
+                    convert!(arr);
+                } else {
+                    panic!("Unsupported data type: {:?}", spec_arr.column(index).data_type());
+                }
             }
             DataType::UInt32 => {
                 let arr: &UInt32Array = spec_arr.column(index).as_primitive();
@@ -1473,19 +1644,30 @@ where
     where
         T: ParamDescribed,
     {
-        let params_array: &LargeListArray =
-            spec_arr.column_by_name("parameters").unwrap().as_list();
+        let params_array =
+            spec_arr.column_by_name("parameters").unwrap();
 
-        for (i, descr) in self.iter_instances() {
-            let descr = descr.description_mut();
-            let params = params_array.value(i);
-            let params = params.as_struct();
+        macro_rules! process {
+            ($params_array:expr) => {
+                for (i, (_, _, descr)) in self.iter_instances() {
+                    let params = $params_array.value(i);
+                    let params = ParameterVisitor::new(params.as_struct()).build();
 
-            let params = ParameterVisitor::new(params).build();
+                    for p in params {
+                        descr.add_param(p);
+                    }
+                }
+            };
+        }
 
-            for p in params {
-                descr.add_param(p);
-            }
+        if let Some(arr) = params_array.as_list_opt::<i64>() {
+            process!(arr);
+        }
+        else if let Some(arr) = params_array.as_list_opt::<i32>() {
+            process!(arr);
+        }
+        else {
+            panic!("Unsupported data type: {:?}", params_array.data_type());
         }
     }
 
@@ -2185,84 +2367,138 @@ impl<'a> MzPrecursorVisitor<'a> {
         let root = spec_arr.column(index).as_struct();
         let schema = IsolationWindowSchema::from_fields(root.fields());
         if let Some(arr) = schema.target.map(|i| root.column(i)) {
-            let arr: &Float32Array = arr.as_primitive();
-            for (offset, descr) in self.iter_instances() {
-                if arr.is_null(offset) {
-                    continue;
-                }
-                let descr = descr.description_mut();
-                descr.isolation_window.target = arr.value(offset);
-                descr.isolation_window.flags = mzdata::spectrum::IsolationWindowState::Explicit;
+            macro_rules! process {
+                ($arr:expr) => {
+                    for (offset, descr) in self.iter_instances() {
+                        if $arr.is_null(offset) {
+                            continue;
+                        }
+                        let descr = descr.description_mut();
+                        descr.isolation_window.target = $arr.value(offset) as f32;
+                        descr.isolation_window.flags = mzdata::spectrum::IsolationWindowState::Explicit;
+                    }
+                };
             }
+            if let Some(arr) = arr.as_primitive_opt::<Float32Type>() {
+                process!(arr);
+            } else if let Some(arr) = arr.as_primitive_opt::<Float64Type>() {
+                process!(arr);
+            } else {
+                panic!("Unsupported data type: {:?}", arr.data_type());
+            }
+
         }
         if let Some(arr) = schema.lower_limit.map(|i| root.column(i)) {
-            let arr: &Float32Array = arr.as_primitive();
-            for (offset, descr) in self.iter_instances() {
-                if arr.is_null(offset) {
-                    continue;
-                }
-                descr.description_mut().isolation_window.lower_bound = arr.value(offset);
-                descr.description_mut().isolation_window.flags =
-                    mzdata::spectrum::IsolationWindowState::Explicit;
+            macro_rules! process {
+                ($arr:expr) => {
+                    for (offset, descr) in self.iter_instances() {
+                        if $arr.is_null(offset) {
+                            continue;
+                        }
+                        let descr = descr.description_mut();
+                        descr.isolation_window.lower_bound = $arr.value(offset) as f32;
+                        descr.isolation_window.flags = mzdata::spectrum::IsolationWindowState::Explicit;
+                    }
+                };
+            }
+            if let Some(arr) = arr.as_primitive_opt::<Float32Type>() {
+                process!(arr);
+            } else if let Some(arr) = arr.as_primitive_opt::<Float64Type>() {
+                process!(arr);
+            } else {
+                panic!("Unsupported data type: {:?}", arr.data_type());
             }
         }
         if let Some(arr) = schema.upper_limit.map(|i| root.column(i)) {
-            let arr: &Float32Array = arr.as_primitive();
-            for (offset, descr) in self.iter_instances() {
-                if arr.is_null(offset) {
-                    continue;
-                }
-                descr.description_mut().isolation_window.upper_bound = arr.value(offset);
-                descr.description_mut().isolation_window.flags =
-                    mzdata::spectrum::IsolationWindowState::Explicit;
+            macro_rules! process {
+                ($arr:expr) => {
+                    for (offset, descr) in self.iter_instances() {
+                        if $arr.is_null(offset) {
+                            continue;
+                        }
+                        let descr = descr.description_mut();
+                        descr.isolation_window.upper_bound = $arr.value(offset) as f32;
+                        descr.isolation_window.flags = mzdata::spectrum::IsolationWindowState::Explicit;
+                    }
+                };
+            }
+            if let Some(arr) = arr.as_primitive_opt::<Float32Type>() {
+                process!(arr);
+            } else if let Some(arr) = arr.as_primitive_opt::<Float64Type>() {
+                process!(arr);
+            } else {
+                panic!("Unsupported data type: {:?}", arr.data_type());
             }
         }
     }
 
     fn visit_activation(&mut self, spec_arr: &StructArray, index: usize) {
         let spec_arr = spec_arr.column(index).as_struct();
-        let params_array: &LargeListArray =
-            spec_arr.column_by_name("parameters").unwrap().as_list();
+        let params_array =
+            spec_arr.column_by_name("parameters").unwrap();
 
-        for (i, descr) in self.iter_instances() {
-            let params = params_array.value(i);
-            let params = params.as_struct();
+        macro_rules! process {
+            ($params_array:expr) => {
+                for (i, descr) in self.iter_instances() {
+                    let params = $params_array.value(i);
+                    let params = params.as_struct();
 
-            let params = ParameterVisitor::new(params).build();
-            let descr = descr.description_mut();
-            for p in params {
-                if let Some(acc) = p.curie() {
-                    match acc {
-                        CURIE {
-                            controlled_vocabulary: mzdata::params::ControlledVocabulary::MS,
-                            accession: 1000045,
-                        } => {
-                            let val: mzdata::params::Value = p.value;
-                            descr.activation.energy = val.to_f32().unwrap();
-                        }
-                        _ => {
-                            if mzdata::spectrum::Activation::is_param_activation(&p) {
-                                descr.activation.methods_mut().push(p.into());
-                            } else {
-                                descr.activation.add_param(p);
+                    let params = ParameterVisitor::new(params).build();
+                    let descr = descr.description_mut();
+                    for p in params {
+                        if let Some(acc) = p.curie() {
+                            match acc {
+                                CURIE {
+                                    controlled_vocabulary: mzdata::params::ControlledVocabulary::MS,
+                                    accession: 1000045,
+                                } => {
+                                    let val: mzdata::params::Value = p.value;
+                                    descr.activation.energy = val.to_f32().unwrap();
+                                }
+                                _ => {
+                                    if mzdata::spectrum::Activation::is_param_activation(&p) {
+                                        descr.activation.methods_mut().push(p.into());
+                                    } else {
+                                        descr.activation.add_param(p);
+                                    }
+                                }
                             }
+                        } else {
+                            descr.activation.add_param(p);
                         }
                     }
-                } else {
-                    descr.activation.add_param(p);
                 }
-            }
+            };
+        }
+
+        if let Some(params_array) = params_array.as_list_opt::<i64>() {
+            process!(params_array);
+        } else if let Some(params_array) = params_array.as_list_opt::<i32>() {
+            process!(params_array);
+        } else {
+            panic!("Unsupported data type: {:?}", params_array.data_type());
         }
     }
 
     fn visit_precursor_id(&mut self, spec_arr: &StructArray, index: usize) {
         let arr = spec_arr.column(index);
-        let arr = arr.as_string::<i64>();
-        for (index, descr) in self.iter_instances() {
-            if arr.is_null(index) {
-                continue;
-            }
-            descr.description_mut().precursor_id = Some(arr.value(index).to_string());
+        // let arr = arr.as_string::<i64>();
+        macro_rules! process {
+            ($arr:expr) => {
+                for (index, descr) in self.iter_instances() {
+                    if $arr.is_null(index) {
+                        continue;
+                    }
+                    descr.description_mut().precursor_id = Some($arr.value(index).to_string());
+                }
+            };
+        }
+        if let Some(arr) = arr.as_string_opt::<i64>() {
+            process!(arr);
+        } else if let Some(arr) = arr.as_string_opt::<i32>() {
+            process!(arr);
+        } else {
+            panic!("Unsupported data type: {:?}", arr.data_type());
         }
     }
 
@@ -2691,35 +2927,60 @@ impl<'a> MzChromatogramBuilder<'a> {
     }
 
     fn visit_id(&mut self, chrom_arr: &StructArray, index: usize) {
-        let arr: &LargeStringArray = chrom_arr.column(index).as_string();
-        for (i, descr) in self
-            .offsets
-            .iter()
-            .copied()
-            .zip(self.descriptions.iter_mut())
-        {
-            let val = arr.value(i);
-            descr.id = val.to_string();
+        macro_rules! process {
+            ($idx_type:ty) => {
+                if let Some(arr) = chrom_arr.column(index).as_string_opt::<$idx_type>() {
+                    for (i, descr) in self
+                        .offsets
+                        .iter()
+                        .copied()
+                        .zip(self.descriptions.iter_mut())
+                    {
+                        let val = arr.value(i);
+                        descr.id = val.to_string();
+                    }
+                    return;
+                }
+            };
         }
+        process!(i64);
+        process!(i32);
+        panic!("Unsupported data type {:?}", chrom_arr.column(index).data_type());
     }
 
     fn visit_polarity(&mut self, chrom_arr: &StructArray, index: usize) {
-        let polarity_arr: &Int8Array = chrom_arr.column(index).as_any().downcast_ref().unwrap();
-        for (i, descr) in self
-            .offsets
-            .iter()
-            .copied()
-            .zip(self.descriptions.iter_mut())
-        {
-            let polarity_val = polarity_arr.value(i);
-            match polarity_val {
-                1 => descr.polarity = ScanPolarity::Positive,
-                -1 => descr.polarity = ScanPolarity::Negative,
-                _ => {
-                    descr.polarity = ScanPolarity::Unknown;
-                }
-            }
+        let arr = chrom_arr.column(index);
+        macro_rules! downcast_run {
+            ($($tp:ty)+) => {
+                $(
+                    if let Some(array) = arr.as_primitive_opt::<$tp>() {
+                        for (i, descr) in self
+                            .offsets
+                            .iter()
+                            .copied()
+                            .zip(self.descriptions.iter_mut())
+                        {
+                            let polarity_val = array.value(i);
+                            match polarity_val {
+                                1 => descr.polarity = ScanPolarity::Positive,
+                                -1 => descr.polarity = ScanPolarity::Negative,
+                                _ => {
+                                    descr.polarity = ScanPolarity::Unknown;
+                                }
+                            }
+                        }
+                        return;
+                    }
+                )+
+            };
         }
+
+        downcast_run!(
+            Int8Type
+            Int32Type
+            Int32Type
+            Int64Type
+        );
     }
 
     fn visit_chromatogram_type(&mut self, spec_arr: &StructArray, index: usize) {

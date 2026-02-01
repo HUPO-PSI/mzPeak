@@ -104,17 +104,30 @@ pub(crate) async fn build_spectrum_index<T: AsyncArchiveSource>(
 
     while let Some(batch) = stream.next().await.transpose()? {
         let root = batch.column(0).as_struct();
-        let ids = root.column_by_name("id").unwrap().as_string::<i64>();
         let indices: &UInt64Array = root
             .column_by_name("index")
             .unwrap()
             .as_any()
             .downcast_ref()
             .unwrap();
-        for (id, idx) in ids.iter().zip(indices.iter()) {
-            if let Some(id) = id {
-                spectrum_id_index.insert(id, idx.unwrap());
+        let ids = root.column_by_name("id").unwrap();
+        macro_rules! read_ids {
+            ($ids:expr) => {
+                for (id, idx) in $ids.iter().zip(indices.iter()) {
+                    if let Some(id) = id {
+                        spectrum_id_index.insert(id, idx.unwrap());
+                    }
+                }
             }
+        }
+        if let Some(ids) = ids.as_string_opt::<i64>() {
+            read_ids!(ids);
+        }
+        else if let Some(ids) = ids.as_string_opt::<i32>() {
+            read_ids!(ids);
+        }
+        else {
+            panic!("Unsupported data type: {:?}", ids.data_type());
         }
     }
     spectrum_id_index.init = true;
@@ -883,12 +896,20 @@ impl<
         while let Some(bat) = reader.next().await.transpose().unwrap() {
             let root = bat.column(0);
             let root = root.as_struct();
-            let data = root.column(1).as_list::<i64>();
-            let data = data.values().as_struct();
-            let arrays = AuxiliaryArrayVisitor::default().visit(data);
-            results.extend(arrays);
+            if let Some(data) = root.column(1).as_list_opt::<i64>() {
+                let data = data.values().as_struct();
+                let arrays = AuxiliaryArrayVisitor::default().visit(data);
+                results.extend(arrays);
+            }
+            else if let Some(data) = root.column(1).as_list_opt::<i32>() {
+                let data = data.values().as_struct();
+                let arrays = AuxiliaryArrayVisitor::default().visit(data);
+                results.extend(arrays);
+            }
+            else {
+                panic!();
+            }
         }
-
         results
     }
 

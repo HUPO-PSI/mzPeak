@@ -145,17 +145,31 @@ pub(crate) fn build_spectrum_index<T: ArchiveSource>(
         .flatten()
     {
         let root = batch.column(0).as_struct();
-        let ids = root.column_by_name("id").unwrap().as_string::<i64>();
+
         let indices: &UInt64Array = root
             .column_by_name("index")
             .unwrap()
             .as_any()
             .downcast_ref()
             .unwrap();
-        for (id, idx) in ids.iter().zip(indices.iter()) {
-            if let Some(id) = id {
-                spectrum_id_index.insert(id, idx.unwrap());
+        let ids = root.column_by_name("id").unwrap();
+        macro_rules! read_ids {
+            ($ids:expr) => {
+                for (id, idx) in $ids.iter().zip(indices.iter()) {
+                    if let Some(id) = id {
+                        spectrum_id_index.insert(id, idx.unwrap());
+                    }
+                }
             }
+        }
+        if let Some(ids) = ids.as_string_opt::<i64>() {
+            read_ids!(ids);
+        }
+        else if let Some(ids) = ids.as_string_opt::<i32>() {
+            read_ids!(ids);
+        }
+        else {
+            panic!("Unsupported data type: {:?}", ids.data_type());
         }
     }
     spectrum_id_index.init = true;
@@ -1616,43 +1630,52 @@ impl DeltaModelDecoder {
     pub fn decode_batch(&mut self, batch: &RecordBatch) {
         let root = batch.column(0).as_struct();
         let index_array: &UInt64Array = root.column(0).as_primitive();
+        let col = root.column(1);
 
-        if let Some(val_array) = root.column(1).as_list_opt::<i64>() {
-            match val_array.value_type() {
-                DataType::Float32 => {
-                    for (i, val) in index_array.iter().zip(val_array.iter()) {
-                        if let Some(i) = i {
-                            self.model_parameters[i as usize] = val.map(|v| -> Vec<f64> {
-                                v.as_primitive::<Float32Type>()
-                                    .iter()
-                                    .map(|i| i.unwrap() as f64)
-                                    .collect()
-                            });
+        macro_rules! process_list {
+            ($val_array:expr) => {
+                match $val_array.value_type() {
+                    DataType::Float32 => {
+                        for (i, val) in index_array.iter().zip($val_array.iter()) {
+                            if let Some(i) = i {
+                                self.model_parameters[i as usize] = val.map(|v| -> Vec<f64> {
+                                    v.as_primitive::<Float32Type>()
+                                        .iter()
+                                        .map(|i| i.unwrap() as f64)
+                                        .collect()
+                                }).filter(|v| !v.is_empty());
+                            }
                         }
                     }
-                }
-                DataType::Float64 => {
-                    for (i, val) in index_array.iter().zip(val_array.iter()) {
-                        if let Some(i) = i {
-                            self.model_parameters[i as usize] = val.map(|v| -> Vec<f64> {
-                                let val = v.as_primitive::<Float64Type>();
-                                val.values().to_vec()
-                            });
+                    DataType::Float64 => {
+                        for (i, val) in index_array.iter().zip($val_array.iter()) {
+                            if let Some(i) = i {
+                                self.model_parameters[i as usize] = val.map(|v| -> Vec<f64> {
+                                    let val = v.as_primitive::<Float64Type>();
+                                    val.values().to_vec()
+                                }).filter(|v| !v.is_empty());
+                            }
                         }
                     }
+                    _ => {}
                 }
-                _ => {}
-            }
-        } else if let Some(val_array) = root.column(1).as_primitive_opt::<Float32Type>() {
+            };
+        }
+
+        if let Some(val_array) = col.as_list_opt::<i64>() {
+            process_list!(val_array);
+        }  else if let Some(val_array) = col.as_list_opt::<i32>() {
+            process_list!(val_array);
+        } else if let Some(val_array) = col.as_primitive_opt::<Float32Type>() {
             for (i, val) in index_array.iter().zip(val_array) {
                 if let Some(i) = i {
-                    self.model_parameters[i as usize] = val.map(|v| vec![v as f64]);
+                    self.model_parameters[i as usize] = val.map(|v| vec![v as f64]).filter(|v| !v.is_empty());
                 }
             }
-        } else if let Some(val_array) = root.column(1).as_primitive_opt::<Float64Type>() {
+        } else if let Some(val_array) = col.as_primitive_opt::<Float64Type>() {
             for (i, val) in index_array.iter().zip(val_array) {
                 if let Some(i) = i {
-                    self.model_parameters[i as usize] = val.map(|v| vec![v]);
+                    self.model_parameters[i as usize] = val.map(|v| vec![v]).filter(|v| !v.is_empty());
                 }
             }
         }
