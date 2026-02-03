@@ -1318,7 +1318,7 @@ impl VisitorBase for SelectedIonBuilder {
                 ),
                 DataType::Float32
             ),
-            field!("ion_mobility", DataType::Float64),
+            field!("ion_mobility_value", DataType::Float64),
             field!("ion_mobility_type", self.ion_mobility_type.as_struct_type()),
         ];
         fields.extend(self.parameters.fields());
