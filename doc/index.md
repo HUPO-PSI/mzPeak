@@ -70,11 +70,11 @@ to re-use concepts like controlled vocabularies where feasible as well as arbitr
 Components of an mzPeak archive:
 
 - `mzpeak_index.json`: Definition of the files present in the archive, encoded as JSON. This makes resolving files by controlled terms easier than matching file names.
-- `spectra_metadata.mzpeak`: Spectrum level metadata and file-level metadata. Includes spectrum descriptions, scans, precursors, and selected ions using packed parallel tables.
-- `spectra_data.mzpeak`: Spectrum signal data in either profile or centroid mode. May be in point layout or chunked layout which have different size and random access characteristics.
-- `spectra_peaks.mzpeak` (optional): Spectrum centroids stored explicitly separately from whatever signal is in `spectra_data.mzpeak`, such as from instrument vendors who store both profile and centroid versions of the same spectra. This file may not always be present.
-- `chromatograms_metadata.mzpeak`: Chromatogram-level metadata and file-level metadata. Includes chromatogram descriptions, as well as precursors and selected ions using packed parallel tables.
-- `chromatograms_data.mzpeak`: Chromatogram signal data. May be in point layout or chunked layout which have different size and random access characteristics. Intensity measures with different units may be stored in parallel.
+- `spectra_metadata.parquet`: Spectrum level metadata and file-level metadata. Includes spectrum descriptions, scans, precursors, and selected ions using packed parallel tables.
+- `spectra_data.parquet`: Spectrum signal data in either profile or centroid mode. May be in point layout or chunked layout which have different size and random access characteristics.
+- `spectra_peaks.parquet` (optional): Spectrum centroids stored explicitly separately from whatever signal is in `spectra_data.parquet`, such as from instrument vendors who store both profile and centroid versions of the same spectra. This file may not always be present.
+- `chromatograms_metadata.parquet`: Chromatogram-level metadata and file-level metadata. Includes chromatogram descriptions, as well as precursors and selected ions using packed parallel tables.
+- `chromatograms_data.parquet`: Chromatogram signal data. May be in point layout or chunked layout which have different size and random access characteristics. Intensity measures with different units may be stored in parallel.
 
 ### A brief note about code snippets found in this document.
 
@@ -126,7 +126,7 @@ If an mzPeak archive is stored in an unpacked directory, the directory name is t
 
 ## Packed Parallel Metadata Tables
 
-The `spectra_metadata.mzpeak` and `chromatograms_metadata.mzpeak` store multiple schemas in parallel. In these Parquet files, the root schema is made up of several branched "group" or "struct" (Parquet vs. Arrow nomenclature) that may be null at any level. We use relational database language, specifically, "primary key" and "foreign key" to describe the interconnections between the different tables that are packed together here.
+The `spectra_metadata.parquet` and `chromatograms_metadata.parquet` store multiple schemas in parallel. In these Parquet files, the root schema is made up of several branched "group" or "struct" (Parquet vs. Arrow nomenclature) that may be null at any level. We use relational database language, specifically, "primary key" and "foreign key" to describe the interconnections between the different tables that are packed together here.
 
 Here is a stripped down example where two rows of related MS1 and MS2 spectra. Treat `scan.source_index`, `precursor.source_index`, `precursor.precursor_index`, `selected_ion.source_index`, and `selected_ion.precursor_index` as a foreign key with respect to `spectrum.index`, a primary key. `precursor.source_index` refers to the `spectrum` which this `precursor` record belongs to and `precursor.precursor_index` refers to the `spectrum` that is that _is_ the precursor of the `spectrum` referenced by `precursor.source_index`, and (`precursor.source_index`, `precursor.precursor_index`) forms a compound primary key. Any of these columns may be `null` which means that such a record does not exist in the table. This also applies to the `selected_ion` facet.
 
