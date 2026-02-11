@@ -189,6 +189,7 @@ pub struct MetaParam {
         deserialize_with = "opt_curie_deserialize"
     )]
     pub accession: Option<CURIE>,
+    #[serde(default)]
     pub value: serde_json::Value,
     #[serde(
         serialize_with = "opt_curie_serialize",

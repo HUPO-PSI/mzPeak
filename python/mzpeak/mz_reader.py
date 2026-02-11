@@ -133,7 +133,7 @@ class _DataIndex:
                 for i in range(self.meta.num_row_groups):
                     rg = self.meta.row_group(i)
                     col_idx = rg.column(self.index_i)
-                    if col_idx.statistics.has_min_max:
+                    if col_idx.statistics and col_idx.statistics.has_min_max:
                         self.row_group_index_ranges.append(
                             Span(col_idx.statistics.min, col_idx.statistics.max)
                         )

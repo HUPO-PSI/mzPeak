@@ -459,6 +459,7 @@ impl ParquetIndexExtractor {
 pub(crate) fn load_indices_from<T: ArchiveSource>(
     handle: &mut ArchiveReader<T>,
 ) -> io::Result<(ReaderMetadata, QueryIndex)> {
+    log::trace!("Loading indices");
     let spectrum_metadata_reader = handle.spectrum_metadata()?;
     let spectrum_data_reader = handle.spectra_data()?;
 
@@ -466,20 +467,26 @@ pub(crate) fn load_indices_from<T: ArchiveSource>(
     let spectrum_id_index = build_spectrum_index(&handle, pq_schema)?;
 
     let mut this = ParquetIndexExtractor::default();
+    log::trace!("Loading spectrum metadata indices");
     this.visit_spectrum_metadata_reader(spectrum_metadata_reader)?;
+    log::trace!("Loading spectrum data indices");
     this.visit_spectrum_data_reader(spectrum_data_reader)?;
 
     if let Ok(chromatogram_metadata_reader) = handle.chromatograms_metadata() {
+        log::trace!("Loading chromatogram metadata indices");
         this.visit_chromatogram_metadata_reader(chromatogram_metadata_reader)?;
     }
     if let Ok(chromatogram_data_reader) = handle.chromatograms_data() {
+        log::trace!("Loading chromatogram indices");
         this.visit_chromatogram_data_reader(chromatogram_data_reader)?;
     }
 
     handle
         .spectrum_peaks()
         .ok()
-        .and_then(|r| this.visit_spectrum_peaks(r).ok());
+        .and_then(|r| this.visit_spectrum_peaks(r).inspect_err(|e| {
+            log::trace!("Failed to load spectrum peak indices: {e}");
+        }).ok());
 
     let bundle = ReaderMetadata::new(
         this.mz_metadata,
@@ -494,7 +501,7 @@ pub(crate) fn load_indices_from<T: ArchiveSource>(
         this.chromatogram_metadata_mapping,
         this.peak_metadata,
     );
-
+    log::trace!("Finished loading reader metadata");
     Ok((bundle, this.query_index))
 }
 

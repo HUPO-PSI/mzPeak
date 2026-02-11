@@ -184,6 +184,7 @@ class _AuxiliaryArrayDecoder:
             name = name_param["value"]
         else:
             name = name_param["name"]
+        unit = arr['unit']
         parameters = [_format_param(v) for v in arr.get("parameters", [])]
         data: np.ndarray = cls.compression[compression_acc](data)
         if cls.ascii_code != dtype_acc:
@@ -191,7 +192,7 @@ class _AuxiliaryArrayDecoder:
         else:
             data = bytearray(data).strip().split(b"\0")
             data = np.array(data, dtype=np.object_)
-        return AuxiliaryArray(name, data, parameters)
+        return AuxiliaryArray(name, data, parameters, unit)
 
     @classmethod
     def _unpack(cls, spec: dict):
@@ -201,6 +202,9 @@ class _AuxiliaryArrayDecoder:
                 for v in auxiliary_arrays:
                     v = _AuxiliaryArrayDecoder.decode(v)
                     spec[v.name] = v.values
+                    spec[f"{v.name} unit"] = v.unit
+                    if v.parameters:
+                        spec[f"{v.name} parameters"] = v.parameters
 
 
 @dataclass
@@ -222,6 +226,7 @@ class AuxiliaryArray:
     name: str
     values: np.ndarray
     parameters: list[dict]
+    unit: Optional[str] = None
 
 
 class _PrecursorReadMixin:
@@ -237,7 +242,7 @@ class _PrecursorReadMixin:
         for i in range(self.meta.num_row_groups):
             rg = self.meta.row_group(i)
             col_idx = rg.column(self.precursor_index_i)
-            if col_idx.statistics.has_min_max:
+            if col_idx.statistics and col_idx.statistics.has_min_max:
                 table: pa.Table = self.handle.read_row_group(i, columns=["precursor"])
                 bats = table["precursor"].chunks
                 for bat in bats:
@@ -266,7 +271,7 @@ class _PrecursorReadMixin:
         for i in range(self.meta.num_row_groups):
             rg = self.meta.row_group(i)
             col_idx = rg.column(self.selected_ion_i)
-            if col_idx.statistics.has_min_max:
+            if col_idx.statistics and col_idx.statistics.has_min_max:
                 table = self.handle.read_row_group(i, columns=["selected_ion"])
                 bats = table["selected_ion"].chunks
                 for bat in bats:
@@ -424,7 +429,7 @@ class MzPeakSpectrumMetadataReader(_PrecursorReadMixin):
         for i in range(self.meta.num_row_groups):
             rg = self.meta.row_group(i)
             col_idx = rg.column(self.spectrum_index_i)
-            if col_idx.statistics.has_min_max:
+            if col_idx.statistics and col_idx.statistics.has_min_max:
                 table = self.handle.read_row_group(i, columns=["spectrum"])
                 bats = table["spectrum"].chunks
                 for bat in bats:
@@ -458,7 +463,7 @@ class MzPeakSpectrumMetadataReader(_PrecursorReadMixin):
         for i in range(self.meta.num_row_groups):
             rg = self.meta.row_group(i)
             col_idx = rg.column(self.scan_index_i)
-            if col_idx.statistics.has_min_max:
+            if col_idx.statistics and col_idx.statistics.has_min_max:
                 table = self.handle.read_row_group(i, columns=["scan"])
                 bats = table["scan"].chunks
                 for bat in bats:
@@ -596,7 +601,7 @@ class MzPeakChromatogramMetadataReader(_PrecursorReadMixin):
         for i in range(self.meta.num_row_groups):
             rg = self.meta.row_group(i)
             col_idx = rg.column(self.chromatogram_index_i)
-            if col_idx.statistics.has_min_max:
+            if col_idx.statistics and col_idx.statistics.has_min_max:
                 table = self.handle.read_row_group(i, columns=["chromatogram"])
                 bats = table["chromatogram"].chunks
                 for bat in bats:
