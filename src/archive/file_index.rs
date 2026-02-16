@@ -5,7 +5,7 @@ use serde_with::DeserializeFromStr;
 
 
 /// The facet of the thing being described in this file
-#[derive(Debug, Serialize, DeserializeFromStr, Clone)]
+#[derive(Debug, Serialize, DeserializeFromStr, Clone, PartialEq, Eq)]
 pub enum DataKind {
     #[serde(rename="data arrays")]
     DataArray,
@@ -36,15 +36,19 @@ impl FromStr for DataKind {
 
 
 /// The things being described in one facet or another by this file
-#[derive(Debug, Serialize, DeserializeFromStr, Clone)]
+#[derive(Debug, Serialize, DeserializeFromStr, Clone, PartialEq, Eq)]
 pub enum EntityType {
     #[serde(rename="spectrum")]
+    #[serde(alias="mass spectrum")]
     Spectrum,
     #[serde(rename="chromatogram")]
     Chromatogram,
+    #[serde(rename="wavelength spectrum")]
+    WavelengthSpectrum,
     #[serde(rename="other")]
     Other(String),
 }
+
 
 impl FromStr for EntityType {
     type Err = &'static str;
@@ -52,6 +56,8 @@ impl FromStr for EntityType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s.to_lowercase().trim() {
             "spectrum" => Self::Spectrum,
+            "mass spectrum" => Self::Spectrum,
+            "wavelength spectrum" => Self::WavelengthSpectrum,
             "chromatogram" => Self::Chromatogram,
             "other" => Self::Other("other".into()),
             _ => {
@@ -64,7 +70,7 @@ impl FromStr for EntityType {
 
 
 /// A single file in the mzPeak archive of a certain type
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct FileEntry {
     /// The name of the file, relative to the root of the archive
     pub name: String,

@@ -48,19 +48,48 @@ use parquet::{
 };
 
 #[derive(Debug, Clone)]
-pub struct ReaderMetadata {
-    pub(crate) mz_metadata: mzdata::meta::FileMetadataConfig,
-    pub(crate) spectrum_array_indices: Arc<ArrayIndex>,
-    pub(crate) chromatogram_array_indices: Arc<ArrayIndex>,
-    pub(crate) spectrum_id_index: OffsetIndex,
+pub struct SpectrumMetadata {
+    pub(crate) array_indices: Arc<ArrayIndex>,
+    pub(crate) id_index: OffsetIndex,
     pub(crate) mz_model_deltas: Vec<Option<Vec<f64>>>,
-    pub(crate) spectrum_auxiliary_array_counts: Vec<u32>,
-    pub(crate) chromatogram_auxiliary_array_counts: Vec<u32>,
+    pub(crate) auxiliary_array_counts: Vec<u32>,
     pub(crate) spectrum_metadata_map: Option<MetadataColumnCollection>,
     pub(crate) scan_metadata_map: Option<MetadataColumnCollection>,
     pub(crate) selected_ion_metadata_map: Option<MetadataColumnCollection>,
-    pub(crate) chromatogram_metadata_map: Option<MetadataColumnCollection>,
     pub(crate) peak_indices: Option<PeakMetadata>,
+}
+
+impl SpectrumMetadata {
+    pub fn new(
+        spectrum_array_indices: Arc<ArrayIndex>,
+        spectrum_id_index: OffsetIndex,
+        mz_model_deltas: Vec<Option<Vec<f64>>>,
+        spectrum_auxiliary_array_counts: Vec<u32>,
+        spectrum_metadata_map: Option<MetadataColumnCollection>,
+        scan_metadata_map: Option<MetadataColumnCollection>,
+        selected_ion_metadata_map: Option<MetadataColumnCollection>,
+        peak_indices: Option<PeakMetadata>,
+    ) -> Self {
+        Self {
+            array_indices: spectrum_array_indices,
+            id_index: spectrum_id_index,
+            mz_model_deltas,
+            auxiliary_array_counts: spectrum_auxiliary_array_counts,
+            spectrum_metadata_map,
+            scan_metadata_map,
+            selected_ion_metadata_map,
+            peak_indices,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ReaderMetadata {
+    pub(crate) mz_metadata: mzdata::meta::FileMetadataConfig,
+    pub(crate) spectra: SpectrumMetadata,
+    pub(crate) chromatogram_array_indices: Arc<ArrayIndex>,
+    pub(crate) chromatogram_auxiliary_array_counts: Vec<u32>,
+    pub(crate) chromatogram_metadata_map: Option<MetadataColumnCollection>,
 }
 
 impl ReaderMetadata {
@@ -77,24 +106,29 @@ impl ReaderMetadata {
         chromatogram_metadata_map: Option<MetadataColumnCollection>,
         peak_indices: Option<PeakMetadata>,
     ) -> Self {
-        Self {
-            mz_metadata,
+
+        let spectra = SpectrumMetadata::new(
             spectrum_array_indices,
-            chromatogram_array_indices,
             spectrum_id_index,
-            mz_model_deltas: model_deltas,
+            model_deltas,
             spectrum_auxiliary_array_counts,
             spectrum_metadata_map,
             scan_metadata_map,
             selected_ion_metadata_map,
+            peak_indices
+        );
+
+        Self {
+            mz_metadata,
+            spectra,
+            chromatogram_array_indices,
             chromatogram_metadata_map,
-            peak_indices,
             chromatogram_auxiliary_array_counts: Vec::new(),
         }
     }
 
     pub fn model_deltas_for(&self, index: usize) -> Option<RegressionDeltaModel<f64>> {
-        self.mz_model_deltas
+        self.spectra.mz_model_deltas
             .get(index)
             .cloned()
             .unwrap_or_default()
@@ -102,7 +136,7 @@ impl ReaderMetadata {
     }
 
     pub fn spectrum_auxiliary_array_counts(&self) -> &[u32] {
-        &self.spectrum_auxiliary_array_counts
+        &self.spectra.auxiliary_array_counts
     }
 
     pub fn chromatogram_auxiliary_array_counts(&self) -> &[u32] {
@@ -110,11 +144,11 @@ impl ReaderMetadata {
     }
 
     pub fn peak_array_indices(&self) -> Option<&ArrayIndex> {
-        self.peak_indices.as_ref().map(|v| &v.array_indices)
+        self.spectra.peak_indices.as_ref().map(|v| &v.array_indices)
     }
 
     pub fn spectrum_array_indices(&self) -> &ArrayIndex {
-        &self.spectrum_array_indices
+        &self.spectra.array_indices
     }
 
     pub fn chromatogram_array_indices(&self) -> &ArrayIndex {
@@ -160,15 +194,13 @@ pub(crate) fn build_spectrum_index<T: ArchiveSource>(
                         spectrum_id_index.insert(id, idx.unwrap());
                     }
                 }
-            }
+            };
         }
         if let Some(ids) = ids.as_string_opt::<i64>() {
             read_ids!(ids);
-        }
-        else if let Some(ids) = ids.as_string_opt::<i32>() {
+        } else if let Some(ids) = ids.as_string_opt::<i32>() {
             read_ids!(ids);
-        }
-        else {
+        } else {
             panic!("Unsupported data type: {:?}", ids.data_type());
         }
     }
@@ -222,16 +254,18 @@ pub(crate) struct ParquetIndexExtractor {
     pub mz_metadata: meta::FileMetadataConfig,
 
     pub spectrum_array_indices: ArrayIndex,
-    pub chromatogram_array_indices: ArrayIndex,
 
     pub spectrum_metadata_mapping: Option<MetadataColumnCollection>,
     pub scan_metadata_mapping: Option<MetadataColumnCollection>,
     pub selected_ion_metadata_mapping: Option<MetadataColumnCollection>,
+    pub peak_metadata: Option<PeakMetadata>,
+
+
+    pub chromatogram_array_indices: ArrayIndex,
     pub chromatogram_metadata_mapping: Option<MetadataColumnCollection>,
 
     pub query_index: QueryIndex,
 
-    pub peak_metadata: Option<PeakMetadata>,
 }
 
 impl ParquetIndexExtractor {
@@ -481,12 +515,13 @@ pub(crate) fn load_indices_from<T: ArchiveSource>(
         this.visit_chromatogram_data_reader(chromatogram_data_reader)?;
     }
 
-    handle
-        .spectrum_peaks()
-        .ok()
-        .and_then(|r| this.visit_spectrum_peaks(r).inspect_err(|e| {
-            log::trace!("Failed to load spectrum peak indices: {e}");
-        }).ok());
+    handle.spectrum_peaks().ok().and_then(|r| {
+        this.visit_spectrum_peaks(r)
+            .inspect_err(|e| {
+                log::trace!("Failed to load spectrum peak indices: {e}");
+            })
+            .ok()
+    });
 
     let bundle = ReaderMetadata::new(
         this.mz_metadata,
@@ -727,7 +762,7 @@ pub struct SpectrumMetadataDecoder<'a> {
     pub precursors: Vec<DoubleIndexed<Precursor>>,
     pub selected_ions: Vec<DoubleIndexed<SelectedIon>>,
     pub scan_events: Vec<Indexed<ScanEvent>>,
-    metadata: &'a ReaderMetadata,
+    metadata: &'a SpectrumMetadata,
 }
 
 fn segment_by_index_array(
@@ -744,7 +779,7 @@ fn segment_by_index_array(
 }
 
 impl<'a> SpectrumMetadataDecoder<'a> {
-    pub fn new(metadata: &'a ReaderMetadata) -> Self {
+    pub fn new(metadata: &'a SpectrumMetadata) -> Self {
         Self {
             descriptions: Vec::new(),
             precursors: Vec::new(),
@@ -1215,6 +1250,7 @@ impl<'a> ChromatogramMetadataDecoder<'a> {
     ) {
         let metacols = self
             .metadata
+            .spectra
             .selected_ion_metadata_map
             .as_deref()
             .unwrap_or(&EMPTY_FIELDS);
@@ -1645,22 +1681,26 @@ impl DeltaModelDecoder {
                     DataType::Float32 => {
                         for (i, val) in index_array.iter().zip($val_array.iter()) {
                             if let Some(i) = i {
-                                self.model_parameters[i as usize] = val.map(|v| -> Vec<f64> {
-                                    v.as_primitive::<Float32Type>()
-                                        .iter()
-                                        .map(|i| i.unwrap() as f64)
-                                        .collect()
-                                }).filter(|v| !v.is_empty());
+                                self.model_parameters[i as usize] = val
+                                    .map(|v| -> Vec<f64> {
+                                        v.as_primitive::<Float32Type>()
+                                            .iter()
+                                            .map(|i| i.unwrap() as f64)
+                                            .collect()
+                                    })
+                                    .filter(|v| !v.is_empty());
                             }
                         }
                     }
                     DataType::Float64 => {
                         for (i, val) in index_array.iter().zip($val_array.iter()) {
                             if let Some(i) = i {
-                                self.model_parameters[i as usize] = val.map(|v| -> Vec<f64> {
-                                    let val = v.as_primitive::<Float64Type>();
-                                    val.values().to_vec()
-                                }).filter(|v| !v.is_empty());
+                                self.model_parameters[i as usize] = val
+                                    .map(|v| -> Vec<f64> {
+                                        let val = v.as_primitive::<Float64Type>();
+                                        val.values().to_vec()
+                                    })
+                                    .filter(|v| !v.is_empty());
                             }
                         }
                     }
@@ -1671,18 +1711,20 @@ impl DeltaModelDecoder {
 
         if let Some(val_array) = col.as_list_opt::<i64>() {
             process_list!(val_array);
-        }  else if let Some(val_array) = col.as_list_opt::<i32>() {
+        } else if let Some(val_array) = col.as_list_opt::<i32>() {
             process_list!(val_array);
         } else if let Some(val_array) = col.as_primitive_opt::<Float32Type>() {
             for (i, val) in index_array.iter().zip(val_array) {
                 if let Some(i) = i {
-                    self.model_parameters[i as usize] = val.map(|v| vec![v as f64]).filter(|v| !v.is_empty());
+                    self.model_parameters[i as usize] =
+                        val.map(|v| vec![v as f64]).filter(|v| !v.is_empty());
                 }
             }
         } else if let Some(val_array) = col.as_primitive_opt::<Float64Type>() {
             for (i, val) in index_array.iter().zip(val_array) {
                 if let Some(i) = i {
-                    self.model_parameters[i as usize] = val.map(|v| vec![v]).filter(|v| !v.is_empty());
+                    self.model_parameters[i as usize] =
+                        val.map(|v| vec![v]).filter(|v| !v.is_empty());
                 }
             }
         }

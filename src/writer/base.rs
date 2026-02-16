@@ -1,6 +1,9 @@
 use std::{fs, io, sync::Arc};
 
-use arrow::{array::Array, datatypes::SchemaRef};
+use arrow::{
+    array::Array,
+    datatypes::{Schema, SchemaRef},
+};
 use mzdata::{
     prelude::*,
     spectrum::{
@@ -9,11 +12,13 @@ use mzdata::{
     },
 };
 use parquet::{
-    arrow::ArrowSchemaConverter,
+    arrow::{ArrowSchemaConverter, ArrowWriter},
     basic::{Compression, Encoding, ZstdLevel},
-    file::metadata::SortingColumn,
-    file::properties::{
-        DEFAULT_DICTIONARY_PAGE_SIZE_LIMIT, EnabledStatistics, WriterProperties, WriterVersion,
+    file::{
+        metadata::SortingColumn,
+        properties::{
+            DEFAULT_DICTIONARY_PAGE_SIZE_LIMIT, EnabledStatistics, WriterProperties, WriterVersion,
+        },
     },
 };
 
@@ -22,11 +27,11 @@ use crate::{
     buffer_descriptors::BufferPriority,
     chunk_series::{ArrowArrayChunk, ChunkingStrategy},
     filter::select_delta_model,
-    peak_series::{MZ_ARRAY, array_map_to_schema_arrays_and_excess},
+    peak_series::{INTENSITY_ARRAY, MZ_ARRAY, WAVELENGTH_ARRAY, array_map_to_schema_arrays_and_excess},
     spectrum::AuxiliaryArray,
     writer::{
-        ArrayBufferWriter, ArrayBufferWriterVariants, ChromatogramBuilder, MiniPeakWriterType,
-        SpectrumBuilder, WriteBatchConfig,
+        ArrayBufferWriter, ArrayBufferWriterVariants, ArrayBuffersBuilder, ChromatogramBuilder,
+        MiniPeakWriterType, SpectrumBuilder, WavelengthSpectrumBuilder, WriteBatchConfig,
     },
 };
 
@@ -117,13 +122,149 @@ impl EntryMetadataDerivedFromData {
     }
 }
 
+pub struct GenericDataArrayWriter {
+    data_buffers: ArrayBufferWriterVariants,
+}
+
+impl GenericDataArrayWriter {
+    pub fn new(data_buffers: ArrayBufferWriterVariants) -> Self {
+        Self { data_buffers }
+    }
+
+    /// Fit an [`MZDeltaModel`] instance on the provided (sparse) spectrum signal, and return the parameter
+    /// buffer.
+    ///
+    /// If an intensity array is available, it will be used to weight the parameter estimation procedure.
+    ///
+    /// If no m/z array is available, `None` is returned
+    fn build_delta_model(&self, binary_array_map: &BinaryArrayMap) -> Option<Vec<f64>> {
+        if let Ok(mzs) = binary_array_map.mzs() {
+            let delta_model = if let Ok(ints) = binary_array_map.intensities() {
+                let weights: Vec<f64> =
+                    ints.iter().map(|i| (*i + 1.0).ln().sqrt() as f64).collect();
+                select_delta_model(&mzs, Some(&weights))
+            } else {
+                select_delta_model(&mzs, None)
+            };
+            Some(delta_model)
+        } else {
+            None
+        }
+    }
+
+    pub fn use_chunked_encoding(&self) -> Option<&ChunkingStrategy> {
+        self.data_buffers.chunking_strategy()
+    }
+
+    pub fn write_data_arrays(
+        &mut self,
+        binary_array_map: &BinaryArrayMap,
+        is_profile: bool,
+        series_time: Option<f32>,
+        series_index: u64,
+    ) -> io::Result<EntryMetadataDerivedFromData> {
+        let main_axis_array = binary_array_map
+            .get(&self.data_buffers.buffer_context().default_sorted_array())
+            .unwrap();
+        let n_points = main_axis_array.data_len()?;
+
+        let main_axis_name =
+            BufferName::from_data_array(self.data_buffers.buffer_context(), main_axis_array);
+
+        let delta_model = if self.data_buffers.nullify_zero_intensity() {
+            self.build_delta_model(binary_array_map)
+        } else {
+            None
+        };
+
+        let extra_arrays = if let Some(chunk_encoding) = self.use_chunked_encoding().copied() {
+            let buffer = &mut self.data_buffers;
+
+            let (chunks, auxiliary_arrays) = ArrowArrayChunk::from_arrays(
+                series_index,
+                series_time,
+                main_axis_name.with_priority(Some(BufferPriority::Primary)),
+                binary_array_map,
+                chunk_encoding,
+                buffer.overrides(),
+                buffer.drop_zero_intensity(),
+                buffer.nullify_zero_intensity(),
+                Some(buffer.fields()),
+            )?;
+            if !chunks.is_empty() {
+                let chunks = ArrowArrayChunk::to_struct_array(
+                    &chunks,
+                    buffer.buffer_context(),
+                    buffer.schema().fields(),
+                    &[chunk_encoding, ChunkingStrategy::Basic { chunk_size: 50.0 }],
+                    series_time.is_some(),
+                );
+                let size = chunks.len();
+                let (fields, arrays, _nulls) = chunks.into_parts();
+                buffer.add_arrays(fields, arrays, size, is_profile);
+            }
+
+            Some(auxiliary_arrays)
+        } else {
+            let buffer = &mut self.data_buffers;
+            let (fields, data, auxiliary_arrays) = array_map_to_schema_arrays_and_excess(
+                buffer.buffer_context(),
+                binary_array_map,
+                n_points,
+                series_index,
+                series_time,
+                Some(buffer.fields()),
+                buffer.overrides(),
+            )?;
+
+            buffer.add_arrays(fields, data, n_points, is_profile);
+            for aux in auxiliary_arrays.iter() {
+                log::debug!("{:?} {:?} {:?}", aux.name, aux.data_type, aux.unit);
+            }
+            Some(auxiliary_arrays)
+        };
+
+        Ok(EntryMetadataDerivedFromData::new(delta_model, extra_arrays))
+    }
+
+    pub fn point_count(&self) -> u64 {
+        self.data_buffers.point_count()
+    }
+
+    pub fn as_array_index(&self) -> crate::peak_series::ArrayIndex {
+        self.data_buffers.as_array_index()
+    }
+
+    pub fn schema(&self) -> &Arc<Schema> {
+        self.data_buffers.schema()
+    }
+
+    pub fn buffers(&self) -> &ArrayBufferWriterVariants {
+        &self.data_buffers
+    }
+
+    pub fn drain_into<W: io::Write + Send>(
+        &mut self,
+        writer: &mut ArrowWriter<W>,
+    ) -> io::Result<()> {
+        let use_chunks = self.use_chunked_encoding().is_some();
+        for batch in self.data_buffers.drain() {
+            writer.write(&batch)?;
+            if writer.in_progress_size() > 512_000_000 && use_chunks {
+                log::debug!(
+                    "Flushing row group buffer with approximately {} bytes",
+                    writer.in_progress_size()
+                );
+                writer.flush()?;
+            }
+        }
+        Ok(())
+    }
+}
+
 pub trait AbstractMzPeakWriter {
     /// Append an arbitrary key bytestring with an optional value to the (current) Parquet file
-    fn append_key_value_metadata(
-        &mut self,
-        key: String,
-        value: Option<String>,
-    );
+    fn append_key_value_metadata(&mut self, key: String, value: Option<String>);
 
     /// Whether or not a chunking strategy is being used for spectra
     fn use_chunked_encoding(&self) -> Option<&ChunkingStrategy>;
@@ -146,6 +287,25 @@ pub trait AbstractMzPeakWriter {
     /// Get a mutable reference to the buffer of chromatogram signal data values,
     /// for appending only
     fn chromatogram_data_buffer_mut(&mut self) -> &mut ArrayBufferWriterVariants;
+
+    fn wavelength_entry_buffer_mut(&mut self) -> &mut WavelengthSpectrumBuilder;
+    fn wavelength_data_buffer_mut(&mut self) -> &mut GenericDataArrayWriter;
+
+    fn make_wavelength_data_writer(&self) -> GenericDataArrayWriter {
+        let buffers: ArrayBufferWriterVariants = ArrayBuffersBuilder::default()
+            .add_default_fields_for_context(BufferContext::WavelengthSpectrum)
+            .with_context(BufferContext::WavelengthSpectrum)
+            .add_override(WAVELENGTH_ARRAY.clone().with_dtype(mzdata::spectrum::BinaryDataArrayType::Float64), WAVELENGTH_ARRAY.clone())
+            .add_override(INTENSITY_ARRAY.clone().with_context(BufferContext::WavelengthSpectrum).with_dtype(mzdata::spectrum::BinaryDataArrayType::Float64),
+                            INTENSITY_ARRAY.clone().with_context(BufferContext::WavelengthSpectrum))
+            .build(
+                Arc::new(Schema::empty()),
+                BufferContext::WavelengthSpectrum,
+                false,
+            )
+            .into();
+        GenericDataArrayWriter::new(buffers)
+    }
 
     /// Check if the data buffers are full, and flush them if so
     fn check_data_buffer(&mut self) -> io::Result<()>;
@@ -246,6 +406,33 @@ pub trait AbstractMzPeakWriter {
         spectrum: &S,
     ) -> io::Result<()> {
         log::trace!("Writing spectrum {}", spectrum.id());
+        if let Some(spec_type) = spectrum.spectrum_type() {
+            if !spec_type.is_mass_spectrum() {
+                log::trace!("Non-MS spectrum {spec_type:?}");
+                if let Some(data_arrays) = spectrum.raw_arrays() {
+                    let series_index = self.wavelength_entry_buffer_mut().index_counter();
+                    if data_arrays
+                        .has_array(&BufferContext::WavelengthSpectrum.default_sorted_array())
+                    {
+                        let writer = self.wavelength_data_buffer_mut();
+                        let entry_meta = writer.write_data_arrays(
+                            data_arrays,
+                            spectrum.signal_continuity() == SignalContinuity::Profile,
+                            writer.buffers().include_time().then(|| spectrum.start_time() as f32),
+                            series_index,
+                        )?;
+                        let entry_writer = self.wavelength_entry_buffer_mut();
+                        entry_writer.append_value(spectrum, entry_meta.auxiliary_arrays);
+                        return Ok(())
+                    } else {
+                        log::warn!(
+                            "Non-MS spectrum did not have {:?}. Falling through to MS spectrum writing",
+                            BufferContext::WavelengthSpectrum.default_sorted_array()
+                        );
+                    }
+                }
+            }
+        }
         let EntryMetadataDerivedFromData {
             mz_delta_model,
             auxiliary_arrays: aux_arrays,
@@ -320,11 +507,14 @@ pub trait AbstractMzPeakWriter {
             } else {
                 None
             };
-            let chunking = if !is_profile && matches!(chunking, ChunkingStrategy::Delta { chunk_size: _ }) {
-                ChunkingStrategy::Basic { chunk_size: chunking.chunk_size() }
-            } else {
-                chunking
-            };
+            let chunking =
+                if !is_profile && matches!(chunking, ChunkingStrategy::Delta { chunk_size: _ }) {
+                    ChunkingStrategy::Basic {
+                        chunk_size: chunking.chunk_size(),
+                    }
+                } else {
+                    chunking
+                };
             let buffer_ref = self.spectrum_data_buffer_mut();
             let (chunks, auxiliary_arrays) = ArrowArrayChunk::from_arrays(
                 spectrum_count,
@@ -342,7 +532,12 @@ pub trait AbstractMzPeakWriter {
                     &chunks,
                     BufferContext::Spectrum,
                     buffer_ref.schema().fields(),
-                    &[chunking, ChunkingStrategy::Basic { chunk_size: chunking.chunk_size() }],
+                    &[
+                        chunking,
+                        ChunkingStrategy::Basic {
+                            chunk_size: chunking.chunk_size(),
+                        },
+                    ],
                     include_time,
                 );
                 let size = chunks.len();
@@ -543,16 +738,17 @@ pub trait AbstractMzPeakWriter {
             .build()
     }
 
-    /// Generate the [`WriterProperties`] for the spectrum signal data file, based upon
+    /// Generate the [`WriterProperties`] for a generic data arrays file, based upon
     /// the provided schema and caller configuration.
     ///
     /// If `use_chunked_encoding` is enabled, it can have far-reaching effects on all other
     /// parameters.
-    fn chromatogram_data_writer_props(
+    fn generic_data_writer_props(
         data_buffer: &impl ArrayBufferWriter,
         index_path: String,
         use_chunked_encoding: &Option<ChunkingStrategy>,
         compression: Compression,
+        byte_shuffle_needles: &[&str],
     ) -> WriterProperties {
         let parquet_schema = Arc::new(
             ArrowSchemaConverter::new()
@@ -588,7 +784,7 @@ pub trait AbstractMzPeakWriter {
 
         for c in parquet_schema.columns().iter() {
             let colpath = c.path().to_string();
-            if (colpath.contains("_time") || colpath.contains(".time"))
+            if byte_shuffle_needles.iter().any(|s| colpath.contains(s))
                 && matches!(
                     c.physical_type(),
                     parquet::basic::Type::DOUBLE | parquet::basic::Type::FLOAT
@@ -616,6 +812,26 @@ pub trait AbstractMzPeakWriter {
         data_props.build()
     }
 
+    /// Generate the [`WriterProperties`] for the chromatogram signal data file, based upon
+    /// the provided schema and caller configuration.
+    ///
+    /// If `use_chunked_encoding` is enabled, it can have far-reaching effects on all other
+    /// parameters.
+    fn chromatogram_data_writer_props(
+        data_buffer: &impl ArrayBufferWriter,
+        index_path: String,
+        use_chunked_encoding: &Option<ChunkingStrategy>,
+        compression: Compression,
+    ) -> WriterProperties {
+        Self::generic_data_writer_props(
+            data_buffer,
+            index_path,
+            use_chunked_encoding,
+            compression,
+            &["_time", ".time"],
+        )
+    }
+
     /// Generate the [`WriterProperties`] for the spectrum signal data file, based upon
     /// the provided schema and caller configuration.
     ///
@@ -636,7 +852,10 @@ pub trait AbstractMzPeakWriter {
             ArrowSchemaConverter::new()
                 .convert(data_buffer.schema())
                 .unwrap_or_else(|e| {
-                    panic!("Failed to convert {:?} to a schema: {e}", data_buffer.schema())
+                    panic!(
+                        "Failed to convert {:?} to a schema: {e}",
+                        data_buffer.schema()
+                    )
                 }),
         );
 

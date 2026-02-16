@@ -9,10 +9,7 @@ use arrow::{
     datatypes::{DataType, Field, FieldRef, Schema, SchemaRef},
 };
 use mzdata::{
-    curie,
-    params::{CURIE, Unit},
-    prelude::*,
-    spectrum::{Chromatogram, RefPeakDataLevel, ScanPolarity, SpectrumDescription},
+    curie, params::{CURIE, Unit}, prelude::*, spectrum::{ArrayType, Chromatogram, RefPeakDataLevel, ScanPolarity, SignalContinuity, SpectrumDescription}
 };
 
 use crate::{spectrum::AuxiliaryArray, writer::builder::SpectrumFieldVisitors};
@@ -1526,11 +1523,12 @@ pub struct SpectrumDetailsBuilder {
     ms_level: UInt8Builder,
     time: Float64Builder,
     polarity: Int8Builder,
-    mz_signal_continuity: CURIEBuilder,
+    spectrum_representation: CURIEBuilder,
     spectrum_type: CURIEBuilder,
     lowest_observed_mz: Float64Builder,
     highest_observed_mz: Float64Builder,
     number_of_data_points: UInt64Builder,
+    number_of_peaks: UInt64Builder,
     base_peak_mz: Float64Builder,
     base_peak_intensity: Float32Builder,
     total_ion_current: Float32Builder,
@@ -1560,7 +1558,7 @@ impl VisitorBase for SpectrumDetailsBuilder {
             field!("MS_1000465_scan_polarity", DataType::Int8),
             field!(
                 "MS_1000525_spectrum_representation",
-                self.mz_signal_continuity.as_struct_type()
+                self.spectrum_representation.as_struct_type()
             ),
             field!(
                 "MS_1000559_spectrum_type",
@@ -1583,6 +1581,7 @@ impl VisitorBase for SpectrumDetailsBuilder {
                 DataType::Float64
             ),
             field!("MS_1003060_number_of_data_points", DataType::UInt64), //MS_1003059_number_of_peaks
+            field!("MS_1003059_number_of_peaks", DataType::UInt64),
             field!(
                 inflect_cv_term_to_column_name(
                     curie!(MS:1000504),
@@ -1641,11 +1640,12 @@ impl VisitorBase for SpectrumDetailsBuilder {
         self.ms_level.append_null();
         self.time.append_null();
         self.polarity.append_null();
-        self.mz_signal_continuity.append_null();
+        self.spectrum_representation.append_null();
         self.spectrum_type.append_null();
         self.lowest_observed_mz.append_null();
         self.highest_observed_mz.append_null();
         self.number_of_data_points.append_null();
+        self.number_of_peaks.append_null();
         self.base_peak_mz.append_null();
         self.base_peak_intensity.append_null();
         self.total_ion_current.append_null();
@@ -1748,7 +1748,7 @@ impl SpectrumDetailsBuilder {
             ScanPolarity::Negative => Some(-1),
             ScanPolarity::Unknown => None,
         });
-        self.mz_signal_continuity
+        self.spectrum_representation
             .append_option(match item.signal_continuity() {
                 mzdata::spectrum::SignalContinuity::Unknown => None,
                 mzdata::spectrum::SignalContinuity::Centroid => Some(&curie!(MS:1000127)),
@@ -1764,6 +1764,16 @@ impl SpectrumDetailsBuilder {
         self.base_peak_intensity.append_option(base_peak_intensity);
         self.total_ion_current.append_value(summaries.tic);
         self.number_of_data_points.append_value(n_pts as u64);
+        if item.signal_continuity() == SignalContinuity::Centroid {
+            self.number_of_peaks.append_value(n_pts as u64);
+        } else {
+            match self.peak_summaries(item) {
+                Some(summary) => {
+                    self.number_of_peaks.append_value(summary.count as u64);
+                },
+                None => self.number_of_peaks.append_null(),
+            }
+        }
 
         self.data_processing_ref.append_null();
 
@@ -1833,11 +1843,12 @@ impl ArrayBuilder for SpectrumDetailsBuilder {
             finish_it!(self.ms_level),
             finish_it!(self.time),
             finish_it!(self.polarity),
-            self.mz_signal_continuity.finish(),
+            self.spectrum_representation.finish(),
             self.spectrum_type.finish(),
             finish_it!(self.lowest_observed_mz),
             finish_it!(self.highest_observed_mz),
             finish_it!(self.number_of_data_points),
+            finish_it!(self.number_of_peaks),
             finish_it!(self.base_peak_mz),
             finish_it!(self.base_peak_intensity),
             finish_it!(self.total_ion_current),
@@ -1862,11 +1873,12 @@ impl ArrayBuilder for SpectrumDetailsBuilder {
             finish_cloned!(self.ms_level),
             finish_cloned!(self.time),
             finish_cloned!(self.polarity),
-            self.mz_signal_continuity.finish_cloned(),
+            self.spectrum_representation.finish_cloned(),
             self.spectrum_type.finish_cloned(),
             finish_cloned!(self.lowest_observed_mz),
             finish_cloned!(self.highest_observed_mz),
             finish_cloned!(self.number_of_data_points),
+            finish_cloned!(self.number_of_peaks),
             finish_cloned!(self.base_peak_mz),
             finish_cloned!(self.base_peak_intensity),
             finish_cloned!(self.total_ion_current),
@@ -2344,6 +2356,435 @@ impl ArrayBuilder for ChromatogramBuilder {
     }
 
     anyways!();
+}
+
+
+#[derive(Debug, Default)]
+pub struct WavelengthSpectrumDetailsBuilder {
+    index: UInt64Builder,
+    id: LargeStringBuilder,
+    time: Float64Builder,
+    spectrum_type: CURIEBuilder,
+    spectrum_representation: CURIEBuilder,
+    lowest_observed_wavelength: Float64Builder,
+    highest_observed_wavelength: Float64Builder,
+    number_of_data_points: UInt64Builder,
+    base_peak_mz: Float64Builder,
+    base_peak_intensity: Float32Builder,
+    total_ion_current: Float32Builder,
+    data_processing_ref: LargeStringBuilder,
+    parameters: ParamListBuilder,
+    auxiliary_arrays: LargeListBuilder<AuxiliaryArrayBuilder>,
+    number_of_auxiliary_arrays: UInt32Builder,
+    extra: Vec<SpectrumVisitor>,
+
+    curies_to_mask: Vec<mzdata::params::CURIE>,
+}
+
+impl WavelengthSpectrumDetailsBuilder {
+    pub fn extend_extra_fields(&mut self, iter: impl IntoIterator<Item = SpectrumVisitor>) {
+        self.extra.extend(iter);
+    }
+
+    fn raw_summaries<
+        C: CentroidLike,
+        D: DeconvolutedCentroidLike,
+        S: SpectrumLike<C, D> + 'static,
+    >(&self, item: &S) -> mzdata::spectrum::SpectrumSummary {
+        let mut summaries: mzdata::spectrum::SpectrumSummary = Default::default();
+        if let Some(arrays) = item.raw_arrays() {
+            if let Some(waves) = arrays.get(&ArrayType::WavelengthArray).and_then(|v| v.to_f32().ok()) {
+                let intensities = arrays.intensities().unwrap();
+                summaries.count = waves.len();
+
+                if !waves.is_empty() && !intensities.is_empty() {
+                    summaries.tic = 0.0;
+                    for (i, int) in intensities.iter().copied().enumerate() {
+                        if summaries.base_peak.intensity < int {
+                            summaries.base_peak.intensity = int;
+                            summaries.base_peak.mz = waves[i] as f64;
+                        }
+                        summaries.tic += int;
+                    }
+                    summaries.mz_range.0 = *waves.first().unwrap() as f64;
+                    summaries.mz_range.1 = *waves.last().unwrap() as f64;
+                }
+            }
+        }
+        summaries
+    }
+
+    pub fn append_value<
+        C: CentroidLike,
+        D: DeconvolutedCentroidLike,
+        S: SpectrumLike<C, D> + 'static,
+    >(
+        &mut self,
+        index: u64,
+        item: &S,
+        auxiliary_arrays: Option<Vec<AuxiliaryArray>>,
+    ) -> bool {
+        self.curies_to_mask.clear();
+
+        let summaries = self.raw_summaries(item);
+
+        let n_pts = summaries.len();
+        let base_peak_mz = if n_pts > 0 {
+            Some(summaries.base_peak.mz)
+        } else {
+            None
+        };
+        let base_peak_intensity = if n_pts > 0 {
+            Some(summaries.base_peak.intensity)
+        } else {
+            None
+        };
+
+        let spectrum_type = item
+            .spectrum_type()
+            .map(|t| crate::CURIE::from(t.to_param().curie().unwrap()));
+
+        self.index.append_value(index);
+        self.id.append_value(item.id());
+        self.time.append_value(item.start_time());
+        self.spectrum_type.append_option(spectrum_type.as_ref());
+        self.spectrum_representation.append_value(&mzdata::curie!(MS:1000128));
+
+        self.lowest_observed_wavelength.append_value(summaries.mz_range.0);
+        self.highest_observed_wavelength.append_value(summaries.mz_range.1);
+
+        self.base_peak_mz.append_option(base_peak_mz);
+        self.base_peak_intensity.append_option(base_peak_intensity);
+        self.total_ion_current.append_value(summaries.tic);
+        self.number_of_data_points.append_value(n_pts as u64);
+
+        self.data_processing_ref.append_null();
+
+        if let Some(arrays) = auxiliary_arrays.as_ref() {
+            let b = self.auxiliary_arrays.values();
+            for a in arrays {
+                b.append_value(a);
+            }
+            self.auxiliary_arrays.append(true);
+        } else {
+            self.auxiliary_arrays.append_null();
+        }
+
+        self.number_of_auxiliary_arrays
+            .append_value(auxiliary_arrays.map(|v| v.len()).unwrap_or_default() as u32);
+
+        for e in self.extra.iter_mut() {
+            match e {
+                SpectrumVisitor::Description(builder) => {
+                    if builder.append_value(item.description()) {
+                        self.curies_to_mask
+                            .extend(builder.associated_curie_to_skip());
+                    }
+                }
+            }
+        }
+
+        self.curies_to_mask
+            .extend_from_slice(BUILTIN_SPECTRUM_PARAMS);
+
+        self.parameters
+            .append_iter(item.params().iter().filter(|p| {
+                if let Some(c) = p.curie() {
+                    !self.curies_to_mask.contains(&c)
+                } else {
+                    true
+                }
+            }));
+        self.curies_to_mask.clear();
+        true
+    }
+}
+
+impl VisitorBase for WavelengthSpectrumDetailsBuilder {
+    fn fields(&self) -> Vec<FieldRef> {
+        let mut fields = vec![
+            field!("index", DataType::UInt64),
+            field!("id", DataType::LargeUtf8),
+            field!("time", DataType::Float64),
+            field!(
+                "MS_1000559_spectrum_type",
+                self.spectrum_type.as_struct_type()
+            ),
+            field!(
+                "MS_1000525_spectrum_representation",
+                self.spectrum_representation.as_struct_type()
+            ),
+            field!(
+                inflect_cv_term_to_column_name(
+                    curie!(MS:1000619),
+                    "lowest observed wavelength",
+                    Unit::Nanometer.to_curie()
+                ),
+                DataType::Float64
+            ),
+            field!(
+                inflect_cv_term_to_column_name(
+                    curie!(MS:1000618),
+                    "highest observed wavelength",
+                    Unit::Nanometer.to_curie()
+                ),
+                DataType::Float64
+            ),
+            field!("MS_1003060_number_of_data_points", DataType::UInt64),
+            field!(
+                format!("base_peak_wavelength_{}", Unit::Nanometer.to_curie().unwrap()),
+                DataType::Float64
+            ),
+            field!(
+                inflect_cv_term_to_column_name(
+                    curie!(MS:1000505),
+                    "base peak intensity",
+                    Unit::DetectorCounts.to_curie()
+                ),
+                DataType::Float32
+            ),
+            field!(
+                inflect_cv_term_to_column_name(
+                    curie!(MS:1000285),
+                    "total ion current",
+                    Unit::DetectorCounts.to_curie()
+                ),
+                DataType::Float32
+            ),
+            field!("data_processing_ref", DataType::LargeUtf8),
+            field!(
+                "parameters",
+                DataType::LargeList(field!(
+                    "item",
+                    self.parameters.0.values_ref().as_struct_type()
+                ))
+            ),
+            field!(
+                "auxiliary_arrays",
+                DataType::LargeList(field!(
+                    "item",
+                    self.auxiliary_arrays.values_ref().as_struct_type()
+                ))
+            ),
+            field!("number_of_auxiliary_arrays", DataType::UInt32),
+        ];
+
+        for e in self.extra.iter() {
+            fields.extend(e.fields());
+        }
+        fields
+    }
+
+    fn append_null(&mut self) {
+        self.index.append_null();
+        self.id.append_null();
+        self.time.append_null();
+        self.spectrum_type.append_null();
+        self.spectrum_representation.append_null();
+        self.lowest_observed_wavelength.append_null();
+        self.highest_observed_wavelength.append_null();
+        self.number_of_data_points.append_null();
+        self.base_peak_mz.append_null();
+        self.base_peak_intensity.append_null();
+        self.total_ion_current.append_null();
+        self.data_processing_ref.append_null();
+        self.parameters.append_null();
+        self.auxiliary_arrays.append_null();
+        self.number_of_auxiliary_arrays.append_null();
+        for e in self.extra.iter_mut() {
+            e.append_null();
+        }
+    }
+}
+
+impl ArrayBuilder for WavelengthSpectrumDetailsBuilder {
+    anyways!();
+
+    fn len(&self) -> usize {
+        self.index.len()
+    }
+
+    fn finish(&mut self) -> ArrayRef {
+        let schema = self.fields();
+
+        let mut arrays: Vec<ArrayRef> = vec![
+            finish_it!(self.index),
+            finish_it!(self.id),
+            finish_it!(self.time),
+            self.spectrum_type.finish(),
+            self.spectrum_representation.finish(),
+            finish_it!(self.lowest_observed_wavelength),
+            finish_it!(self.highest_observed_wavelength),
+            finish_it!(self.number_of_data_points),
+            finish_it!(self.base_peak_mz),
+            finish_it!(self.base_peak_intensity),
+            finish_it!(self.total_ion_current),
+            finish_it!(self.data_processing_ref),
+            self.parameters.finish(),
+            finish_it!(self.auxiliary_arrays),
+            finish_it!(self.number_of_auxiliary_arrays),
+        ];
+
+        finish_extra!(self, arrays);
+
+        Arc::new(StructArray::new(schema.into(), arrays, None))
+    }
+
+    fn finish_cloned(&self) -> ArrayRef {
+        let schema = self.fields();
+
+        let mut arrays: Vec<ArrayRef> = vec![
+            finish_cloned!(self.index),
+            finish_cloned!(self.id),
+            finish_cloned!(self.time),
+            self.spectrum_type.finish_cloned(),
+            self.spectrum_representation.finish_cloned(),
+            finish_cloned!(self.lowest_observed_wavelength),
+            finish_cloned!(self.highest_observed_wavelength),
+            finish_cloned!(self.number_of_data_points),
+            finish_cloned!(self.base_peak_mz),
+            finish_cloned!(self.base_peak_intensity),
+            finish_cloned!(self.total_ion_current),
+            finish_cloned!(self.data_processing_ref),
+            self.parameters.finish_cloned(),
+            finish_cloned!(self.auxiliary_arrays),
+            finish_cloned!(self.number_of_auxiliary_arrays),
+        ];
+
+        finish_cloned_extra!(self, arrays);
+
+        Arc::new(StructArray::new(schema.into(), arrays, None))
+    }
+}
+
+
+#[derive(Default, Debug)]
+pub struct WavelengthSpectrumBuilder {
+    spectrum_index_counter: u64,
+    pub(crate) spectrum: WavelengthSpectrumDetailsBuilder,
+    pub(crate) scan: ScanBuilder,
+    id_to_index: HashMap<String, u64>,
+}
+
+impl WavelengthSpectrumBuilder {
+
+    pub fn add_visitors_from(&mut self, visitors: SpectrumFieldVisitors) {
+        self.spectrum.extend_extra_fields(visitors.spectrum_fields);
+        self.scan.extend_extra_fields(visitors.spectrum_scan_fields);
+    }
+
+    pub fn append_value<
+        C: CentroidLike,
+        D: DeconvolutedCentroidLike,
+        S: SpectrumLike<C, D> + 'static,
+    >(
+        &mut self,
+        item: &S,
+        auxiliary_arrays: Option<Vec<AuxiliaryArray>>,
+    ) -> bool {
+        self.id_to_index
+            .insert(item.id().to_string(), self.spectrum_index_counter);
+        let out = self.spectrum.append_value(
+            self.spectrum_index_counter,
+            item,
+            auxiliary_arrays,
+        );
+        for s in item.acquisition().scans.iter() {
+            self.scan.append_value(&(self.spectrum_index_counter, s));
+        }
+        self.spectrum_index_counter += 1;
+        out
+    }
+
+    pub fn add_spectrum_param_field<T: StructVisitorBuilder<SpectrumDescription>>(
+        &mut self,
+        visitor: T,
+    ) {
+        self.spectrum
+            .extra
+            .push(SpectrumVisitor::Description(Box::new(visitor)));
+    }
+
+    pub fn add_scan_field(
+        &mut self,
+        visitor: impl StructVisitorBuilder<mzdata::spectrum::ScanEvent>,
+    ) {
+        self.scan.extra.push(Box::new(visitor));
+    }
+
+    pub fn index_counter(&self) -> u64 {
+        self.spectrum_index_counter
+    }
+
+    fn check_lengths_equal(&self) -> bool {
+        let n = self
+            .spectrum
+            .len()
+            .max(self.scan.len());
+        self.spectrum.len() == n
+            && self.scan.len() == n
+    }
+
+    pub fn equalize_lengths(&mut self) {
+        let n = self
+            .spectrum
+            .len()
+            .max(self.scan.len());
+
+        while n > self.spectrum.len() {
+            self.spectrum.append_null();
+        }
+
+        while n > self.scan.len() {
+            self.scan.append_null();
+        }
+    }
+
+}
+
+impl VisitorBase for WavelengthSpectrumBuilder {
+    fn fields(&self) -> Vec<FieldRef> {
+        vec![
+            field!("spectrum", self.spectrum.as_struct_type()),
+            field!("scan", self.scan.as_struct_type()),
+        ]
+    }
+
+    fn append_null(&mut self) {
+        self.spectrum.append_null();
+        self.scan.append_null();
+    }
+}
+
+
+impl ArrayBuilder for WavelengthSpectrumBuilder {
+    anyways!();
+
+    fn len(&self) -> usize {
+        self.spectrum.len()
+    }
+
+    fn finish(&mut self) -> ArrayRef {
+        self.equalize_lengths();
+
+        let fields = self.fields();
+        let arrays = vec![
+            self.spectrum.finish(),
+            self.scan.finish(),
+        ];
+
+        Arc::new(StructArray::new(fields.into(), arrays, None))
+    }
+
+    fn finish_cloned(&self) -> ArrayRef {
+        let fields = self.fields();
+        assert!(self.check_lengths_equal(), "Verify all facets are of equal length, call `equalize_lengths` first!");
+        let arrays = vec![
+            self.spectrum.finish_cloned(),
+            self.scan.finish_cloned(),
+        ];
+        Arc::new(StructArray::new(fields.into(), arrays, None))
+    }
 }
 
 #[cfg(test)]

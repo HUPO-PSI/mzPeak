@@ -236,17 +236,21 @@ class _PrecursorReadMixin:
     meta: pq.FileMetaData
 
     precursors: pd.DataFrame
+    selected_ions: pd.DataFrame
+
 
     def _read_precursors(self):
         blocks = []
-        for i in range(self.meta.num_row_groups):
-            rg = self.meta.row_group(i)
-            col_idx = rg.column(self.precursor_index_i)
-            if col_idx.statistics and col_idx.statistics.has_min_max:
-                table: pa.Table = self.handle.read_row_group(i, columns=["precursor"])
-                bats = table["precursor"].chunks
-                for bat in bats:
-                    blocks.append(bat.filter(bat.field(0).is_valid()))
+        if self.precursor_index_i is not None:
+            for i in range(self.meta.num_row_groups):
+                rg = self.meta.row_group(i)
+                col_idx = rg.column(self.precursor_index_i)
+                if col_idx.statistics and col_idx.statistics.has_min_max:
+                    table: pa.Table = self.handle.read_row_group(i, columns=["precursor"])
+                    bats = table["precursor"].chunks
+                    for bat in bats:
+                        blocks.append(bat.filter(bat.field(0).is_valid()))
+
         if blocks:
             bat = pa.Table.from_struct_array(pa.chunked_array(blocks))
             if "spectrum_index" in bat.column_names:
@@ -268,14 +272,15 @@ class _PrecursorReadMixin:
 
     def _read_selected_ions(self):
         blocks = []
-        for i in range(self.meta.num_row_groups):
-            rg = self.meta.row_group(i)
-            col_idx = rg.column(self.selected_ion_i)
-            if col_idx.statistics and col_idx.statistics.has_min_max:
-                table = self.handle.read_row_group(i, columns=["selected_ion"])
-                bats = table["selected_ion"].chunks
-                for bat in bats:
-                    blocks.append(bat.filter(bat.field(0).is_valid()))
+        if self.selected_ion_i is not None:
+            for i in range(self.meta.num_row_groups):
+                rg = self.meta.row_group(i)
+                col_idx = rg.column(self.selected_ion_i)
+                if col_idx.statistics and col_idx.statistics.has_min_max:
+                    table = self.handle.read_row_group(i, columns=["selected_ion"])
+                    bats = table["selected_ion"].chunks
+                    for bat in bats:
+                        blocks.append(bat.filter(bat.field(0).is_valid()))
 
         if blocks:
             bat = pa.Table.from_struct_array(pa.chunked_array(blocks))
@@ -360,10 +365,23 @@ class MzPeakSpectrumMetadataReader(_PrecursorReadMixin):
             handle = pq.ParquetFile(handle)
         self.handle = handle
         self.meta = handle.metadata
-        self.num_spectra = int(handle.metadata.metadata[b"spectrum_count"])
-        self.num_spectrum_points = int(
-            handle.metadata.metadata[b"spectrum_data_point_count"]
+
+        self.num_spectra = int(
+            [
+                v
+                for k, v in handle.metadata.metadata.items()
+                if k.endswith(b"spectrum_count")
+            ][0]
         )
+
+        self.num_spectrum_points = int(
+            [
+                v
+                for k, v in handle.metadata.metadata.items()
+                if k.endswith(b"spectrum_data_point_count")
+            ][0]
+        )
+
         self._infer_schema_idx()
         self._read_spectra()
         self._read_scans()
@@ -405,6 +423,10 @@ class MzPeakSpectrumMetadataReader(_PrecursorReadMixin):
         )
 
     def _infer_schema_idx(self):
+        self.selected_ion_i = None
+        self.precursor_index_i = None
+        self.scan_index_i = None
+        self.spectrum_index_i = None
         if self.meta.num_row_groups:
             rg = self.meta.row_group(0)
             for i in range(rg.num_columns):
@@ -426,15 +448,16 @@ class MzPeakSpectrumMetadataReader(_PrecursorReadMixin):
 
     def _read_spectra(self):
         blocks = []
-        for i in range(self.meta.num_row_groups):
-            rg = self.meta.row_group(i)
-            col_idx = rg.column(self.spectrum_index_i)
-            if col_idx.statistics and col_idx.statistics.has_min_max:
-                table = self.handle.read_row_group(i, columns=["spectrum"])
-                bats = table["spectrum"].chunks
-                for bat in bats:
-                    # TODO: filter or slice this if there *are* nulls, otherwise avoid copying
-                    blocks.append(bat.filter(bat.field(0).is_valid()))
+        if self.spectrum_index_i is not None:
+            for i in range(self.meta.num_row_groups):
+                rg = self.meta.row_group(i)
+                col_idx = rg.column(self.spectrum_index_i)
+                if col_idx.statistics and col_idx.statistics.has_min_max:
+                    table = self.handle.read_row_group(i, columns=["spectrum"])
+                    bats = table["spectrum"].chunks
+                    for bat in bats:
+                        # TODO: filter or slice this if there *are* nulls, otherwise avoid copying
+                        blocks.append(bat.filter(bat.field(0).is_valid()))
 
         if not blocks:
             self.spectra = pd.DataFrame(
@@ -460,14 +483,15 @@ class MzPeakSpectrumMetadataReader(_PrecursorReadMixin):
 
     def _read_scans(self):
         blocks = []
-        for i in range(self.meta.num_row_groups):
-            rg = self.meta.row_group(i)
-            col_idx = rg.column(self.scan_index_i)
-            if col_idx.statistics and col_idx.statistics.has_min_max:
-                table = self.handle.read_row_group(i, columns=["scan"])
-                bats = table["scan"].chunks
-                for bat in bats:
-                    blocks.append(bat.filter(bat.field(0).is_valid()))
+        if self.scan_index_i is not None:
+            for i in range(self.meta.num_row_groups):
+                rg = self.meta.row_group(i)
+                col_idx = rg.column(self.scan_index_i)
+                if col_idx.statistics and col_idx.statistics.has_min_max:
+                    table = self.handle.read_row_group(i, columns=["scan"])
+                    bats = table["scan"].chunks
+                    for bat in bats:
+                        blocks.append(bat.filter(bat.field(0).is_valid()))
 
         if blocks:
             bat = pa.Table.from_struct_array(pa.chunked_array(blocks))
@@ -1092,3 +1116,21 @@ class MzPeakFile(Sequence[_SpectrumType]):
         ctx.from_arrow(pa.table(self.selected_ions.reset_index()), "selected_ions")
         ctx.from_arrow(pa.table(self.chromatograms.reset_index()), "chromatograms")
         return ctx
+
+
+class WavelengthFacet:
+    spectrum_metadata: MzPeakSpectrumMetadataReader | None = None
+    spectrum_data: MzPeakArrayDataReader | None = None
+
+    @property
+    def spectra(self) -> pd.DataFrame:
+        return self.spectrum_metadata.spectra
+
+    @property
+    def scans(self) -> pd.DataFrame:
+        return self.spectrum_metadata.scans
+
+    @property
+    def time(self) -> RTLocator:
+        return RTLocator(self)
+

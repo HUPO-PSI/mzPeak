@@ -23,7 +23,7 @@ use mzpeaks::{
 
 use parquet::arrow::{
     ProjectionMask,
-    arrow_reader::{ArrowPredicateFn, ParquetRecordBatchReader, RowFilter},
+    arrow_reader::{ArrowPredicateFn, ArrowReaderBuilder, ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder, RowFilter},
 };
 
 use crate::{
@@ -186,11 +186,11 @@ impl<
     }
 
     fn get_index(&self) -> &OffsetIndex {
-        &self.metadata.spectrum_id_index
+        &self.metadata.spectra.id_index
     }
 
     fn set_index(&mut self, index: OffsetIndex) {
-        self.metadata.spectrum_id_index = index;
+        self.metadata.spectra.id_index = index;
     }
 
     fn iter(&mut self) -> mzdata::io::SpectrumIterator<'_, C, D, MultiLayerSpectrum<C, D>, Self>
@@ -313,7 +313,7 @@ impl SpectrumDataCache {
             let rg = reader.load_cache_block(reader.handle.spectra_data()?, row_group_index)?;
             let cache = DataPointCache::new(
                 rg,
-                reader.metadata.spectrum_array_indices.clone(),
+                reader.metadata.spectra.array_indices.clone(),
                 row_group_index,
                 None,
                 None,
@@ -366,8 +366,8 @@ impl<
             _t: Default::default(),
         };
 
-        this.metadata.mz_model_deltas = this.load_delta_models()?;
-        this.metadata.spectrum_auxiliary_array_counts =
+        this.metadata.spectra.mz_model_deltas = this.load_delta_models()?;
+        this.metadata.spectra.auxiliary_array_counts =
             this.load_spectrum_auxiliary_array_count()?;
         this.metadata.chromatogram_auxiliary_array_counts =
             this.load_chromatogram_auxiliary_array_count()?;
@@ -388,6 +388,12 @@ impl<
     /// Open a file stream by it's name
     pub fn open_stream(&self, name: &str) -> Result<<T as ArchiveSource>::File, io::Error> {
         self.handle.open_stream(name)
+    }
+
+    pub fn open_parquet(&self, name: &str) -> Result<ParquetRecordBatchReaderBuilder<<T as ArchiveSource>::File>, io::Error> {
+        let stream = self.handle.open_stream(name)?;
+        let builder = ArrowReaderBuilder::try_new(stream).map_err(|e| io::Error::other(e))?;
+        Ok(builder)
     }
 
     /// Load the descriptive metadata for all spectra
@@ -473,7 +479,7 @@ impl<
                 .read_chunks_for(
                     index,
                     &self.query_indices.spectrum_chunk_index,
-                    &self.metadata.spectrum_array_indices,
+                    &self.metadata.spectra.array_indices,
                     delta_model.as_ref(),
                     Some(PageQuery::new(row_group_indices, pages)),
                 )
@@ -484,7 +490,7 @@ impl<
         if let Some(mut out) = reader.read_points_of(
             index,
             &self.query_indices.spectrum_point_index,
-            self.metadata.spectrum_array_indices(),
+            &self.metadata.spectra.array_indices,
             delta_model.as_ref(),
         )? {
             for v in self.load_auxiliary_arrays_for_spectrum(index)? {
@@ -664,7 +670,8 @@ impl<
                 // dimension directly.
                 if let Some(im_name) = self
                     .metadata
-                    .spectrum_array_indices
+                    .spectra
+                    .array_indices
                     .iter()
                     .find(|v| v.is_ion_mobility())
                 {
@@ -697,7 +704,7 @@ impl<
                                 mz_range,
                                 ion_mobility_range,
                                 &self.query_indices,
-                                &self.metadata.spectrum_array_indices,
+                                &self.metadata.spectra.array_indices,
                                 &self.metadata,
                                 None,
                             )
@@ -708,7 +715,7 @@ impl<
                                 mz_range,
                                 ion_mobility_range,
                                 &self.query_indices,
-                                &self.metadata.spectrum_array_indices,
+                                &self.metadata.spectra.array_indices,
                                 &self.metadata,
                                 None,
                             )
@@ -727,7 +734,7 @@ impl<
             mz_range,
             ion_mobility_range,
             &self.query_indices,
-            &self.metadata.spectrum_array_indices,
+            &self.metadata.spectra.array_indices,
             &self.metadata,
             Some(query),
         )?;
@@ -736,11 +743,11 @@ impl<
 
     /// Get the number of spectra in the archive
     pub fn len(&self) -> usize {
-        self.metadata.spectrum_id_index.len()
+        self.metadata.spectra.id_index.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.metadata.spectrum_id_index.is_empty()
+        self.metadata.spectra.id_index.is_empty()
     }
 
     /// Read peak data for a spectrum.
@@ -755,7 +762,7 @@ impl<
         index: u64,
     ) -> io::Result<Option<PeakDataLevel<C, D>>> {
         let builder = self.handle.spectrum_peaks()?;
-        let meta_index = self.metadata.peak_indices.as_ref().ok_or(io::Error::new(
+        let meta_index = self.metadata.spectra.peak_indices.as_ref().ok_or(io::Error::new(
             io::ErrorKind::NotFound,
             "peak data index was not found",
         ))?;
@@ -787,7 +794,7 @@ impl<
         HashMap<u64, f64, BuildIdentityHasher<u64>>,
     )> {
         let builder = self.handle.spectrum_peaks()?;
-        let meta_index = self.metadata.peak_indices.as_ref().ok_or(io::Error::new(
+        let meta_index = self.metadata.spectra.peak_indices.as_ref().ok_or(io::Error::new(
             io::ErrorKind::NotFound,
             "peak metadata was not found",
         ))?;
@@ -830,7 +837,7 @@ impl<
             .with_row_filter(RowFilter::new(vec![Box::new(predicate)]))
             .build()?;
 
-        let mut decoder = SpectrumMetadataDecoder::new(&self.metadata);
+        let mut decoder = SpectrumMetadataDecoder::new(&self.metadata.spectra);
 
         for batch in reader {
             let batch = match batch {
@@ -1088,7 +1095,7 @@ impl<
             .with_batch_size(10_000)
             .build()?;
 
-        let mut decoder = SpectrumMetadataDecoder::new(&self.metadata);
+        let mut decoder = SpectrumMetadataDecoder::new(&self.metadata.spectra);
 
         for batch in reader.flatten() {
             decoder.decode_batch(batch);
@@ -1125,7 +1132,7 @@ impl<
         &mut self,
         id: &str,
     ) -> io::Result<Option<SpectrumDescription>> {
-        if let Some(idx) = self.metadata.spectrum_id_index.get(id) {
+        if let Some(idx) = self.metadata.spectra.id_index.get(id) {
             return self.get_spectrum_metadata(idx);
         }
         Err(io::Error::new(
@@ -1202,6 +1209,7 @@ impl<
 
         let target_col = self
             .metadata
+            .spectra
             .spectrum_metadata_map
             .as_ref()
             .and_then(|v| v.find(mzdata::curie!(MS:1000285)));
@@ -1257,7 +1265,7 @@ impl<
             .spectrum_index_index
             .row_selection_is_not_null();
 
-        let metadata = self.metadata.spectrum_metadata_map.as_ref().unwrap();
+        let metadata = self.metadata.spectra.spectrum_metadata_map.as_ref().unwrap();
         let bp_col = match metadata.find(mzdata::curie!(MS:1000505)) {
             Some(col) => col,
             None => return Err(io::Error::other("column not found")),

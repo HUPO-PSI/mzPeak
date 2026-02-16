@@ -16,6 +16,7 @@ use parquet::arrow::arrow_reader::{
 };
 
 use crate::archive::{FileEntry, FileIndex};
+use crate::constants::{CHROMATOGRAM_DATA_ARRAYS_NAME, CHROMATOGRAM_METADATA_NAME, SPECTRUM_DATA_ARRAYS_NAME, SPECTRUM_METADATA_NAME, SPECTRUM_PEAK_DATA_ARRAYS_NAME};
 
 fn file_options() -> SimpleFileOptions {
     SimpleFileOptions::default()
@@ -195,11 +196,11 @@ pub enum MzPeakArchiveType {
 impl MzPeakArchiveType {
     pub const fn tag_file_suffix(&self) -> &'static str {
         match self {
-            MzPeakArchiveType::SpectrumMetadata => "spectra_metadata.parquet",
-            MzPeakArchiveType::SpectrumDataArrays => "spectra_data.parquet",
-            MzPeakArchiveType::SpectrumPeakDataArrays => "spectra_peaks.parquet",
-            MzPeakArchiveType::ChromatogramMetadata => "chromatograms_metadata.parquet",
-            MzPeakArchiveType::ChromatogramDataArrays => "chromatograms_data.parquet",
+            MzPeakArchiveType::SpectrumMetadata => SPECTRUM_METADATA_NAME,
+            MzPeakArchiveType::SpectrumDataArrays => SPECTRUM_DATA_ARRAYS_NAME,
+            MzPeakArchiveType::SpectrumPeakDataArrays => SPECTRUM_PEAK_DATA_ARRAYS_NAME,
+            MzPeakArchiveType::ChromatogramMetadata => CHROMATOGRAM_METADATA_NAME,
+            MzPeakArchiveType::ChromatogramDataArrays => CHROMATOGRAM_DATA_ARRAYS_NAME,
             MzPeakArchiveType::Other => "",
             MzPeakArchiveType::Proprietary => "",
         }

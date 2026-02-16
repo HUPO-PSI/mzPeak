@@ -428,15 +428,7 @@ trait PointQuerySource {
     ) {
         let predicate_mask = ProjectionMask::columns(
             &schema,
-            [match context {
-                BufferContext::Spectrum => {
-                    format!("{}.{}", array_indices.prefix, context.index_name())
-                }
-                BufferContext::Chromatogram => {
-                    format!("{}.{}", array_indices.prefix, context.index_name())
-                }
-            }
-            .as_str()],
+            [format!("{}.{}", array_indices.prefix, context.index_name()).as_str()],
         );
 
         let predicate = ArrowPredicateFn::new(predicate_mask, move |batch| {

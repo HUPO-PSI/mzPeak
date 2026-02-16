@@ -53,6 +53,7 @@ pub(crate) struct DataChunkCache {
     pub(crate) spectrum_array_indices: Arc<ArrayIndex>,
     pub(crate) last_query_index: Option<u64>,
     pub(crate) last_query_span: Option<(usize, usize)>,
+    pub(crate) buffer_context: BufferContext,
 }
 
 impl DataChunkCache {
@@ -62,6 +63,7 @@ impl DataChunkCache {
         spectrum_array_indices: Arc<ArrayIndex>,
         last_query_index: Option<u64>,
         last_query_span: Option<(usize, usize)>,
+        buffer_context: BufferContext,
     ) -> Self {
         Self {
             row_group,
@@ -69,6 +71,7 @@ impl DataChunkCache {
             spectrum_array_indices,
             last_query_index,
             last_query_span,
+            buffer_context,
         }
     }
 
@@ -89,7 +92,7 @@ impl DataChunkCache {
 
         let chunks = self.row_group.column(0).as_struct();
         let indices: &UInt64Array = chunks
-            .column_by_name("spectrum_index")
+            .column_by_name(self.buffer_context.index_name())
             .unwrap()
             .as_any()
             .downcast_ref()
@@ -1210,9 +1213,10 @@ impl<T: ChunkReader + 'static> ChunkDataReader<T> {
         Ok(DataChunkCache::new(
             batch,
             index_range,
-            metadata.spectrum_array_indices.clone(),
+            metadata.spectra.array_indices.clone(),
             None,
             None,
+            self.buffer_context,
         ))
     }
 
@@ -1381,7 +1385,7 @@ mod async_impl {
             query_indices: &impl BasicChunkQueryIndex,
         ) -> io::Result<DataChunkCache> {
             let (rows, predicate) = self.prepare_cache_block_query(index_range, query_indices);
-
+            let context = self.buffer_context();
             let schema = self.builder.schema().clone();
             let mut reader = self
                 .builder
@@ -1401,9 +1405,10 @@ mod async_impl {
             Ok(DataChunkCache::new(
                 batch,
                 index_range,
-                metadata.spectrum_array_indices.clone(),
+                metadata.spectra.array_indices.clone(),
                 None,
                 None,
+                context,
             ))
         }
     }

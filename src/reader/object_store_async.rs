@@ -233,7 +233,7 @@ impl AsyncSpectrumDataCache {
                 .await?;
             let cache = DataPointCache::new(
                 rg,
-                reader.metadata.spectrum_array_indices.clone(),
+                reader.metadata.spectra.array_indices.clone(),
                 row_group_index,
                 None,
                 None,
@@ -303,7 +303,7 @@ impl<
         &mut self,
         id: &str,
     ) -> Result<&mut Self, SpectrumAccessError> {
-        if let Some(idx) = self.metadata.spectrum_id_index.get(id) {
+        if let Some(idx) = self.metadata.spectra.id_index.get(id) {
             self.index = idx as usize;
             Ok(self)
         } else {
@@ -359,7 +359,7 @@ impl<
         &mut self,
         id: &str,
     ) -> Option<MultiLayerSpectrum<C, D>> {
-        let index = self.metadata.spectrum_id_index.get(id)?;
+        let index = self.metadata.spectra.id_index.get(id)?;
         self.get_spectrum(index as usize).await
     }
 
@@ -371,12 +371,12 @@ impl<
     }
 
     fn get_index(&self) -> &OffsetIndex {
-        &self.metadata.spectrum_id_index
+        &self.metadata.spectra.id_index
     }
 
     fn set_index(&mut self, index: OffsetIndex) {
         let mut meta = (*self.metadata).clone();
-        meta.spectrum_id_index = index;
+        meta.spectra.id_index = index;
         self.metadata = Arc::new(meta);
     }
 
@@ -416,8 +416,8 @@ impl<
             this.load_chromatogram_auxiliary_array_count().await?;
 
         let meta = Arc::get_mut(&mut this.metadata).unwrap();
-        meta.mz_model_deltas = mz_model_deltas;
-        meta.spectrum_auxiliary_array_counts = spectrum_auxiliary_array_counts;
+        meta.spectra.mz_model_deltas = mz_model_deltas;
+        meta.spectra.auxiliary_array_counts = spectrum_auxiliary_array_counts;
         meta.chromatogram_auxiliary_array_counts = chromatogram_auxiliary_array_counts;
 
         Ok(this)
@@ -438,11 +438,11 @@ impl<
 
     /// Get the number of spectra in the archive
     pub fn len(&self) -> usize {
-        self.metadata.spectrum_id_index.len()
+        self.metadata.spectra.id_index.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.metadata.spectrum_id_index.is_empty()
+        self.metadata.spectra.id_index.is_empty()
     }
 
     pub fn url(&self) -> Option<&Url> {
@@ -515,7 +515,7 @@ impl<
             .with_row_filter(RowFilter::new(vec![Box::new(predicate)]))
             .build()?;
 
-        let mut decoder = SpectrumMetadataDecoder::new(&self.metadata);
+        let mut decoder = SpectrumMetadataDecoder::new(&self.metadata.spectra);
 
         while let Some(batch) = reader.next().await.transpose()? {
             decoder.decode_batch(batch);
@@ -530,7 +530,7 @@ impl<
         &self,
         id: &str,
     ) -> io::Result<Option<SpectrumDescription>> {
-        if let Some(idx) = self.metadata.spectrum_id_index.get(id) {
+        if let Some(idx) = self.metadata.spectra.id_index.get(id) {
             return self.get_spectrum_metadata(idx).await;
         }
         Err(io::Error::new(
@@ -573,7 +573,7 @@ impl<
         index: u64,
     ) -> io::Result<Option<PeakDataLevel<C, D>>> {
         let builder = self.handle.spectrum_peaks().await?;
-        let meta_index = self.metadata.peak_indices.as_ref().ok_or(io::Error::new(
+        let meta_index = self.metadata.spectra.peak_indices.as_ref().ok_or(io::Error::new(
             io::ErrorKind::NotFound,
             "peak data index was not found",
         ))?;
@@ -629,7 +629,8 @@ impl<
                 // dimension directly.
                 if let Some(im_name) = self
                     .metadata
-                    .spectrum_array_indices
+                    .spectra
+                    .array_indices
                     .iter()
                     .find(|v| v.is_ion_mobility())
                 {
@@ -662,7 +663,7 @@ impl<
                 mz_range,
                 ion_mobility_range,
                 &self.query_indices.spectrum_point_index,
-                &self.metadata.spectrum_array_indices,
+                &self.metadata.spectra.array_indices,
                 &self.metadata,
             )
             .await?
@@ -694,7 +695,7 @@ impl<
         HashMap<u64, f64, BuildIdentityHasher<u64>>,
     )> {
         let builder = self.handle.spectrum_peaks().await?;
-        let meta_index = self.metadata.peak_indices.as_ref().ok_or(io::Error::new(
+        let meta_index = self.metadata.spectra.peak_indices.as_ref().ok_or(io::Error::new(
             io::ErrorKind::NotFound,
             "peak metadata was not found",
         ))?;
@@ -808,7 +809,7 @@ impl<
             .with_batch_size(10_000)
             .build()?;
 
-        let mut decoder = SpectrumMetadataDecoder::new(&self.metadata);
+        let mut decoder = SpectrumMetadataDecoder::new(&self.metadata.spectra);
 
         while let Some(batch) = reader.next().await.transpose()? {
             decoder.decode_batch(batch);
@@ -1017,7 +1018,7 @@ impl<
             .with_batch_size(10_000)
             .build()?;
 
-        let n = self.metadata.spectrum_id_index.len();
+        let n = self.metadata.spectra.id_index.len();
         decoder.resize(n);
 
         while let Some(batch) = reader.next().await.transpose()? {
@@ -1056,7 +1057,7 @@ impl<
                 .read_chunks_for_entity(
                     index,
                     &self.query_indices.spectrum_chunk_index,
-                    &self.metadata.spectrum_array_indices,
+                    &self.metadata.spectra.array_indices,
                     delta_model.as_ref(),
                     Some(PageQuery::new(row_group_indices, pages)),
                 )

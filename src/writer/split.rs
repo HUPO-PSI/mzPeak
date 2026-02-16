@@ -19,9 +19,7 @@ use crate::{
     chunk_series::ChunkingStrategy,
     peak_series::ArrayIndex,
     writer::{
-        AbstractMzPeakWriter, ArrayBufferWriter, ArrayBufferWriterVariants, ArrayBuffersBuilder,
-        ChromatogramBuilder, MiniPeakWriterType, SpectrumBuilder, VisitorBase,
-        WriteBatchConfig, builder::SpectrumFieldVisitors, implement_mz_metadata,
+        AbstractMzPeakWriter, ArrayBufferWriter, ArrayBufferWriterVariants, ArrayBuffersBuilder, ChromatogramBuilder, MiniPeakWriterType, SpectrumBuilder, VisitorBase, WavelengthSpectrumBuilder, WriteBatchConfig, base::GenericDataArrayWriter, builder::SpectrumFieldVisitors, implement_mz_metadata
     },
 };
 
@@ -42,6 +40,7 @@ pub struct UnpackedMzPeakWriterType<
 
     spectrum_metadata_buffer: SpectrumBuilder,
     chromatogram_metadata_buffer: ChromatogramBuilder,
+    wavelength_metadata_buffer: WavelengthSpectrumBuilder,
 
     use_chunked_encoding: Option<ChunkingStrategy>,
     use_chromatogram_chunked_encoding: Option<ChunkingStrategy>,
@@ -127,6 +126,14 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
 
     fn chromatogram_data_buffer_mut(&mut self) -> &mut ArrayBufferWriterVariants {
         &mut self.chromatogram_buffers
+    }
+
+    fn wavelength_data_buffer_mut(&mut self) -> &mut GenericDataArrayWriter {
+        todo!()
+    }
+
+    fn wavelength_entry_buffer_mut(&mut self) -> &mut WavelengthSpectrumBuilder {
+        &mut self.wavelength_metadata_buffer
     }
 }
 
@@ -255,6 +262,7 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
             chromatogram_buffers,
             chromatogram_metadata_buffer: Default::default(),
             spectrum_data_point_counter: 0,
+            wavelength_metadata_buffer: Default::default(),
 
             use_chunked_encoding,
             use_chromatogram_chunked_encoding,

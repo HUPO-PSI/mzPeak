@@ -20,7 +20,7 @@ use crate::spectrum::AuxiliaryArray;
 
 pub use crate::buffer_descriptors::{
     ArrayIndex, ArrayIndexEntry, BufferContext, BufferFormat, BufferName, SerializedArrayIndex,
-    SerializedArrayIndexEntry, array_priority, array_type_from_accession,
+    SerializedArrayIndexEntry, array_type_ordering_ordinal, array_type_from_accession,
     binary_datatype_from_accession,
 };
 
@@ -85,7 +85,7 @@ pub fn array_map_to_schema_arrays_and_excess(
 
     for (_, v) in array_map.iter() {
         let buffer_name = BufferName::from_data_array(context, v)
-            .with_sorting_rank((*v.name() == context.default_sorted_array()).then(|| 0));
+            .with_sorting_rank((*v.name() == context.default_sorted_array()).then(|| 1));
         let buffer_name = overrides.map(&buffer_name);
 
         let fieldref = buffer_name.to_field();
@@ -95,7 +95,7 @@ pub fn array_map_to_schema_arrays_and_excess(
                 .find(|c| c.name() == fieldref.name())
                 .is_none()
             {
-                log::trace!("{fieldref:?} did not map to schema {schema:?}");
+                log::trace!("{fieldref:?} |\n{buffer_name:?}\ndid not map to schema\n{schema:#?}\nwith overrides\n{overrides:#?}");
                 auxiliary.push(AuxiliaryArray::from_data_array(v)?);
                 continue;
             }
@@ -168,6 +168,14 @@ pub const MZ_ARRAY: BufferName = BufferName::new(
     BinaryDataArrayType::Float64,
 )
 .with_unit(Unit::MZ)
+.with_sorting_rank(Some(1));
+
+pub const WAVELENGTH_ARRAY: BufferName = BufferName::new(
+    BufferContext::WavelengthSpectrum,
+    ArrayType::WavelengthArray,
+    BinaryDataArrayType::Float32,
+)
+.with_unit(Unit::Nanometer)
 .with_sorting_rank(Some(1));
 
 pub const TIME_ARRAY: BufferName = BufferName::new(

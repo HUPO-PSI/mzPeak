@@ -15,7 +15,7 @@ use crate::{
     buffer_descriptors::{BufferOverrideTable, BufferPriority, BufferTransform},
     chunk_series::{ArrowArrayChunk, ChunkingStrategy},
     filter::{drop_where_column_is_zero_run, nullify_at_zero_pair},
-    peak_series::{ArrayIndex, ArrayIndexEntry, INTENSITY_ARRAY, MZ_ARRAY, TIME_ARRAY},
+    peak_series::{ArrayIndex, ArrayIndexEntry, INTENSITY_ARRAY, MZ_ARRAY, TIME_ARRAY, WAVELENGTH_ARRAY},
 };
 
 pub trait ArrayBufferWriter {
@@ -171,6 +171,9 @@ pub trait ArrayBufferWriter {
         );
         array_index
     }
+
+    fn point_count(&self) -> u64;
+    fn point_count_mut(&mut self) -> &mut u64;
 }
 
 /// A data buffer for the `point layout`
@@ -190,6 +193,7 @@ pub struct PointBuffers {
     null_zeros: bool,
     is_profile_buffer: Vec<bool>,
     include_time: bool,
+    point_count: u64,
 }
 
 impl PointBuffers {
@@ -388,6 +392,7 @@ impl ArrayBufferWriter for PointBuffers {
 
     #[inline(always)]
     fn add_arrays(&mut self, fields: Fields, arrays: Vec<ArrayRef>, size: usize, is_profile: bool) {
+        self.point_count += size as u64;
         self.add_arrays(fields, arrays, size, is_profile);
     }
 
@@ -424,6 +429,14 @@ impl ArrayBufferWriter for PointBuffers {
     fn drop_zero_intensity(&self) -> bool {
         self.drop_zero_column.is_some()
     }
+
+    fn point_count(&self) -> u64 {
+        self.point_count
+    }
+
+    fn point_count_mut(&mut self) -> &mut u64 {
+        &mut self.point_count
+    }
 }
 
 /// A data buffer for the `chunked layout`
@@ -441,6 +454,7 @@ pub struct ChunkBuffers {
     is_profile_buffer: Vec<bool>,
     include_time: bool,
     chunking_strategy: ChunkingStrategy,
+    point_count: u64,
 }
 
 impl ChunkBuffers {
@@ -469,6 +483,7 @@ impl ChunkBuffers {
             is_profile_buffer,
             include_time,
             chunking_strategy,
+            point_count: 0,
         }
     }
 
@@ -498,12 +513,13 @@ impl ArrayBufferWriter for ChunkBuffers {
         &mut self,
         fields: Fields,
         arrays: Vec<ArrayRef>,
-        _size: usize,
+        size: usize,
         is_profile: bool,
     ) {
         self.chunk_buffer
             .push(StructArray::new(fields, arrays, None));
         self.is_profile_buffer.push(is_profile);
+        self.point_count += size as u64;
     }
 
     fn num_chunks(&self) -> usize {
@@ -573,6 +589,14 @@ impl ArrayBufferWriter for ChunkBuffers {
     fn include_time(&self) -> bool {
         self.include_time
     }
+
+    fn point_count(&self) -> u64 {
+        self.point_count
+    }
+
+    fn point_count_mut(&mut self) -> &mut u64 {
+        &mut self.point_count
+    }
 }
 
 /// An abstraction over [`ArrayBufferWriter`] types
@@ -596,6 +620,13 @@ impl ArrayBufferWriterVariants {
         match self {
             ArrayBufferWriterVariants::ChunkBuffers(chunk_buffers) => chunk_buffers.is_empty(),
             ArrayBufferWriterVariants::PointBuffers(point_buffers) => point_buffers.is_empty(),
+        }
+    }
+
+    pub fn chunking_strategy(&self) -> Option<&ChunkingStrategy> {
+        match self {
+            ArrayBufferWriterVariants::ChunkBuffers(chunk_buffers) => Some(&chunk_buffers.chunking_strategy),
+            ArrayBufferWriterVariants::PointBuffers(_) => None,
         }
     }
 }
@@ -727,6 +758,20 @@ impl ArrayBufferWriter for ArrayBufferWriterVariants {
             ArrayBufferWriterVariants::PointBuffers(point_buffers) => point_buffers.include_time(),
         }
     }
+
+    fn point_count(&self) -> u64 {
+        match self {
+            ArrayBufferWriterVariants::ChunkBuffers(chunk_buffers) => chunk_buffers.point_count(),
+            ArrayBufferWriterVariants::PointBuffers(point_buffers) => point_buffers.point_count(),
+        }
+    }
+
+    fn point_count_mut(&mut self) -> &mut u64 {
+        match self {
+            ArrayBufferWriterVariants::ChunkBuffers(chunk_buffers) => chunk_buffers.point_count_mut(),
+            ArrayBufferWriterVariants::PointBuffers(point_buffers) => point_buffers.point_count_mut(),
+        }
+    }
 }
 
 /// A builder for [`ArrayBufferWriter`] types.
@@ -844,6 +889,13 @@ impl ArrayBuffersBuilder {
                     .add_field(TIME_ARRAY.to_field())
                     .add_field(INTENSITY_ARRAY.to_field())
             },
+            BufferContext::WavelengthSpectrum => {
+                self.add_field(buffer_context.index_field())
+                    .add_field(WAVELENGTH_ARRAY.to_field())
+                    .add_field(INTENSITY_ARRAY.clone()
+                                    .with_context(BufferContext::WavelengthSpectrum)
+                                    .to_field())
+            }
         };
         self
     }
@@ -862,10 +914,10 @@ impl ArrayBuffersBuilder {
     /// Canonicalize the order of array fields
     pub fn canonicalize_field_order(&mut self) {
         self.array_fields.sort_by(|a, b| {
-            if a.name() == "spectrum_index" || a.name() == "chromatogram_index" {
+            if BufferContext::is_index_name(a.name()) {
                 return Ordering::Less;
             }
-            if b.name() == "spectrum_index" || b.name() == "chromatogram_index" {
+            if BufferContext::is_index_name(b.name()) {
                 return Ordering::Greater;
             }
             let a_name = BufferName::from_field(BufferContext::Spectrum, a.clone());
@@ -978,6 +1030,9 @@ impl ArrayBuffersBuilder {
                         BufferContext::Chromatogram => match name.array_type {
                             _ => {}
                         },
+                        BufferContext::WavelengthSpectrum => match name.array_type {
+                            _ => {}
+                        }
                     }
                     *f = name.update_field(f.clone());
                 }
@@ -1092,6 +1147,7 @@ impl ArrayBuffersBuilder {
             is_profile_buffer: Vec::new(),
             null_zeros: self.null_zeros,
             include_time: self.include_time,
+            point_count: 0
         }
     }
 }

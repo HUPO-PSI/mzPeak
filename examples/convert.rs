@@ -330,10 +330,31 @@ pub fn add_processing_metadata(writer: &mut MzPeakWriterType<fs::File>) {
 }
 
 pub fn convert_file(input_path: &Path, output_path: &Path, args: &ConvertArgs) -> io::Result<()> {
-    let mut reader = MZReaderType::<_, CentroidPeak, DeconvolutedPeak>::open_path(&input_path)
-        .inspect_err(|e| eprintln!("Failed to open data file: {e}"))?;
+    if input_path
+        .extension()
+        .map(|s| s == "gz")
+        .unwrap_or_default()
+    {
+        let reader = MZReaderType::open_gzipped_read_seek(io::BufReader::new(
+            fs::File::open(input_path)
+                .inspect_err(|e| eprintln!("Failed to open base compressed file: {e}"))?,
+        )).inspect_err(|e| eprintln!("Failed to open data file: {e}"))?;
+        convert_from_reader(reader, output_path, args)
+    } else {
+        let reader = MZReaderType::<_, CentroidPeak, DeconvolutedPeak>::open_path(&input_path)
+            .inspect_err(|e| eprintln!("Failed to open data file: {e}"))?;
+        convert_from_reader(reader, output_path, args)
+    }
+}
 
+pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
+    mut reader: MZReaderType<R>,
+    output_path: &Path,
+    args: &ConvertArgs,
+) -> io::Result<()> {
     let n = reader.len();
+    let n_chroma = reader.count_chromatograms();
+    log::debug!("{n} spectra and {n_chroma} chromatograms found");
     let overrides = args.create_type_overrides();
 
     if let Some(c) = args.chunked_encoding.as_ref() {

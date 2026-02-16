@@ -6,7 +6,7 @@ use std::{
 };
 
 use arrow::{
-    array::{ArrayBuilder, AsArray, RecordBatch},
+    array::{Array, ArrayBuilder, AsArray, RecordBatch},
     datatypes::{Field, FieldRef, Schema},
 };
 use mzpeaks::{CentroidPeak, DeconvolutedPeak};
@@ -20,21 +20,25 @@ use mzdata::{
     io::{RandomAccessSpectrumSource, StreamingSpectrumIterator},
     meta::{FileMetadataConfig, MSDataFileMetadata},
     prelude::*,
-    spectrum::{ArrayType, BinaryArrayMap, Chromatogram, MultiLayerSpectrum, SignalContinuity},
+    spectrum::{BinaryArrayMap, Chromatogram, MultiLayerSpectrum, SignalContinuity},
 };
 
 use crate::{
     BufferName,
-    archive::{MzPeakArchiveType, ZipArchiveWriter},
-    buffer_descriptors::{BufferOverrideTable, BufferPriority},
-    peak_series::{
-        ArrayIndex, BufferContext, TIME_ARRAY, ToMzPeakDataSeries, array_map_to_schema_arrays,
+    archive::{DataKind, EntityType, FileEntry, MzPeakArchiveType, ZipArchiveWriter},
+    buffer_descriptors::BufferOverrideTable,
+    constants::{
+        CHROMATOGRAM_COUNT, CHROMATOGRAM_DATA_POINT_COUNT, SPECTRUM_COUNT, SPECTRUM_DATA_POINT_COUNT, WAVELENGTH_SPECTRUM_COUNT, WAVELENGTH_SPECTRUM_DATA_ARRAYS_NAME, WAVELENGTH_SPECTRUM_METADATA_NAME
     },
-    writer::builder::SpectrumFieldVisitors,
+    peak_series::{ArrayIndex, BufferContext, ToMzPeakDataSeries, array_map_to_schema_arrays},
+    writer::{base::GenericDataArrayWriter, builder::SpectrumFieldVisitors},
 };
 use crate::{
     chunk_series::{ArrowArrayChunk, ChunkingStrategy},
-    peak_series::MZ_ARRAY,
+    constants::{
+        CHROMATOGRAM_ARRAY_INDEX, SPECTRUM_ARRAY_INDEX, WAVELENGTH_SPECTRUM_ARRAY_INDEX,
+        WAVELENGTH_SPECTRUM_DATA_POINT_COUNT,
+    },
 };
 
 mod array_buffer;
@@ -56,7 +60,7 @@ pub use visitor::{
     ChromatogramDetailsBuilder, CustomBuilderFromParameter, IsolationWindowBuilder, ParamBuilder,
     ParamListBuilder, ParamValueBuilder, PrecursorBuilder, ScanBuilder, ScanWindowBuilder,
     SelectedIonBuilder, SpectrumBuilder, SpectrumDetailsBuilder, SpectrumVisitor, StructVisitor,
-    StructVisitorBuilder, VisitorBase, inflect_cv_term_to_column_name,
+    StructVisitorBuilder, VisitorBase, WavelengthSpectrumBuilder, inflect_cv_term_to_column_name,
 };
 
 pub(crate) use base::implement_mz_metadata;
@@ -85,22 +89,17 @@ impl<'a> ArrayTypesSampler<'a> {
         }
     }
 
-    fn from_binary_array_map(&mut self, map: &BinaryArrayMap, context: BufferContext) -> Option<Vec<FieldRef>> {
+    fn from_binary_array_map(
+        &mut self,
+        map: &BinaryArrayMap,
+        context: BufferContext,
+    ) -> Option<Vec<FieldRef>> {
         // generate a schema for this chunked
         if let Some(use_chunked_encoding) = self.use_chunked_encoding {
             ArrowArrayChunk::from_arrays(
                 0,
                 None,
-                match context {
-                    BufferContext::Spectrum => MZ_ARRAY
-                        .clone()
-                        .with_priority(Some(BufferPriority::Primary))
-                        .with_sorting_rank(Some(1)),
-                    BufferContext::Chromatogram => TIME_ARRAY
-                        .clone()
-                        .with_priority(Some(BufferPriority::Primary))
-                        .with_sorting_rank(Some(1)),
-                },
+                context.main_axis(),
                 map,
                 use_chunked_encoding,
                 self.overrides,
@@ -127,10 +126,9 @@ impl<'a> ArrayTypesSampler<'a> {
             array_map_to_schema_arrays(
                 context,
                 map,
-                map.get(&match context {
-                    BufferContext::Spectrum => ArrayType::MZArray,
-                    BufferContext::Chromatogram => ArrayType::TimeArray,
-                }).and_then(|a| a.data_len().ok()).unwrap_or_default(),
+                map.get(&context.default_sorted_array())
+                    .and_then(|a| a.data_len().ok())
+                    .unwrap_or_default(),
                 0,
                 None,
                 self.overrides,
@@ -145,15 +143,24 @@ impl<'a> ArrayTypesSampler<'a> {
         peaks: &[T],
     ) -> Option<Vec<FieldRef>> {
         if self.use_chunked_encoding.is_some() {
-            self.from_binary_array_map(&BuildArrayMapFrom::as_arrays(peaks), BufferContext::Spectrum)
+            self.from_binary_array_map(
+                &BuildArrayMapFrom::as_arrays(peaks),
+                BufferContext::Spectrum,
+            )
         } else {
-            let fields = T::to_fields().into_iter().cloned().map(|field| {
-                if let Some(name) = BufferName::from_field(BufferContext::Spectrum, field.clone()) {
-                    self.overrides.map(&name).to_field()
-                } else {
-                    field
-                }
-            }).collect();
+            let fields = T::to_fields()
+                .into_iter()
+                .cloned()
+                .map(|field| {
+                    if let Some(name) =
+                        BufferName::from_field(BufferContext::Spectrum, field.clone())
+                    {
+                        self.overrides.map(&name).to_field()
+                    } else {
+                        field
+                    }
+                })
+                .collect();
 
             Some(fields)
         }
@@ -179,7 +186,9 @@ impl<'a> ArrayTypesSampler<'a> {
         if prefer_peaks {
             match s.peaks() {
                 mzdata::spectrum::RefPeakDataLevel::Missing => None,
-                mzdata::spectrum::RefPeakDataLevel::RawData(map) => self.from_binary_array_map(map, BufferContext::Spectrum),
+                mzdata::spectrum::RefPeakDataLevel::RawData(map) => {
+                    self.from_binary_array_map(map, BufferContext::Spectrum)
+                }
                 mzdata::spectrum::RefPeakDataLevel::Centroid(peak_set_vec) => {
                     self.from_peak_type(peak_set_vec.as_slice())
                 }
@@ -193,16 +202,18 @@ impl<'a> ArrayTypesSampler<'a> {
         }
     }
 
-    fn sample_chromatogram_array_types(&mut self, iter: impl Iterator<Item = Chromatogram>) -> Vec<FieldRef> {
+    fn sample_chromatogram_array_types(
+        &mut self,
+        iter: impl Iterator<Item = Chromatogram>,
+    ) -> Vec<FieldRef> {
         let mut arrays: Vec<Arc<Field>> = Vec::new();
 
-        let field_it = iter
-            .flat_map(|s| self.visit_chromatogram(&s))
-            .flatten();
+        let field_it = iter.flat_map(|s| self.visit_chromatogram(&s)).flatten();
 
         for field in field_it {
             if !arrays.iter().any(|f| f.name() == field.name()) {
-                if let Some(buffer) = BufferName::from_field(BufferContext::Chromatogram, field.clone())
+                if let Some(buffer) =
+                    BufferName::from_field(BufferContext::Chromatogram, field.clone())
                 {
                     log::trace!("Adding {buffer:?} to schema")
                 }
@@ -316,7 +327,8 @@ pub fn sample_array_types_from_spectrum_source<
         .into_iter()
         .flat_map(|i| reader.get_spectrum_by_index(i));
 
-    ArrayTypesSampler::new(overrides, use_chunked_encoding).sample_spectrum_array_types(it, prefer_peaks)
+    ArrayTypesSampler::new(overrides, use_chunked_encoding)
+        .sample_spectrum_array_types(it, prefer_peaks)
 }
 
 /// Array type inference from inputs
@@ -340,7 +352,7 @@ impl MzPeakWriterBuilder {
             reader,
             &self.spectrum_overrides(),
             self.chunked_encoding,
-            false
+            false,
         );
 
         for f in fields {
@@ -376,7 +388,9 @@ impl MzPeakWriterBuilder {
         reader: &mut R,
     ) -> Self {
         let mut point_builder = self.take_or_initialize_peak_builder();
-        for f in sample_array_types_from_spectrum_source(reader, &self.spectrum_overrides(), None, true) {
+        for f in
+            sample_array_types_from_spectrum_source(reader, &self.spectrum_overrides(), None, true)
+        {
             point_builder = point_builder.add_field(f);
         }
         self.store_peaks_and_profiles_apart(Some(point_builder))
@@ -446,15 +460,14 @@ pub struct MzPeakWriterType<
     separate_peak_writer: Option<MiniPeakWriterType<fs::File>>,
 
     chromatogram_buffers: ArrayBufferWriterVariants,
+    wavelength_spectrum_buffers: Option<GenericDataArrayWriter>,
 
     spectrum_metadata_buffer: SpectrumBuilder,
     chromatogram_metadata_buffer: ChromatogramBuilder,
+    wavelength_spectrum_metadata_buffer: WavelengthSpectrumBuilder,
 
     use_chunked_encoding: Option<ChunkingStrategy>,
     use_chromatogram_chunked_encoding: Option<ChunkingStrategy>,
-
-    spectrum_data_point_counter: u64,
-    chromatogram_data_point_counter: u64,
 
     buffer_size: usize,
     compression: Compression,
@@ -528,6 +541,20 @@ impl<
 
     fn chromatogram_data_buffer_mut(&mut self) -> &mut ArrayBufferWriterVariants {
         &mut self.chromatogram_buffers
+    }
+
+    fn wavelength_data_buffer_mut(&mut self) -> &mut GenericDataArrayWriter {
+        if self.wavelength_spectrum_buffers.is_some() {
+            return self.wavelength_spectrum_buffers.as_mut().unwrap();
+        } else {
+            let writer = self.make_wavelength_data_writer();
+            self.wavelength_spectrum_buffers = Some(writer);
+            self.wavelength_spectrum_buffers.as_mut().unwrap()
+        }
+    }
+
+    fn wavelength_entry_buffer_mut(&mut self) -> &mut WavelengthSpectrumBuilder {
+        &mut self.wavelength_spectrum_metadata_buffer
     }
 }
 
@@ -662,13 +689,13 @@ impl<
             spectrum_metadata_buffer,
             spectrum_buffers,
             chromatogram_buffers,
-            spectrum_data_point_counter: 0,
-            chromatogram_data_point_counter: 0,
             chromatogram_metadata_buffer: Default::default(),
-            buffer_size: buffer_size,
+            buffer_size,
             mz_metadata: Default::default(),
             compression,
             write_batch_config,
+            wavelength_spectrum_buffers: None,
+            wavelength_spectrum_metadata_buffer: Default::default(),
             _t: PhantomData,
         };
         this.add_spectrum_array_metadata();
@@ -680,7 +707,7 @@ impl<
     fn add_spectrum_array_metadata(&mut self) {
         let spectrum_array_index: ArrayIndex = self.spectrum_buffers.as_array_index();
         self.append_key_value_metadata(
-            "spectrum_array_index".to_string(),
+            SPECTRUM_ARRAY_INDEX.into(),
             spectrum_array_index.to_json().into(),
         );
     }
@@ -688,7 +715,7 @@ impl<
     fn add_chromatogram_array_metadata(&mut self) {
         let chromatogram_array_index: ArrayIndex = self.chromatogram_buffers.as_array_index();
         self.append_key_value_metadata(
-            "chromatogram_array_index".to_string(),
+            CHROMATOGRAM_ARRAY_INDEX.into(),
             Some(chromatogram_array_index.to_json()),
         );
     }
@@ -714,7 +741,6 @@ impl<
     fn flush_data_arrays(&mut self) -> io::Result<()> {
         let use_chunks = self.use_chunked_encoding().is_some();
         for batch in self.spectrum_buffers.drain() {
-            self.spectrum_data_point_counter += batch.num_rows() as u64;
             if let Some(writer) = self.archive_writer.as_mut() {
                 writer.write(&batch)?;
                 if writer.in_progress_size() > 512_000_000 && use_chunks {
@@ -743,16 +769,19 @@ impl<
         self.spectrum_buffers.len()
     }
 
-    fn flush_chromatogram_metadata_records(&mut self) -> io::Result<()> {
-        let arrays = self.chromatogram_metadata_buffer.finish();
+    fn write_struct_arrays(&mut self, arrays: Arc<dyn Array>) -> io::Result<()> {
         let batch = RecordBatch::from(arrays.as_struct());
         self.archive_writer.as_mut().unwrap().write(&batch)?;
         Ok(())
     }
 
+    fn flush_chromatogram_metadata_records(&mut self) -> io::Result<()> {
+        let arrays = self.chromatogram_metadata_buffer.finish();
+        self.write_struct_arrays(arrays)
+    }
+
     fn flush_chromatogram_data_records(&mut self) -> io::Result<()> {
         for batch in self.chromatogram_buffers.drain() {
-            self.chromatogram_data_point_counter += batch.num_rows() as u64;
             if let Some(writer) = self.archive_writer.as_mut() {
                 writer.write(&batch)?;
                 // if writer.in_progress_size() > 512_000_000 && use_chunks {
@@ -775,12 +804,12 @@ impl<
         if self.archive_writer.is_some() {
             self.flush_data_arrays()?;
             self.append_key_value_metadata(
-                "spectrum_count".into(),
+                SPECTRUM_COUNT.into(),
                 Some(self.spectrum_counter().to_string()),
             );
             self.append_key_value_metadata(
-                "spectrum_data_point_count".into(),
-                Some(self.spectrum_data_point_counter.to_string()),
+                SPECTRUM_DATA_POINT_COUNT.into(),
+                Some(self.spectrum_buffers.point_count().to_string()),
             );
 
             let mut writer = self.archive_writer.take().unwrap().into_inner()?;
@@ -807,15 +836,114 @@ impl<
             self.flush_spectrum_metadata_records()?;
             self.append_metadata();
             self.append_key_value_metadata(
-                "spectrum_count".into(),
+                SPECTRUM_COUNT.into(),
                 Some(self.spectrum_counter().to_string()),
             );
             self.append_key_value_metadata(
-                "spectrum_data_point_count".into(),
-                Some(self.spectrum_data_point_counter.to_string()),
+                SPECTRUM_DATA_POINT_COUNT.into(),
+                Some(self.spectrum_buffers.point_count().to_string()),
             );
 
             writer = self.archive_writer.take().unwrap().into_inner()?;
+
+            if !self.wavelength_spectrum_metadata_buffer.is_empty() {
+                let entry = FileEntry::new(
+                    WAVELENGTH_SPECTRUM_METADATA_NAME.into(),
+                    EntityType::WavelengthSpectrum,
+                    DataKind::Metadata,
+                );
+                writer
+                    .start_for_entry(entry)
+                    .map_err(|e| io::Error::other(e))?;
+                let metadata_fields = self.wavelength_spectrum_metadata_buffer.schema();
+                self.archive_writer = Some(ArrowWriter::try_new_with_options(
+                    writer,
+                    metadata_fields.clone(),
+                    ArrowWriterOptions::new()
+                        .with_properties(Self::spectrum_metadata_writer_props(&metadata_fields)),
+                )?);
+
+                self.append_key_value_metadata(
+                        WAVELENGTH_SPECTRUM_DATA_POINT_COUNT.into(),
+                        Some(
+                            self.wavelength_spectrum_buffers
+                                .as_ref()
+                                .unwrap()
+                                .point_count()
+                                .to_string(),
+                        ),
+                    );
+
+                self.append_key_value_metadata(
+                    WAVELENGTH_SPECTRUM_COUNT.into(),
+                    Some(self.wavelength_spectrum_metadata_buffer.len().to_string())
+                );
+
+                self.append_metadata();
+
+                let arrays = self.wavelength_spectrum_metadata_buffer.finish();
+                self.write_struct_arrays(arrays)?;
+                writer = self.archive_writer.take().unwrap().into_inner()?;
+
+                let entry = FileEntry::new(
+                    WAVELENGTH_SPECTRUM_DATA_ARRAYS_NAME.into(),
+                    EntityType::WavelengthSpectrum,
+                    DataKind::DataArray,
+                );
+                writer
+                    .start_for_entry(entry)
+                    .map_err(|e| io::Error::other(e))?;
+
+                let schema_props = if let Some(buffers) = self.wavelength_spectrum_buffers.as_ref()
+                {
+                    let schema = buffers.schema().clone();
+                    let props = Self::generic_data_writer_props(
+                        buffers.buffers(),
+                        BufferContext::WavelengthSpectrum
+                            .index_field()
+                            .name()
+                            .to_string(),
+                        &buffers.use_chunked_encoding().copied(),
+                        self.compression,
+                        &["wavelength"],
+                    );
+                    Some((schema, props))
+                } else {
+                    None
+                };
+                if let Some((schema, props)) = schema_props {
+                    self.archive_writer = Some(ArrowWriter::try_new_with_options(
+                        writer,
+                        schema,
+                        ArrowWriterOptions::new().with_properties(props),
+                    )?);
+                    self.append_key_value_metadata(
+                        WAVELENGTH_SPECTRUM_DATA_POINT_COUNT.into(),
+                        Some(
+                            self.wavelength_spectrum_buffers
+                                .as_ref()
+                                .unwrap()
+                                .point_count()
+                                .to_string(),
+                        ),
+                    );
+                    self.append_key_value_metadata(
+                        WAVELENGTH_SPECTRUM_ARRAY_INDEX.into(),
+                        Some(
+                            self.wavelength_spectrum_buffers
+                                .as_ref()
+                                .unwrap()
+                                .as_array_index()
+                                .to_json(),
+                        ),
+                    );
+
+                    let buffers = self.wavelength_spectrum_buffers.as_mut().unwrap();
+                    buffers.drain_into(self.archive_writer.as_mut().unwrap())?;
+
+                    writer = self.archive_writer.take().unwrap().into_inner()?;
+                }
+            }
 
             if !self.chromatogram_metadata_buffer.is_empty() {
                 writer.start_chromatogram_metadata().unwrap();
@@ -828,12 +956,12 @@ impl<
                 )?);
                 self.flush_chromatogram_metadata_records()?;
                 self.append_key_value_metadata(
-                    "chromatogram_count".into(),
+                    CHROMATOGRAM_COUNT.into(),
                     Some(self.chromatogram_counter().to_string()),
                 );
                 self.append_key_value_metadata(
-                    "chromatogram_data_point_count".into(),
-                    Some(self.chromatogram_data_point_counter.to_string()),
+                    CHROMATOGRAM_DATA_POINT_COUNT.into(),
+                    Some(self.chromatogram_buffers.point_count().to_string()),
                 );
                 writer = self.archive_writer.take().unwrap().into_inner()?;
 
@@ -853,8 +981,8 @@ impl<
                 self.flush_chromatogram_data_records()?;
                 self.add_chromatogram_array_metadata();
                 self.append_key_value_metadata(
-                    "chromatogram_data_point_count".into(),
-                    Some(self.chromatogram_data_point_counter.to_string()),
+                    CHROMATOGRAM_DATA_POINT_COUNT.into(),
+                    Some(self.chromatogram_buffers.point_count().to_string()),
                 );
                 self.append_metadata();
                 writer = self.archive_writer.take().unwrap().into_inner()?;
@@ -936,10 +1064,16 @@ pub type MzPeakWriter<W> = MzPeakWriterType<W, CentroidPeak, DeconvolutedPeak>;
 
 #[cfg(test)]
 mod test {
-    use arrow::datatypes::DataType;
-    use mzdata::{params::Unit, spectrum::{ArrayType, BinaryDataArrayType}};
+    use arrow::datatypes::{DataType, UInt64Type};
+    use mzdata::{
+        params::Unit,
+        spectrum::{ArrayType, BinaryDataArrayType},
+    };
 
-    use crate::{BufferName, MzPeakReader, archive::FileEntry, peak_series::BufferFormat};
+    use crate::{
+        BufferName, MzPeakReader, archive::FileEntry, buffer_descriptors::BufferPriority,
+        peak_series::BufferFormat,
+    };
 
     use super::*;
     use std::io;
@@ -948,7 +1082,8 @@ mod test {
     fn test_array_type_sampling() -> io::Result<()> {
         let mut reader = mzdata::MZReader::open_path("small.mzML")?;
         let overrides1 = BufferOverrideTable::default();
-        let array_types = sample_array_types_from_spectrum_source(&mut reader, &overrides1, None, false);
+        let array_types =
+            sample_array_types_from_spectrum_source(&mut reader, &overrides1, None, false);
 
         assert_eq!(array_types.len(), 3);
         let mz_buffer = BufferName::new(
@@ -1082,7 +1217,8 @@ mod test {
         assert!(
             new_reader
                 .metadata
-                .spectrum_auxiliary_array_counts
+                .spectra
+                .auxiliary_array_counts
                 .iter()
                 .all(|z| *z == 0)
         );
@@ -1099,10 +1235,64 @@ mod test {
             assert_eq!(a.id(), b.id());
         }
 
-        eprintln!("{:?}", new_reader.metadata.chromatogram_auxiliary_array_counts);
+        eprintln!(
+            "{:?}",
+            new_reader.metadata.chromatogram_auxiliary_array_counts
+        );
         let chrom = new_reader.get_chromatogram(0).unwrap();
         for (name, arr) in chrom.arrays.iter() {
-            assert_eq!(arr.data_len(), Ok(48), "{name:?} was not decoded properly or it did not have 48 points");
+            assert_eq!(
+                arr.data_len(),
+                Ok(48),
+                "{name:?} was not decoded properly or it did not have 48 points"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test_log::test]
+    fn test_wavelengths() -> io::Result<()> {
+        let mut buf = io::Cursor::new(Vec::<u8>::with_capacity(2usize.pow(16u32)));
+        let mut reader = mzdata::MZReader::open_path(
+            "test/data/TOFsulfasMS4GHzDualMode+DADSpectra+UVSignal272-NoProfile.mzML"
+        )?;
+        let builder = MzPeakWriter::<io::Cursor<Vec<u8>>>::builder();
+
+        let mut writer = builder.build(&mut buf, true);
+        writer.copy_metadata_from(&reader);
+        let overrides = writer.spectrum_buffers.overrides();
+        assert!(overrides.iter().any(|(_, v)| {
+            v.buffer_priority
+                .is_some_and(|v| matches!(v, BufferPriority::Primary))
+        }));
+        writer.write_all_owned(reader.iter())?;
+        for chrom in reader.iter_chromatograms() {
+            writer.write_chromatogram(&chrom)?;
+        }
+
+        writer.finish()?;
+        drop(writer);
+
+        let new_reader = MzPeakReader::from_buf(buf.into_inner().into())?;
+        let wl_meta_entry = new_reader.file_index().iter().find(
+            |entry| entry.entity_type == EntityType::WavelengthSpectrum && entry.data_kind == DataKind::Metadata);
+        assert!(wl_meta_entry.is_some());
+        let wl_meta_entry = wl_meta_entry.unwrap();
+        let batches = new_reader.open_parquet(&wl_meta_entry.name)?.build()?;
+        for batch in batches {
+            let batch = batch.unwrap();
+            let spectra = batch.column(0).as_struct();
+            let indices = spectra.column(0).as_primitive::<UInt64Type>();
+            assert_eq!(indices.len(), 520);
+            assert_eq!(arrow::compute::min(indices).unwrap(), 0);
+            assert_eq!(arrow::compute::max(indices).unwrap(), 519);
+
+            let spectra = batch.column(1).as_struct();
+            let indices = spectra.column(0).as_primitive::<UInt64Type>();
+            assert_eq!(indices.len(), 520);
+            assert_eq!(arrow::compute::min(indices).unwrap(), 0);
+            assert_eq!(arrow::compute::max(indices).unwrap(), 519);
         }
 
         Ok(())
@@ -1131,7 +1321,10 @@ mod test {
                 .is_some_and(|v| matches!(v, BufferPriority::Primary))
         }));
         writer.write_all_owned(reader.iter().map(|mut s| {
-            if matches!(s.signal_continuity(), SignalContinuity::Profile) && s.ms_level() == 1 && s.index() < 10 {
+            if matches!(s.signal_continuity(), SignalContinuity::Profile)
+                && s.ms_level() == 1
+                && s.index() < 10
+            {
                 s.pick_peaks(3.0).unwrap();
             }
             s

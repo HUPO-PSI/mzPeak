@@ -181,6 +181,10 @@ where
 
 /// A [`serde_json`]-friendly version of [`Param`] that uses
 /// [`serde_json::Value`] instead of [`ParamValueSplit`].
+///
+/// This type is used to represent parameters stored
+/// in the metadata structures that are JSON-serialized in the
+/// Parquet metadata footer.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MetaParam {
     pub name: Option<String>,
@@ -558,20 +562,31 @@ impl From<&mzdata::meta::Sample> for Sample {
     }
 }
 
+
+/// A variadic data type meant to store a value that is either a path to a Parquet column
+/// which holds the value for this entity that varies over rows, a constant [`CURIE`] or
+/// no value stored, the equivalent of [`Option::None`].
+///
+/// Used primarily for denoting how to resolve the storage of [`Unit`] for a column.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub enum PathOrCURIE {
+    /// The column path denoting where each row's [`CURIE`] for this entity lives
     Path(Vec<String>),
+    /// A constant [`CURIE`] that applies to all rows
     CURIE(CURIE),
+    /// No value is stored, as in [`Option::None`].
     #[default]
     None,
 }
 
 impl PathOrCURIE {
+    /// The value is not [`Self::None`]
     pub fn is_defined(&self) -> bool {
         !matches!(self, Self::None)
     }
 }
 
+/// A [`Unit`] translates to just storing the CURIE for that unit.
 impl From<Unit> for PathOrCURIE {
     fn from(value: Unit) -> Self {
         value.to_curie().map(|val| CURIE::from(val)).into()

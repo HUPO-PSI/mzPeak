@@ -9,9 +9,9 @@ use mzdata::{
 use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 
-use crate::param::{
+use crate::{param::{
     CURIE, curie_deserialize, curie_serialize, opt_curie_deserialize, opt_curie_serialize,
-};
+}, peak_series::{MZ_ARRAY, TIME_ARRAY, WAVELENGTH_ARRAY}};
 use crate::peak_series::array_to_arrow_type;
 
 /// Whether an data array series is associated with a spectrum or a chromatogram
@@ -19,14 +19,25 @@ use crate::peak_series::array_to_arrow_type;
 pub enum BufferContext {
     Spectrum,
     Chromatogram,
+    WavelengthSpectrum,
 }
 
 impl BufferContext {
     pub const fn index_name(&self) -> &'static str {
         match self {
             BufferContext::Spectrum => "spectrum_index",
+            Self::WavelengthSpectrum => "wavelength_spectrum_index",
             BufferContext::Chromatogram => "chromatogram_index",
         }
+    }
+
+    pub fn is_index_name(name: &str) -> bool {
+        for c in [Self::Spectrum, Self::Chromatogram, Self::WavelengthSpectrum] {
+            if c.index_name() == name {
+                return true;
+            }
+        }
+        false
     }
 
     pub fn index_field(&self) -> FieldRef {
@@ -36,6 +47,7 @@ impl BufferContext {
     pub const fn time_name(&self) -> &'static str {
         match self {
             BufferContext::Spectrum => "spectrum_time",
+            Self::WavelengthSpectrum => "wavelength_spectrum_time",
             BufferContext::Chromatogram => "chromatogram_time",
         }
     }
@@ -47,6 +59,7 @@ impl BufferContext {
     pub const fn name(&self) -> &'static str {
         match self {
             BufferContext::Spectrum => "spectrum",
+            Self::WavelengthSpectrum => "wavelength_spectrum",
             BufferContext::Chromatogram => "chromatogram",
         }
     }
@@ -55,6 +68,24 @@ impl BufferContext {
         match self {
             BufferContext::Spectrum => ArrayType::MZArray,
             BufferContext::Chromatogram => ArrayType::TimeArray,
+            Self::WavelengthSpectrum => ArrayType::WavelengthArray,
+        }
+    }
+
+    pub fn main_axis(&self) -> BufferName {
+        match self {
+            BufferContext::Spectrum => MZ_ARRAY
+                .clone()
+                .with_priority(Some(BufferPriority::Primary))
+                .with_sorting_rank(Some(1)),
+            BufferContext::Chromatogram => TIME_ARRAY
+                .clone()
+                .with_priority(Some(BufferPriority::Primary))
+                .with_sorting_rank(Some(1)),
+            BufferContext::WavelengthSpectrum => WAVELENGTH_ARRAY
+                .clone()
+                .with_priority(Some(BufferPriority::Primary))
+                .with_sorting_rank(Some(1)),
         }
     }
 }
@@ -283,7 +314,7 @@ impl Ord for BufferName {
         }
 
         // Different arrays should occur in a certain order
-        match array_priority(&self.array_type).cmp(&array_priority(&other.array_type)) {
+        match array_type_ordering_ordinal(&self.array_type).cmp(&array_type_ordering_ordinal(&other.array_type)) {
             core::cmp::Ordering::Equal => {}
             ord => return ord,
         }
@@ -396,14 +427,14 @@ pub fn binary_datatype_from_accession(
 }
 
 /// Compute an ordering constant for [`mzdata::spectrum::ArrayType`]
-pub const fn array_priority(array_type: &ArrayType) -> u64 {
+pub const fn array_type_ordering_ordinal(array_type: &ArrayType) -> u64 {
     match array_type {
         ArrayType::MZArray => 1,
         ArrayType::TimeArray => 2,
+        ArrayType::WavelengthArray => 3,
         ArrayType::IntensityArray => 5,
         ArrayType::ChargeArray => 6,
         ArrayType::SignalToNoiseArray => 7,
-        ArrayType::WavelengthArray => 8,
         ArrayType::IonMobilityArray => 9,
         ArrayType::MeanIonMobilityArray => 10,
         ArrayType::MeanDriftTimeArray => 11,
@@ -470,6 +501,16 @@ impl BufferName {
             buffer_priority: None,
             sorting_rank: None,
         }
+    }
+
+    pub const fn with_context(mut self, context: BufferContext) -> Self {
+        self.context = context;
+        self
+    }
+
+    pub const fn with_dtype(mut self, dtype: BinaryDataArrayType) -> Self {
+        self.dtype = dtype;
+        self
     }
 
     pub const fn with_priority(mut self, buffer_priority: Option<BufferPriority>) -> Self {
