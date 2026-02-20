@@ -1274,7 +1274,7 @@ mod test {
         writer.finish()?;
         drop(writer);
 
-        let new_reader = MzPeakReader::from_buf(buf.into_inner().into())?;
+        let mut new_reader = MzPeakReader::from_buf(buf.into_inner().into())?;
         let wl_meta_entry = new_reader.file_index().iter().find(
             |entry| entry.entity_type == EntityType::WavelengthSpectrum && entry.data_kind == DataKind::Metadata);
         assert!(wl_meta_entry.is_some());
@@ -1294,6 +1294,10 @@ mod test {
             assert_eq!(arrow::compute::min(indices).unwrap(), 0);
             assert_eq!(arrow::compute::max(indices).unwrap(), 519);
         }
+
+        let spec = new_reader.get_wavelength_spectrum(100).unwrap();
+        dbg!(spec);
+
 
         Ok(())
     }

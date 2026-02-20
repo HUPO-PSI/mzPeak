@@ -88,6 +88,8 @@ impl FileEntry {
             (EntityType::Spectrum, DataKind::Peaks) => super::MzPeakArchiveType::SpectrumPeakDataArrays,
             (EntityType::Chromatogram, DataKind::DataArray) => super::MzPeakArchiveType::ChromatogramDataArrays,
             (EntityType::Chromatogram, DataKind::Metadata) => super::MzPeakArchiveType::ChromatogramMetadata,
+            (EntityType::WavelengthSpectrum, DataKind::DataArray) => super::MzPeakArchiveType::WavelengthSpectrumDataArrays,
+            (EntityType::WavelengthSpectrum, DataKind::Metadata) => super::MzPeakArchiveType::WavelengthSpectrumMetadata,
             (EntityType::Other(_), _) => super::MzPeakArchiveType::Other,
             (_, _) => {
                 log::warn!("Could not map {self:?} to an archive type");
@@ -109,6 +111,8 @@ impl From<super::MzPeakArchiveType> for FileEntry {
             super::MzPeakArchiveType::SpectrumPeakDataArrays => FileEntry::new(value.tag_file_suffix().into(), EntityType::Spectrum, DataKind::Peaks),
             super::MzPeakArchiveType::ChromatogramMetadata => FileEntry::new(value.tag_file_suffix().into(), EntityType::Chromatogram, DataKind::Metadata),
             super::MzPeakArchiveType::ChromatogramDataArrays => FileEntry::new(value.tag_file_suffix().into(), EntityType::Chromatogram, DataKind::DataArray),
+            super::MzPeakArchiveType::WavelengthSpectrumDataArrays => FileEntry::new(value.tag_file_suffix().into(), EntityType::WavelengthSpectrum, DataKind::DataArray),
+            super::MzPeakArchiveType::WavelengthSpectrumMetadata => FileEntry::new(value.tag_file_suffix().into(), EntityType::WavelengthSpectrum, DataKind::Metadata),
             super::MzPeakArchiveType::Other => FileEntry::new("".into(), "other".parse().unwrap(), DataKind::Other("other".into())),
             super::MzPeakArchiveType::Proprietary => FileEntry::new("".into(), EntityType::Other("".into()), DataKind::Proprietary),
         }

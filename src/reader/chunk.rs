@@ -49,8 +49,8 @@ use super::utils::OneCache;
 
 pub(crate) struct DataChunkCache {
     pub(crate) row_group: RecordBatch,
-    pub(crate) spectrum_index_range: SimpleInterval<u64>,
-    pub(crate) spectrum_array_indices: Arc<ArrayIndex>,
+    pub(crate) index_range: SimpleInterval<u64>,
+    pub(crate) array_indices: Arc<ArrayIndex>,
     pub(crate) last_query_index: Option<u64>,
     pub(crate) last_query_span: Option<(usize, usize)>,
     pub(crate) buffer_context: BufferContext,
@@ -59,16 +59,16 @@ pub(crate) struct DataChunkCache {
 impl DataChunkCache {
     pub(crate) fn new(
         row_group: RecordBatch,
-        spectrum_index_range: SimpleInterval<u64>,
-        spectrum_array_indices: Arc<ArrayIndex>,
+        index_range: SimpleInterval<u64>,
+        array_indices: Arc<ArrayIndex>,
         last_query_index: Option<u64>,
         last_query_span: Option<(usize, usize)>,
         buffer_context: BufferContext,
     ) -> Self {
         Self {
             row_group,
-            spectrum_index_range,
-            spectrum_array_indices,
+            index_range,
+            array_indices,
             last_query_index,
             last_query_span,
             buffer_context,
@@ -116,7 +116,7 @@ impl DataChunkCache {
     pub(crate) fn slice_to_arrays_of(
         &mut self,
         index: u64,
-        mz_delta_model: Option<&RegressionDeltaModel<f64>>,
+        delta_model: Option<&RegressionDeltaModel<f64>>,
     ) -> io::Result<BinaryArrayMap> {
         let (start, end) = self.find_span_for_query(index);
         if !(start.is_some() && end.is_some()) {
@@ -139,7 +139,7 @@ impl DataChunkCache {
             }
             _ => {
                 let mut bin_map = HashMap::new();
-                for v in self.spectrum_array_indices.iter() {
+                for v in self.array_indices.iter() {
                     bin_map.insert(&v.name, v.as_buffer_name().as_data_array(0));
                 }
                 let mut out = BinaryArrayMap::new();
@@ -164,8 +164,8 @@ impl DataChunkCache {
 
         let out = ChunkDataReader::<std::fs::File>::decode_chunks(
             [batch].into_iter(),
-            &self.spectrum_array_indices,
-            mz_delta_model,
+            &self.array_indices,
+            delta_model,
         )?;
 
         Ok(out)
@@ -1190,7 +1190,7 @@ impl<T: ChunkReader + 'static> ChunkDataReader<T> {
     pub(crate) fn load_cache_block(
         self,
         index_range: SimpleInterval<u64>,
-        metadata: &ReaderMetadata,
+        array_indices: Arc<ArrayIndex>,
         query_indices: &impl BasicChunkQueryIndex,
     ) -> io::Result<DataChunkCache> {
         let (rows, predicate) = self.prepare_cache_block_query(index_range, query_indices);
@@ -1213,7 +1213,7 @@ impl<T: ChunkReader + 'static> ChunkDataReader<T> {
         Ok(DataChunkCache::new(
             batch,
             index_range,
-            metadata.spectra.array_indices.clone(),
+            array_indices,
             None,
             None,
             self.buffer_context,

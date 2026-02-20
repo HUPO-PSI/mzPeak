@@ -64,6 +64,14 @@ impl BufferContext {
         }
     }
 
+    pub const fn main_struct_name(&self) -> &'static str {
+        match self {
+            BufferContext::Spectrum => "spectrum",
+            Self::WavelengthSpectrum => "spectrum",
+            BufferContext::Chromatogram => "chromatogram",
+        }
+    }
+
     pub const fn default_sorted_array(&self) -> ArrayType {
         match self {
             BufferContext::Spectrum => ArrayType::MZArray,
@@ -87,6 +95,20 @@ impl BufferContext {
                 .with_priority(Some(BufferPriority::Primary))
                 .with_sorting_rank(Some(1)),
         }
+    }
+}
+
+impl FromStr for BufferContext {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let x = match s {
+            x if x == Self::Spectrum.name() => Self::Spectrum,
+            x if x == Self::Chromatogram.name() => Self::Chromatogram,
+            x if x == Self::WavelengthSpectrum.name() => Self::WavelengthSpectrum,
+            _ => return Err(format!("Could not map \"{s}\" to BufferContext"))
+        };
+        Ok(x)
     }
 }
 
@@ -937,12 +959,7 @@ impl From<ArrayIndexEntry> for SerializedArrayIndexEntry {
 
 impl From<SerializedArrayIndexEntry> for ArrayIndexEntry {
     fn from(value: SerializedArrayIndexEntry) -> Self {
-        let context = match value.context.as_str() {
-            "spectrum" => BufferContext::Spectrum,
-            "chromatogram" => BufferContext::Chromatogram,
-            _ => todo!("Could not infer context from {value:?}"),
-        };
-
+        let context = value.context.parse().unwrap();
         let name = value
             .path
             .rsplit_once(".")

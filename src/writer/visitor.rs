@@ -2532,7 +2532,7 @@ impl VisitorBase for WavelengthSpectrumDetailsBuilder {
             ),
             field!("MS_1003060_number_of_data_points", DataType::UInt64),
             field!(
-                format!("base_peak_wavelength_{}", Unit::Nanometer.to_curie().unwrap()),
+                format!("base_peak_wavelength_unit_{}", Unit::Nanometer.to_curie().unwrap()),
                 DataType::Float64
             ),
             field!(

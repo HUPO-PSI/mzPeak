@@ -106,7 +106,7 @@ pub(crate) trait PointDataArrayReader {
         for (f, arr) in points.fields().iter().zip(points.columns()) {
             if f.name() == BufferContext::Spectrum.index_name()
                 || f.name() == BufferContext::Spectrum.time_name()
-                || f.name() == BufferContext::Chromatogram.index_name()
+                || BufferContext::is_index_name(f.name())
             {
                 continue;
             }
@@ -473,18 +473,18 @@ trait PointQuerySource {
         Box::new(predicate)
     }
 
-    fn prepare_predicate_for_mz<'a>(
+    fn prepare_predicate_for_coordinate<'a>(
         &self,
-        mz_range: SimpleInterval<f64>,
+        coordinate_range: SimpleInterval<f64>,
         array_indices: &'a ArrayIndex,
     ) -> Option<Box<dyn ArrowPredicate>> {
-        if let Some(e) = array_indices.get(&ArrayType::MZArray) {
+        if let Some(e) = array_indices.get(&self.buffer_context().default_sorted_array()) {
             let predicate_mask = ProjectionMask::columns(&self.parquet_schema(), [e.path.as_str()]);
             Some(Box::new(ArrowPredicateFn::new(
                 predicate_mask,
                 move |batch| {
                     let root = batch.column(0).as_struct();
-                    let it = mz_range.contains_dy(root.column(0));
+                    let it = coordinate_range.contains_dy(root.column(0));
                     Ok(it)
                 },
             )))
@@ -516,7 +516,7 @@ trait PointQuerySource {
     fn prepare_query<'a, I: SpectrumQueryIndex + 'a>(
         &self,
         index_range: MaskSet,
-        mz_range: Option<SimpleInterval<f64>>,
+        coordinate_range: Option<SimpleInterval<f64>>,
         ion_mobility_range: Option<SimpleInterval<f64>>,
         query_index: &'a I,
         array_indices: &'a ArrayIndex,
@@ -537,8 +537,8 @@ trait PointQuerySource {
             pages: _,
         } = query;
 
-        if let Some(mz_range) = mz_range.as_ref() {
-            rows = rows.intersection(&query_index.mz_overlaps(mz_range));
+        if let Some(coordinate_range) = coordinate_range.as_ref() {
+            rows = rows.intersection(&query_index.coordinate_overlaps(coordinate_range));
         }
 
         // if let Some(ion_mobility_range) = ion_mobility_range.as_ref() {
@@ -558,7 +558,7 @@ trait PointQuerySource {
 
         fields.push(sidx);
 
-        if let Some(e) = array_indices.get(&ArrayType::MZArray) {
+        if let Some(e) = array_indices.get(&self.buffer_context().default_sorted_array()) {
             fields.push(e.path.to_string());
         }
 
@@ -578,8 +578,8 @@ trait PointQuerySource {
 
         let mut predicates: Vec<Box<dyn ArrowPredicate>> =
             vec![self.prepare_predicate_for_index(index_range, array_indices)];
-        if let Some(mz_range) = mz_range {
-            predicates.extend(self.prepare_predicate_for_mz(mz_range, array_indices));
+        if let Some(coordinate_range) = coordinate_range {
+            predicates.extend(self.prepare_predicate_for_coordinate(coordinate_range, array_indices));
         }
         if let Some(ion_mobility_range) = ion_mobility_range {
             predicates
@@ -627,7 +627,7 @@ mod async_impl {
             index: u64,
             query_index: &'a I,
             array_indices: &'a ArrayIndex,
-            mz_delta_model: Option<&RegressionDeltaModel<f64>>,
+            delta_model: Option<&RegressionDeltaModel<f64>>,
         ) -> io::Result<Option<BinaryArrayMap>> {
             let (rows, row_group_indices) = self.find_row_groups_query(index, query_index);
             let schem = self.parquet_schema();
@@ -660,7 +660,7 @@ mod async_impl {
                 Self::populate_arrays_from_struct_array(
                     points,
                     &mut bin_map,
-                    mz_delta_model,
+                    delta_model,
                     false,
                 );
             }
@@ -700,7 +700,7 @@ mod async_impl {
         pub(crate) async fn query_points<'a, I: SpectrumQueryIndex + 'a>(
             self,
             index_range: MaskSet,
-            mz_range: Option<SimpleInterval<f64>>,
+            coordinate_range: Option<SimpleInterval<f64>>,
             ion_mobility_range: Option<SimpleInterval<f64>>,
             query_index: &'a I,
             array_indices: &'a ArrayIndex,
@@ -708,7 +708,7 @@ mod async_impl {
         ) -> io::Result<BoxStream<'a, Result<RecordBatch, ArrowError>>> {
             if let Some((rows, row_group_indices, proj, predicate)) = self.prepare_query(
                 index_range,
-                mz_range,
+                coordinate_range,
                 ion_mobility_range,
                 query_index,
                 array_indices,
@@ -724,16 +724,16 @@ mod async_impl {
                 let context = self.1;
 
                 let mut index_column_idx = None;
-                let mut mz_column_idx = None;
+                let mut coordinate_column_idx = None;
 
                 if matches!(context, BufferContext::Spectrum) {
                     let subset = arrow::datatypes::Schema::new(subset.clone());
                     index_column_idx = subset
                         .column_with_name(BufferContext::Spectrum.index_name())
                         .map(|(i, _)| i);
-                    if let Some(mz_array_idx) = array_indices.get(&ArrayType::MZArray) {
-                        mz_column_idx = subset
-                            .column_with_name(&mz_array_idx.path.split(".").last().unwrap())
+                    if let Some(coordinate_array_idx) = array_indices.get(&self.buffer_context().default_sorted_array()) {
+                        coordinate_column_idx = subset
+                            .column_with_name(&coordinate_array_idx.path.split(".").last().unwrap())
                             .map(|(i, _)| i);
                     }
                 }
@@ -761,7 +761,7 @@ mod async_impl {
                 while let Some(bats) = row_groups.next().await.transpose()? {
                     if !matches!(context, BufferContext::Spectrum)
                         || index_column_idx.is_none()
-                        || mz_column_idx.is_none()
+                        || coordinate_column_idx.is_none()
                     {
                         for bat in bats {
                             send.send(bat).unwrap();
@@ -771,7 +771,7 @@ mod async_impl {
                             RecordBatchIterator::new(bats.into_iter(), schema.clone()),
                             metadata,
                             index_column_idx.unwrap(),
-                            mz_column_idx.unwrap(),
+                            coordinate_column_idx.unwrap(),
                         );
                         for bat in it {
                             send.send(bat).unwrap();
@@ -865,34 +865,34 @@ impl RecordBatchReader for IndexSplittingIter {
 pub(crate) struct BatchIterpolater<'a> {
     metadata: &'a ReaderMetadata,
     spectrum_index_idx: usize,
-    mz_array_idx: usize,
+    coordinate_array_idx: usize,
 }
 
 impl<'a> BatchIterpolater<'a> {
     pub fn new(
         metadata: &'a ReaderMetadata,
         spectrum_index_idx: usize,
-        mz_array_idx: usize,
+        coordinate_array_idx: usize,
     ) -> Self {
         Self {
             metadata,
             spectrum_index_idx,
-            mz_array_idx,
+            coordinate_array_idx,
         }
     }
 
     fn check_batch_has_nulls(&self, batch: &RecordBatch) -> bool {
         let root = batch.column(0);
         let root_as = root.as_struct();
-        let mz_arr = root_as.column(self.mz_array_idx);
-        mz_arr.null_count() > 0
+        let coordinate_arr = root_as.column(self.coordinate_array_idx);
+        coordinate_arr.null_count() > 0
     }
 
     fn process_batch(&mut self, batch: RecordBatch) -> Result<RecordBatch, ArrowError> {
         let root = batch.column(0);
         let root_as = root.as_struct();
         let index_arr: &UInt64Array = root_as.column(self.spectrum_index_idx).as_primitive();
-        let mz_arr = root_as.column(self.mz_array_idx);
+        let coordinate_arr = root_as.column(self.coordinate_array_idx);
 
         if index_arr.is_empty() {
             return Ok(batch);
@@ -905,18 +905,18 @@ impl<'a> BatchIterpolater<'a> {
             None => return Ok(batch),
         };
 
-        let mz_arr = if let Some(mz_arr) = mz_arr.as_primitive_opt::<Float32Type>() {
-            let mz_arr: Float32Array = fill_nulls_for(mz_arr, &model).into();
-            Arc::new(mz_arr) as ArrayRef
-        } else if let Some(mz_arr) = mz_arr.as_primitive_opt::<Float64Type>() {
-            let mz_arr: Float64Array = fill_nulls_for(mz_arr, &model).into();
-            Arc::new(mz_arr) as ArrayRef
+        let coordinate_arr = if let Some(coordinate_arr) = coordinate_arr.as_primitive_opt::<Float32Type>() {
+            let coordinate_arr: Float32Array = fill_nulls_for(coordinate_arr, &model).into();
+            Arc::new(coordinate_arr) as ArrayRef
+        } else if let Some(coordinate_arr) = coordinate_arr.as_primitive_opt::<Float64Type>() {
+            let coordinate_arr: Float64Array = fill_nulls_for(coordinate_arr, &model).into();
+            Arc::new(coordinate_arr) as ArrayRef
         } else {
             todo!()
         };
 
         let mut cols: Vec<_> = root_as.columns().iter().cloned().collect();
-        cols[self.mz_array_idx] = mz_arr;
+        cols[self.coordinate_array_idx] = coordinate_arr;
         let new_root: ArrayRef = Arc::new(StructArray::new(
             root_as.fields().clone(),
             cols,
@@ -954,9 +954,9 @@ impl<'a, I: Iterator<Item = Result<RecordBatch, ArrowError>> + RecordBatchReader
         source: I,
         metadata: &'a ReaderMetadata,
         spectrum_index_idx: usize,
-        mz_array_idx: usize,
+        coordinate_array_idx: usize,
     ) -> Self {
-        let interpolator = BatchIterpolater::new(metadata, spectrum_index_idx, mz_array_idx);
+        let interpolator = BatchIterpolater::new(metadata, spectrum_index_idx, coordinate_array_idx);
         let schema = source.schema();
         Self {
             source,
@@ -1026,7 +1026,7 @@ mod sync_impl {
             index: u64,
             query_index: &'a I,
             array_indices: &'a ArrayIndex,
-            mz_delta_model: Option<&RegressionDeltaModel<f64>>,
+            delta_model: Option<&RegressionDeltaModel<f64>>,
         ) -> io::Result<Option<BinaryArrayMap>> {
             let (rows, row_group_indices) = self.find_row_groups_query(index, query_index);
             let schem = self.parquet_schema();
@@ -1055,7 +1055,7 @@ mod sync_impl {
                 Self::populate_arrays_from_struct_array(
                     points,
                     &mut bin_map,
-                    mz_delta_model,
+                    delta_model,
                     false,
                 );
             }
@@ -1093,7 +1093,7 @@ mod sync_impl {
         pub(crate) fn query_points<'a, I: SpectrumQueryIndex + 'a>(
             self,
             index_range: MaskSet,
-            mz_range: Option<SimpleInterval<f64>>,
+            coordinate_range: Option<SimpleInterval<f64>>,
             ion_mobility_range: Option<SimpleInterval<f64>>,
             query_index: &'a I,
             array_indices: &'a ArrayIndex,
@@ -1103,7 +1103,7 @@ mod sync_impl {
         {
             if let Some((rows, row_group_indices, proj, predicate)) = self.prepare_query(
                 index_range.into(),
-                mz_range,
+                coordinate_range,
                 ion_mobility_range,
                 query_index,
                 array_indices,
@@ -1119,16 +1119,16 @@ mod sync_impl {
                 let context = self.1;
 
                 let mut index_column_idx = None;
-                let mut mz_column_idx = None;
+                let mut coordinate_column_idx = None;
 
                 if matches!(context, BufferContext::Spectrum) {
                     let subset = arrow::datatypes::Schema::new(subset.clone());
                     index_column_idx = subset
                         .column_with_name(BufferContext::Spectrum.index_name())
                         .map(|(i, _)| i);
-                    if let Some(mz_array_idx) = array_indices.get(&ArrayType::MZArray) {
-                        mz_column_idx = subset
-                            .column_with_name(&mz_array_idx.path.split(".").last().unwrap())
+                    if let Some(coordinate_array_idx) = array_indices.get(&ArrayType::MZArray) {
+                        coordinate_column_idx = subset
+                            .column_with_name(&coordinate_array_idx.path.split(".").last().unwrap())
                             .map(|(i, _)| i);
                     }
                 }
@@ -1145,7 +1145,7 @@ mod sync_impl {
                 // We don't have spectra in this reader, or we do but they don't have an m/z axis
                 if !matches!(context, BufferContext::Spectrum)
                     || index_column_idx.is_none()
-                    || mz_column_idx.is_none()
+                    || coordinate_column_idx.is_none()
                 {
                     return Ok(Box::new(it));
                 }
@@ -1154,7 +1154,7 @@ mod sync_impl {
                     it,
                     metadata,
                     index_column_idx.unwrap(),
-                    mz_column_idx.unwrap(),
+                    coordinate_column_idx.unwrap(),
                 )))
             } else {
                 Ok(Box::new(std::iter::empty()))

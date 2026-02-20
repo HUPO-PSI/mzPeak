@@ -30,7 +30,6 @@ use parquet::{
         async_reader::{AsyncFileReader, ParquetRecordBatchStream},
     },
     file::metadata::ParquetMetaData,
-    schema::types::SchemaDescriptor,
 };
 use url::Url;
 
@@ -87,20 +86,21 @@ impl<T: AsyncFileReader + 'static + Unpin + Send> BaseMetadataQuerySource
     }
 }
 
-pub(crate) async fn build_spectrum_index<T: AsyncArchiveSource>(
-    handle: &AsyncArchiveReader<T>,
-    pq_schema: &SchemaDescriptor,
+pub(crate) async fn build_id_index<T: AsyncArchiveSource>(
+    handle: ParquetRecordBatchStreamBuilder<T::File>,
+    prefix: &str,
+    name: &str,
 ) -> io::Result<OffsetIndex> {
-    let mut spectrum_id_index = OffsetIndex::new("spectrum".into());
-
-    let mut stream = handle
-        .spectrum_metadata()
-        .await?
-        .with_projection(ProjectionMask::columns(
-            pq_schema,
-            ["spectrum.id", "spectrum.index"],
-        ))
-        .build()?;
+    let mut spectrum_id_index = OffsetIndex::new(prefix.into());
+    let pq_schema = handle.parquet_schema();
+    let mask = ProjectionMask::columns(
+        pq_schema,
+        [
+            format!("{name}.id").as_str(),
+            format!("{name}.index").as_str(),
+        ],
+    );
+    let mut stream = handle.with_projection(mask).build()?;
 
     while let Some(batch) = stream.next().await.transpose()? {
         let root = batch.column(0).as_struct();
@@ -118,15 +118,13 @@ pub(crate) async fn build_spectrum_index<T: AsyncArchiveSource>(
                         spectrum_id_index.insert(id, idx.unwrap());
                     }
                 }
-            }
+            };
         }
         if let Some(ids) = ids.as_string_opt::<i64>() {
             read_ids!(ids);
-        }
-        else if let Some(ids) = ids.as_string_opt::<i32>() {
+        } else if let Some(ids) = ids.as_string_opt::<i32>() {
             read_ids!(ids);
-        }
-        else {
+        } else {
             panic!("Unsupported data type: {:?}", ids.data_type());
         }
     }
@@ -141,8 +139,8 @@ pub(crate) async fn load_indices_from<T: AsyncArchiveSource>(
     let spectrum_metadata_reader = handle.spectrum_metadata().await?;
     let spectrum_data_reader = handle.spectra_data().await?;
 
-    let pq_schema = spectrum_metadata_reader.parquet_schema();
-    let spectrum_id_index = build_spectrum_index(handle, pq_schema).await?;
+    let spectrum_id_index =
+        build_id_index::<T>(handle.spectrum_metadata().await?, "spectrum", "spectrum").await?;
 
     let mut this = ParquetIndexExtractor::default();
     this.visit_spectrum_metadata_reader(spectrum_metadata_reader)?;
@@ -161,18 +159,31 @@ pub(crate) async fn load_indices_from<T: AsyncArchiveSource>(
         .ok()
         .and_then(|r| this.visit_spectrum_peaks(r).ok());
 
+    if let Some(Ok(dat)) = handle.wavelength_spectrum_data().await {
+        log::trace!("Loading wavelength spectrum indices");
+        this.visit_wavelength_spectrum_data_reader(dat)?;
+    }
+
+    if let Some(Ok(dat)) = handle.wavelength_spectrum_metadata().await {
+        log::trace!("Loading wavelength spectrum metadata");
+        this.visit_wavelength_spectrum_metadata_reader(dat)?;
+    }
+
+    this.spectra.id_index = spectrum_id_index;
+
+    if let Some(Ok(dat)) = handle.wavelength_spectrum_metadata().await {
+        let id_index = build_id_index::<T>(dat, "wavelength_spectrum", "spectrum").await?;
+        let mut meta = this.wavelength_spectra.take().unwrap_or_default();
+        meta.id_index = id_index;
+        this.wavelength_spectra = Some(meta);
+    }
+
     let bundle = ReaderMetadata::new(
         this.mz_metadata,
-        Arc::new(this.spectrum_array_indices),
+        this.spectra,
         Arc::new(this.chromatogram_array_indices),
-        spectrum_id_index,
-        Vec::new(),
-        Vec::new(),
-        this.spectrum_metadata_mapping,
-        this.scan_metadata_mapping,
-        this.selected_ion_metadata_mapping,
         this.chromatogram_metadata_mapping,
-        this.peak_metadata,
+        this.wavelength_spectra,
     );
 
     Ok((bundle, this.query_index))
@@ -213,7 +224,7 @@ impl AsyncSpectrumDataCache {
                 spectrum_data_point_cache.row_group_index == row_group_index
             }
             Self::Chunk(spectrum_data_chunk_cache) => spectrum_data_chunk_cache
-                .spectrum_index_range
+                .index_range
                 .contains(&spectrum_index),
         }
     }
@@ -227,7 +238,7 @@ impl AsyncSpectrumDataCache {
         row_group_index: usize,
         spectrum_index: u64,
     ) -> io::Result<Option<Self>> {
-        if reader.query_indices.spectrum_point_index.is_populated() {
+        if reader.query_indices.spectrum.data_index.is_point() {
             let rg = reader
                 .load_cache_block_async(reader.handle.spectra_data().await?, row_group_index)
                 .await?;
@@ -241,14 +252,14 @@ impl AsyncSpectrumDataCache {
             );
 
             Ok(Some(Self::Point(cache)))
-        } else if reader.query_indices.spectrum_chunk_index.is_populated() {
+        } else if let Some(query_index) = reader.query_indices.spectrum.data_index.as_chunked() {
             let builder = reader.handle.spectra_data().await?;
             let builder = AsyncSpectrumChunkReader::new(builder);
             let cache = builder
                 .load_cache_block(
                     SimpleInterval::new(spectrum_index, spectrum_index + CHUNK_CACHE_BLOCK_SIZE),
                     &reader.metadata,
-                    &reader.query_indices.spectrum_chunk_index,
+                    query_index,
                 )
                 .await?;
             Ok(Some(Self::Chunk(cache)))
@@ -299,10 +310,7 @@ impl<
 > AsyncRandomAccessSpectrumIterator<C, D, MultiLayerSpectrum<C, D>>
     for AsyncMzPeakReaderType<T, C, D>
 {
-    async fn start_from_id(
-        &mut self,
-        id: &str,
-    ) -> Result<&mut Self, SpectrumAccessError> {
+    async fn start_from_id(&mut self, id: &str) -> Result<&mut Self, SpectrumAccessError> {
         if let Some(idx) = self.metadata.spectra.id_index.get(id) {
             self.index = idx as usize;
             Ok(self)
@@ -311,10 +319,7 @@ impl<
         }
     }
 
-    async fn start_from_index(
-        &mut self,
-        index: usize,
-    ) -> Result<&mut Self, SpectrumAccessError> {
+    async fn start_from_index(&mut self, index: usize) -> Result<&mut Self, SpectrumAccessError> {
         if index < self.len() {
             self.index = index;
             Ok(self)
@@ -323,10 +328,7 @@ impl<
         }
     }
 
-    async fn start_from_time(
-        &mut self,
-        time: f64,
-    ) -> Result<&mut Self, SpectrumAccessError> {
+    async fn start_from_time(&mut self, time: f64) -> Result<&mut Self, SpectrumAccessError> {
         match self.get_spectrum_by_time(time).await {
             Some(s) => {
                 self.index = s.index();
@@ -355,18 +357,12 @@ impl<
         self.detail_level = detail_level
     }
 
-    async fn get_spectrum_by_id(
-        &mut self,
-        id: &str,
-    ) -> Option<MultiLayerSpectrum<C, D>> {
+    async fn get_spectrum_by_id(&mut self, id: &str) -> Option<MultiLayerSpectrum<C, D>> {
         let index = self.metadata.spectra.id_index.get(id)?;
         self.get_spectrum(index as usize).await
     }
 
-    async fn get_spectrum_by_index(
-        &mut self,
-        index: usize,
-    ) -> Option<MultiLayerSpectrum<C, D>> {
+    async fn get_spectrum_by_index(&mut self, index: usize) -> Option<MultiLayerSpectrum<C, D>> {
         self.get_spectrum(index).await
     }
 
@@ -573,10 +569,15 @@ impl<
         index: u64,
     ) -> io::Result<Option<PeakDataLevel<C, D>>> {
         let builder = self.handle.spectrum_peaks().await?;
-        let meta_index = self.metadata.spectra.peak_indices.as_ref().ok_or(io::Error::new(
-            io::ErrorKind::NotFound,
-            "peak data index was not found",
-        ))?;
+        let meta_index = self
+            .metadata
+            .spectra
+            .peak_indices
+            .as_ref()
+            .ok_or(io::Error::new(
+                io::ErrorKind::NotFound,
+                "peak data index was not found",
+            ))?;
 
         return AsyncPointDataReader(builder, BufferContext::Spectrum)
             .get_peak_list_for(index, meta_index)
@@ -615,13 +616,13 @@ impl<
             ion_mobility_range
         };
 
-        if self.query_indices.spectrum_chunk_index.is_populated() {
+        if let Some(query_index) =  self.query_indices.spectrum.data_index.as_chunked() {
             let it = AsyncSpectrumChunkReader::new(builder).scan_chunks_for(
                 index_range,
                 mz_range,
                 &self.metadata,
                 self.metadata.spectrum_array_indices(),
-                &self.query_indices.spectrum_chunk_index,
+                query_index,
             )?;
             let it: BoxStream<'_, Result<RecordBatch, ArrowError>> = if ion_mobility_range.is_some()
             {
@@ -662,7 +663,7 @@ impl<
                 index_range,
                 mz_range,
                 ion_mobility_range,
-                &self.query_indices.spectrum_point_index,
+                self.query_indices.spectrum.data_index.as_point().unwrap(),
                 &self.metadata.spectra.array_indices,
                 &self.metadata,
             )
@@ -695,10 +696,15 @@ impl<
         HashMap<u64, f64, BuildIdentityHasher<u64>>,
     )> {
         let builder = self.handle.spectrum_peaks().await?;
-        let meta_index = self.metadata.spectra.peak_indices.as_ref().ok_or(io::Error::new(
-            io::ErrorKind::NotFound,
-            "peak metadata was not found",
-        ))?;
+        let meta_index = self
+            .metadata
+            .spectra
+            .peak_indices
+            .as_ref()
+            .ok_or(io::Error::new(
+                io::ErrorKind::NotFound,
+                "peak metadata was not found",
+            ))?;
 
         let ion_mobility_range = if !meta_index.array_indices.has_ion_mobility() {
             None
@@ -736,7 +742,7 @@ impl<
 
         let rows = self
             .query_indices
-            .spectrum_time_index
+            .spectrum.time_index
             .row_selection_overlaps(&time_range);
 
         let builder = self.handle.spectrum_metadata().await?;
@@ -901,13 +907,11 @@ impl<
                 let data = data.values().as_struct();
                 let arrays = AuxiliaryArrayVisitor::default().visit(data);
                 results.extend(arrays);
-            }
-            else if let Some(data) = root.column(1).as_list_opt::<i32>() {
+            } else if let Some(data) = root.column(1).as_list_opt::<i32>() {
                 let data = data.values().as_struct();
                 let arrays = AuxiliaryArrayVisitor::default().visit(data);
                 results.extend(arrays);
-            }
-            else {
+            } else {
                 panic!();
             }
         }
@@ -972,7 +976,7 @@ impl<
 
         let rows = self
             .query_indices
-            .spectrum_index_index
+            .spectrum.index_index
             .row_selection_contains(index);
 
         let predicate_mask = ProjectionMask::columns(
@@ -1051,12 +1055,12 @@ impl<
             return Ok(Some(arrays));
         }
 
-        if self.query_indices.spectrum_chunk_index.is_populated() {
+        if let Some(query_index) = self.query_indices.spectrum.data_index.as_chunked() {
             log::trace!("Using chunk strategy for reading spectrum {index}");
             let mut out = AsyncSpectrumChunkReader::new(builder)
                 .read_chunks_for_entity(
                     index,
-                    &self.query_indices.spectrum_chunk_index,
+                    query_index,
                     &self.metadata.spectra.array_indices,
                     delta_model.as_ref(),
                     Some(PageQuery::new(row_group_indices, pages)),
@@ -1081,7 +1085,7 @@ impl<
         if let Some(mut out) = reader
             .read_points_of(
                 index,
-                &self.query_indices.spectrum_point_index,
+                self.query_indices.spectrum.data_index.as_point().unwrap(),
                 self.metadata.spectrum_array_indices(),
                 delta_model.as_ref(),
             )
@@ -1114,7 +1118,7 @@ impl<
         let out = reader
             .read_points_of(
                 index,
-                &self.query_indices.chromatogram_point_index,
+                self.query_indices.chromatogram_data_index.as_point().unwrap(),
                 &self.metadata.chromatogram_array_indices,
                 None,
             )
@@ -1176,8 +1180,7 @@ mod test {
 
         let store = LocalFileSystem::new_with_prefix(".")?;
         let mut reader =
-            AsyncMzPeakReader::from_store_path(Arc::new(store), ObjectPath::from(path))
-                .await?;
+            AsyncMzPeakReader::from_store_path(Arc::new(store), ObjectPath::from(path)).await?;
         let descr = reader.get_spectrum(0).await.unwrap();
         assert_eq!(descr.index(), 0);
         assert_eq!(descr.signal_continuity(), SignalContinuity::Profile);
@@ -1211,8 +1214,7 @@ mod test {
     async fn test_load_all_metadata(#[case] path: &str) -> io::Result<()> {
         let store = LocalFileSystem::new_with_prefix(".")?;
         let reader =
-            AsyncMzPeakReader::from_store_path(Arc::new(store), ObjectPath::from(path))
-                .await?;
+            AsyncMzPeakReader::from_store_path(Arc::new(store), ObjectPath::from(path)).await?;
 
         let out = reader.load_all_spectrum_metadata_impl().await?;
         assert_eq!(out.len(), 48);
@@ -1236,8 +1238,7 @@ mod test {
     async fn test_read_peaks(#[case] path: &str) -> io::Result<()> {
         let store = LocalFileSystem::new_with_prefix(".")?;
         let mut reader =
-            AsyncMzPeakReader::from_store_path(Arc::new(store), ObjectPath::from(path))
-                .await?;
+            AsyncMzPeakReader::from_store_path(Arc::new(store), ObjectPath::from(path)).await?;
 
         let peaks = reader.get_spectrum_peaks_for(1).await?.unwrap();
         assert!(peaks.len() > 0);
@@ -1252,8 +1253,9 @@ mod test {
         let mut reader =
             AsyncMzPeakReader::from_store_path(Arc::new(store), ObjectPath::from("small.mzpeak"))
                 .await?;
-        let (mut it, _time_index) =
-            reader.extract_peaks((0.3..0.4).into(), Some((800.0..820.0).into()), None, None).await?;
+        let (mut it, _time_index) = reader
+            .extract_peaks((0.3..0.4).into(), Some((800.0..820.0).into()), None, None)
+            .await?;
 
         let mut k = 0;
         while let Some(batch) = it.next().await.transpose().unwrap() {
@@ -1266,13 +1268,14 @@ mod test {
         assert_eq!(k, 659);
         drop(it);
 
-
-        let (mut it, _) = reader.extract_peaks(
-            (0.3..0.4).into(),
-            Some((800.0..820.0).into()),
-            None,
-            Some((2u8..10).into()),
-        ).await?;
+        let (mut it, _) = reader
+            .extract_peaks(
+                (0.3..0.4).into(),
+                Some((800.0..820.0).into()),
+                None,
+                Some((2u8..10).into()),
+            )
+            .await?;
         k = 0;
         while let Some(batch) = it.next().await.transpose().unwrap() {
             assert_eq!(batch.column(0).as_struct().num_columns(), 3);
@@ -1289,12 +1292,15 @@ mod test {
     #[test_log::test]
     async fn test_eic_chunked() -> io::Result<()> {
         let store = LocalFileSystem::new_with_prefix(".")?;
-        let mut reader =
-            AsyncMzPeakReader::from_store_path(Arc::new(store), ObjectPath::from("small.chunked.mzpeak"))
-                .await?;
+        let mut reader = AsyncMzPeakReader::from_store_path(
+            Arc::new(store),
+            ObjectPath::from("small.chunked.mzpeak"),
+        )
+        .await?;
 
-        let (mut it, _time_index) =
-            reader.extract_peaks((0.3..0.4).into(), Some((800.0..820.0).into()), None, None).await?;
+        let (mut it, _time_index) = reader
+            .extract_peaks((0.3..0.4).into(), Some((800.0..820.0).into()), None, None)
+            .await?;
 
         let mut k = 0;
         while let Some(batch) = it.next().await.transpose().unwrap() {
@@ -1307,12 +1313,14 @@ mod test {
         assert_eq!(k, 785);
         drop(it);
 
-        let (mut it, _) = reader.extract_peaks(
-            (0.3..0.4).into(),
-            Some((800.0..820.0).into()),
-            None,
-            Some((2u8..10).into()),
-        ).await?;
+        let (mut it, _) = reader
+            .extract_peaks(
+                (0.3..0.4).into(),
+                Some((800.0..820.0).into()),
+                None,
+                Some((2u8..10).into()),
+            )
+            .await?;
         k = 0;
         while let Some(batch) = it.next().await.transpose().unwrap() {
             assert_eq!(batch.column(0).as_struct().num_columns(), 3);
@@ -1324,8 +1332,9 @@ mod test {
         assert_eq!(k, 96);
         drop(it);
 
-        let (mut it, _time_index) =
-            reader.query_peaks((0.3..0.4).into(), Some((800.0..820.0).into()), None, None).await?;
+        let (mut it, _time_index) = reader
+            .query_peaks((0.3..0.4).into(), Some((800.0..820.0).into()), None, None)
+            .await?;
 
         k = 0;
         while let Some(batch) = it.next().await.transpose().unwrap() {

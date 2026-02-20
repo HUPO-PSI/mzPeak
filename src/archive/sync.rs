@@ -16,7 +16,11 @@ use parquet::arrow::arrow_reader::{
 };
 
 use crate::archive::{FileEntry, FileIndex};
-use crate::constants::{CHROMATOGRAM_DATA_ARRAYS_NAME, CHROMATOGRAM_METADATA_NAME, SPECTRUM_DATA_ARRAYS_NAME, SPECTRUM_METADATA_NAME, SPECTRUM_PEAK_DATA_ARRAYS_NAME};
+use crate::constants::{
+    CHROMATOGRAM_DATA_ARRAYS_NAME, CHROMATOGRAM_METADATA_NAME, SPECTRUM_DATA_ARRAYS_NAME,
+    SPECTRUM_METADATA_NAME, SPECTRUM_PEAK_DATA_ARRAYS_NAME, WAVELENGTH_SPECTRUM_DATA_ARRAYS_NAME,
+    WAVELENGTH_SPECTRUM_METADATA_NAME,
+};
 
 fn file_options() -> SimpleFileOptions {
     SimpleFileOptions::default()
@@ -175,12 +179,17 @@ archive, nor was one given via the file index entry"#,
         Ok(())
     }
 
-    pub fn add_index_metadata(&mut self, key: &str, value: &impl serde::Serialize) -> Result<(), serde_json::Error> {
-        self.index.metadata.insert(key.to_string(), serde_json::to_value(value)?);
+    pub fn add_index_metadata(
+        &mut self,
+        key: &str,
+        value: &impl serde::Serialize,
+    ) -> Result<(), serde_json::Error> {
+        self.index
+            .metadata
+            .insert(key.to_string(), serde_json::to_value(value)?);
         Ok(())
     }
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MzPeakArchiveType {
@@ -189,6 +198,8 @@ pub enum MzPeakArchiveType {
     SpectrumPeakDataArrays,
     ChromatogramMetadata,
     ChromatogramDataArrays,
+    WavelengthSpectrumDataArrays,
+    WavelengthSpectrumMetadata,
     Other,
     Proprietary,
 }
@@ -201,6 +212,8 @@ impl MzPeakArchiveType {
             MzPeakArchiveType::SpectrumPeakDataArrays => SPECTRUM_PEAK_DATA_ARRAYS_NAME,
             MzPeakArchiveType::ChromatogramMetadata => CHROMATOGRAM_METADATA_NAME,
             MzPeakArchiveType::ChromatogramDataArrays => CHROMATOGRAM_DATA_ARRAYS_NAME,
+            MzPeakArchiveType::WavelengthSpectrumDataArrays => WAVELENGTH_SPECTRUM_DATA_ARRAYS_NAME,
+            MzPeakArchiveType::WavelengthSpectrumMetadata => WAVELENGTH_SPECTRUM_METADATA_NAME,
             MzPeakArchiveType::Other => "",
             MzPeakArchiveType::Proprietary => "",
         }
@@ -217,6 +230,11 @@ impl MzPeakArchiveType {
             MzPeakArchiveType::ChromatogramMetadata
         } else if name.ends_with(MzPeakArchiveType::ChromatogramDataArrays.tag_file_suffix()) {
             MzPeakArchiveType::ChromatogramDataArrays
+        } else if name.ends_with(MzPeakArchiveType::WavelengthSpectrumDataArrays.tag_file_suffix())
+        {
+            MzPeakArchiveType::WavelengthSpectrumDataArrays
+        } else if name.ends_with(MzPeakArchiveType::ChromatogramDataArrays.tag_file_suffix()) {
+            MzPeakArchiveType::WavelengthSpectrumMetadata
         } else {
             MzPeakArchiveType::Other
         }
@@ -638,8 +656,12 @@ pub(crate) struct SchemaMetadataManager {
     pub(crate) spectrum_data_arrays: Option<MzPeakArchiveEntry>,
     pub(crate) spectrum_metadata: Option<MzPeakArchiveEntry>,
     pub(crate) peaks_data_arrays: Option<MzPeakArchiveEntry>,
+
     pub(crate) chromatogram_metadata: Option<MzPeakArchiveEntry>,
     pub(crate) chromatogram_data_arrays: Option<MzPeakArchiveEntry>,
+
+    pub(crate) wavelength_metadata: Option<MzPeakArchiveEntry>,
+    pub(crate) wavelength_data_arrays: Option<MzPeakArchiveEntry>,
 }
 
 pub trait ArchiveSource: Sized + 'static {
@@ -870,6 +892,12 @@ impl<T: ArchiveSource + 'static> ArchiveReader<T> {
                 MzPeakArchiveType::ChromatogramDataArrays => {
                     members.chromatogram_data_arrays = Some(entry)
                 }
+                MzPeakArchiveType::WavelengthSpectrumMetadata => {
+                    members.wavelength_metadata = Some(entry);
+                }
+                MzPeakArchiveType::WavelengthSpectrumDataArrays => {
+                    members.wavelength_data_arrays = Some(entry);
+                }
                 MzPeakArchiveType::Other | MzPeakArchiveType::Proprietary => {}
             }
         }
@@ -949,6 +977,32 @@ impl<T: ArchiveSource + 'static> ArchiveReader<T> {
         }
     }
 
+    pub fn wavelength_spectrum_data(
+        &self,
+    ) -> Option<io::Result<ParquetRecordBatchReaderBuilder<T::File>>> {
+        if let Some(meta) = self.members.wavelength_data_arrays.as_ref() {
+            Some(
+                self.archive
+                    .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap())),
+            )
+        } else {
+            None
+        }
+    }
+
+    pub fn wavelength_spectrum_metadata(
+        &self,
+    ) -> Option<io::Result<ParquetRecordBatchReaderBuilder<T::File>>> {
+        if let Some(meta) = self.members.wavelength_metadata.as_ref() {
+            Some(
+                self.archive
+                    .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap())),
+            )
+        } else {
+            None
+        }
+    }
+
     /// List of the names of the files within the archive
     pub fn list_files(&self) -> &[String] {
         self.archive.file_names()
@@ -1005,7 +1059,9 @@ impl ArchiveSource for DispatchArchiveSource {
     }
 
     fn open_entry_by_index(&self, index: usize) -> io::Result<Self::File> {
-        dispatch!(self, src, { src.open_entry_by_index(index).map(|v| v.into()) })
+        dispatch!(self, src, {
+            src.open_entry_by_index(index).map(|v| v.into())
+        })
     }
 
     fn file_index(&self) -> &FileIndex {

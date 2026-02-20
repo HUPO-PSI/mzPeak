@@ -400,6 +400,12 @@ impl<T: AsyncArchiveSource + 'static> AsyncArchiveReader<T> {
                 MzPeakArchiveType::ChromatogramDataArrays => {
                     members.chromatogram_data_arrays = Some(entry)
                 }
+                MzPeakArchiveType::WavelengthSpectrumMetadata => {
+                    members.wavelength_metadata = Some(entry);
+                }
+                MzPeakArchiveType::WavelengthSpectrumDataArrays => {
+                    members.wavelength_data_arrays = Some(entry);
+                }
                 MzPeakArchiveType::Other | MzPeakArchiveType::Proprietary => {}
             }
         }
@@ -487,6 +493,24 @@ impl<T: AsyncArchiveSource + 'static> AsyncArchiveReader<T> {
                 io::ErrorKind::NotFound,
                 "Spectrum metadata entry not found",
             ))
+        }
+    }
+
+    pub async fn wavelength_spectrum_data(&self) -> Option<io::Result<ParquetRecordBatchStreamBuilder<T::File>>> {
+        if let Some(meta) = self.members.wavelength_data_arrays.as_ref() {
+            Some(self.archive
+                 .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap())).await)
+        } else {
+            None
+        }
+    }
+
+    pub async fn wavelength_spectrum_metadata(&self) -> Option<io::Result<ParquetRecordBatchStreamBuilder<T::File>>> {
+        if let Some(meta) = self.members.wavelength_metadata.as_ref() {
+            Some(self.archive
+                 .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap())).await)
+        } else {
+            None
         }
     }
 
