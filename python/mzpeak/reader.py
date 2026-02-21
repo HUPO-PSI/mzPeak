@@ -764,7 +764,7 @@ class MzPeakFileIter(Iterator[_SpectrumType]):
         return f"{self.__class__.__name__}({self.index}, {self.archive})"
 
 
-class SpectrumCollection(Sequence[_SpectrumType]):
+class _SpectrumCollectionMixin(Sequence[_SpectrumType]):
     spectrum_metadata: MzPeakSpectrumMetadataReader | None = None
     spectrum_data: MzPeakArrayDataReader | None = None
 
@@ -818,7 +818,7 @@ class SpectrumCollection(Sequence[_SpectrumType]):
         return RTLocator(self)
 
 
-class MzPeakFile(SpectrumCollection):
+class MzPeakFile(_SpectrumCollectionMixin):
     """
     An mzPeak reader for mass spectra, chromatograms, and other
     data types.
@@ -1160,7 +1160,7 @@ class MzPeakFile(SpectrumCollection):
         )
 
 
-class WavelengthFacet(SpectrumCollection):
+class WavelengthFacet(_SpectrumCollectionMixin):
     spectrum_metadata: MzPeakSpectrumMetadataReader | None = None
     spectrum_data: MzPeakArrayDataReader | None = None
 

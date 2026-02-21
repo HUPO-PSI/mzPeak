@@ -218,7 +218,7 @@ MZPeakSpectrumDataFile <- R6::R6Class(
     array_metadata = NULL,
     index_bins = NULL,
     mz_delta_models = NULL,
-    initialize = function(path) {
+    initialize = function(path, namespace) {
       self$handle <- arrow::ParquetFileReader$create(path)
       # Read the file-level metadata off the first row group.
       # The 0th column should be fast to read as it is the
@@ -227,7 +227,7 @@ MZPeakSpectrumDataFile <- R6::R6Class(
       # Parse the array metadata from the JSON blob. This will
       # help us understand what kind of data is in each array
       # and un-mangle names, if needed.
-      self$array_metadata <- .format_array_meta(jsonlite::fromJSON(self$meta$spectrum_array_index))
+      self$array_metadata <- .format_array_meta(jsonlite::fromJSON(self$meta[[paste0(namespace, "_array_index")]]))
       # Read the spectrum index column from each row group, building
       # up a min-max index for each row group to help reduce work to
       # to read data later.
@@ -340,6 +340,8 @@ MZPeakFile <- R6::R6Class(
     spectrum_peak_data = NULL,
     chromatogram_metadata = NULL,
     chromatogram_data = NULL,
+    wavelength_spectrum_metadata = NULL,
+    wavelength_spectrum_data = NULL,
     file_index = NULL,
     #' @description
     #' A reader for mzPeak files.\cr
@@ -355,12 +357,22 @@ MZPeakFile <- R6::R6Class(
 
       self$file_index <- FileIndex$new(self$handle$connect_file("mzpeak_index.json"))
 
+      self$spectrum_metadata <- NULL
+      self$chromatogram_metadata <- NULL
+      self$wavelength_spectrum_metadata <- NULL
+
+      self$spectrum_data <- NULL
+      self$chromatogram_data <- NULL
+      self$wavelength_spectrum_data <- NULL
+
+      self$spectrum_peak_data <- NULL
+
       spectrum_data_name <- (
         self$file_index$files |> filter(entity_type == "spectrum", data_kind == "data arrays") |> select(name) |> pull() |> first()
       )
       if (!is.na(spectrum_data_name) &&
           self$handle$has_file(spectrum_data_name)) {
-        self$spectrum_data = MZPeakSpectrumDataFile$new(self$handle$connect_file(spectrum_data_name))
+        self$spectrum_data = MZPeakSpectrumDataFile$new(self$handle$connect_file(spectrum_data_name), "spectrum")
       }
 
       spectrum_metadata_name <- (
@@ -382,7 +394,7 @@ MZPeakFile <- R6::R6Class(
 
       if (!is.na(spectrum_peak_name) &&
           self$handle$has_file(spectrum_peak_name)) {
-        self$spectrum_peak_data <- MZPeakSpectrumDataFile$new(self$handle$connect_file(spectrum_peak_name))
+        self$spectrum_peak_data <- MZPeakSpectrumDataFile$new(self$handle$connect_file(spectrum_peak_name), "spectrum")
       }
 
       chromatogram_data_name <- (
@@ -402,7 +414,27 @@ MZPeakFile <- R6::R6Class(
         self$chromatogram_metadata = MZPeakChromatogramMetadataFile$new(self$handle$connect_file(chromatogram_metadata_name))
       }
 
+      wl_spectrum_data_name <- (
+        self$file_index$files |> filter(entity_type == "wavelength spectrum", data_kind == "data arrays") |> select(name) |> pull() |> first()
+      )
+      if (!is.na(wl_spectrum_data_name) &&
+          self$handle$has_file(wl_spectrum_data_name)) {
+        self$wavelength_spectrum_data = MZPeakSpectrumDataFile$new(self$handle$connect_file(wl_spectrum_data_name), "wavelength_spectrum")
+      }
+
+      wl_spectrum_metadata_name <- (
+        self$file_index$files |> filter(entity_type == "wavelength spectrum", data_kind == "metadata") |> select(name) |> pull() |> first()
+      )
+
+      if (!is.na(wl_spectrum_metadata_name) &&
+          self$handle$has_file(wl_spectrum_metadata_name)) {
+        self$wavelength_spectrum_metadata = MZPeakSpectrumMetadataFile$new(self$handle$connect_file(wl_spectrum_metadata_name))
+      }
+
+
+
     },
+
     #' @description
     #' Read a spectrum's signal data
     #'
@@ -436,6 +468,18 @@ MZPeakFile <- R6::R6Class(
         NULL,
         self$chromatogram_data$read_chromatogram(index)
       )
+    },
+
+    #' @description
+    #' Read a wavelength spectrum's signal data, if it is present.
+    #'
+    #' @param index (`integer(1)`).
+    #' @return [tibble]
+    read_wavelength_spectrum = function(index) {
+      if (is.null(self$wavelength_spectrum_data)) {
+        return(NULL)
+      }
+      self$wavelength_spectrum_data$read_spectrum(index)
     }
   ),
   active = list(
@@ -465,6 +509,24 @@ MZPeakFile <- R6::R6Class(
     #' The selected ion metadata.
     selected_ions = function() {
       self$spectrum_metadata$selected_ions
+    },
+
+    #' @field chromatograms (tibble)\cr
+    #'
+    #' The chromatogram metadata.
+    chromatograms = function() {
+      self$chromatogram_metadata$chromatograms
+    },
+
+    #' @field wavelength_spectra (tibble)\cr
+    #'
+    #' The wavelength spectrum-level metadata. Information about scan
+    #' acquisition is in other tables
+    wavelength_spectra = function() {
+      if (is.null(self$wavelength_spectrum_metadata)) {
+        return(NULL)
+      }
+      self$wavelength_spectrum_metadata$spectra
     }
   )
 )
