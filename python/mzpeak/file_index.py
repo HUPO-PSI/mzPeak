@@ -7,6 +7,7 @@ OTHER = "other"
 
 SPECTRUM = "spectrum"
 CHROMATOGRAM = "chromatogram"
+WAVELENGTH_SPECTRUM = "wavelength spectrum"
 
 DATA_ARRAYS = "data arrays"
 METADATA = "metadata"
@@ -17,6 +18,7 @@ PROPRIETARY = "proprietary"
 class EntityType(StrEnum):
     Spectrum = SPECTRUM
     Chromatogram = CHROMATOGRAM
+    WavelengthSpectrum = WAVELENGTH_SPECTRUM
     Other = OTHER
 
     @classmethod

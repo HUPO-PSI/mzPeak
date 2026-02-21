@@ -23,6 +23,9 @@ small_point:
 small_chunked:
     cargo r --example convert -- -p -c -y -z -u small.mzML -o small.chunked.mzpeak
 
+has_uv:
+    cargo r -r --example convert -- -y -z -u "./test/data/TOFsulfasMS4GHzDualMode+DADSpectra+UVSignal272-NoProfile.mzML" -o "./has_uv.mzpeak"
+
 test:
     cargo t --tests -- --no-capture
 

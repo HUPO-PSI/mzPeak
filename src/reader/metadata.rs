@@ -12,7 +12,7 @@ use crate::{
     filter::RegressionDeltaModel,
     param::{MetadataColumn, MetadataColumnCollection},
     reader::{
-        index::{QueryIndex, SpectrumPointIndex},
+        index::{QueryIndex, SpectrumMetadataIndexLike, SpectrumPointIndex},
         utils::MaskSet,
         visitor::{
             CompoundIndexVisitor, DoubleIndexed, Indexed, MzChromatogramBuilder,
@@ -245,22 +245,18 @@ impl MSDataFileMetadata for ReaderMetadata {
 pub(crate) fn build_id_index<T: ArchiveSource>(
     handle: ParquetRecordBatchReaderBuilder<T::File>,
     prefix: &str,
-    name: &str
+    name: &str,
 ) -> io::Result<OffsetIndex> {
     let mut id_index = OffsetIndex::new(prefix.to_string());
     let pq_schema = handle.parquet_schema();
     let mask = ProjectionMask::columns(
-            pq_schema,
-            [
-                format!("{name}.id").as_str(),
-                format!("{name}.index").as_str()
-            ],
-        );
-    for batch in handle
-        .with_projection(mask)
-        .build()?
-        .flatten()
-    {
+        pq_schema,
+        [
+            format!("{name}.id").as_str(),
+            format!("{name}.index").as_str(),
+        ],
+    );
+    for batch in handle.with_projection(mask).build()?.flatten() {
         let root = batch.column(0).as_struct();
 
         let indices: &UInt64Array = root
@@ -520,7 +516,10 @@ impl ParquetIndexExtractor {
                         let array_index: SerializedArrayIndex = serde_json::from_str(&val)?;
                         let mut meta = self.wavelength_spectra.take().unwrap_or_default();
                         meta.array_indices = Arc::new(array_index.into());
-                        self.query_index.populate_wavelength_spectrum_data_indices(&wavelength_spectrum_data_reader, &meta.array_indices);
+                        self.query_index.populate_wavelength_spectrum_data_indices(
+                            &wavelength_spectrum_data_reader,
+                            &meta.array_indices,
+                        );
                         self.wavelength_spectra = Some(meta);
                     } else {
                         log::warn!("wavelength spectrum array index was empty");
@@ -565,7 +564,8 @@ impl ParquetIndexExtractor {
             }
         }
 
-        self.query_index.populate_wavelength_spectrum_metadata_indices(&wavelength_spectrum_metadata_reader);
+        self.query_index
+            .populate_wavelength_spectrum_metadata_indices(&wavelength_spectrum_metadata_reader);
         Ok(())
     }
 
@@ -650,11 +650,8 @@ pub(crate) fn load_indices_from<T: ArchiveSource>(
     let spectrum_metadata_reader = handle.spectrum_metadata()?;
     let spectrum_data_reader = handle.spectra_data()?;
 
-    let spectrum_id_index = build_id_index::<T>(
-        handle.spectrum_metadata()?,
-        "spectrum",
-        "spectrum"
-    )?;
+    let spectrum_id_index =
+        build_id_index::<T>(handle.spectrum_metadata()?, "spectrum", "spectrum")?;
 
     let mut this = ParquetIndexExtractor::default();
     log::trace!("Loading spectrum metadata indices");
@@ -748,24 +745,26 @@ pub(crate) trait SpectrumMetadataQuerySource: BaseMetadataQuerySource {
                 .column(0)
                 .as_struct()
                 .column(0)
-                .as_any()
-                .downcast_ref()
-                .unwrap();
+                .as_primitive::<UInt64Type>();
+
             let scan_spectrum_index: &UInt64Array = batch
                 .column(1)
                 .as_struct()
                 .column(0)
-                .as_any()
-                .downcast_ref()
-                .unwrap();
+                .as_primitive::<UInt64Type>();
 
+
+            macro_rules! is_some_or {
+                ($it:ident, $arr:ident) => {
+                    $arr.iter()
+                        .map(|val| val.is_some())
+                        .zip($it)
+                        .map(|(a, b)| a || b)
+                }
+            }
 
             let it = spectrum_index.iter().map(|val| val.is_some());
-            let it = scan_spectrum_index
-                .iter()
-                .map(|val| val.is_some())
-                .zip(it)
-                .map(|(a, b)| a || b);
+            let it = is_some_or!(it, scan_spectrum_index);
 
             if batch.column_by_name("precursor").is_none() {
                 return Ok(it.map(Some).collect());
@@ -775,15 +774,9 @@ pub(crate) trait SpectrumMetadataQuerySource: BaseMetadataQuerySource {
                 .column(2)
                 .as_struct()
                 .column(0)
-                .as_any()
-                .downcast_ref()
-                .unwrap();
+                .as_primitive::<UInt64Type>();
 
-            let it = precursor_spectrum_index
-                .iter()
-                .map(|val| val.is_some())
-                .zip(it)
-                .map(|(a, b)| a || b);
+            let it = is_some_or!(it, precursor_spectrum_index);
 
             if batch.column_by_name("selected_ion").is_none() {
                 return Ok(it.map(Some).collect());
@@ -793,65 +786,46 @@ pub(crate) trait SpectrumMetadataQuerySource: BaseMetadataQuerySource {
                 .column(3)
                 .as_struct()
                 .column(0)
-                .as_any()
-                .downcast_ref()
-                .unwrap();
+                .as_primitive::<UInt64Type>();
 
-            let it = selected_ion_spectrum_index
-                .iter()
-                .map(|val| val.is_some())
-                .zip(it)
-                .map(|(a, b)| a || b);
-
+            let it = is_some_or!(it, selected_ion_spectrum_index);
             Ok(it.map(Some).collect())
         });
         predicate
     }
 
-    fn prepare_rows_for_all(&self, query_indices: &QueryIndex) -> RowSelection {
+    fn prepare_rows_for_all(&self, query_indices: &impl SpectrumMetadataIndexLike) -> RowSelection {
         let mut rows = query_indices
-            .spectrum.index_index
+            .index_index()
             .row_selection_is_not_null();
 
-        rows = rows.union(
-            &query_indices
-                .spectrum.scan_index
-                .row_selection_is_not_null(),
-        );
-        rows = rows.union(
-            &query_indices
-                .spectrum.precursor_index
-                .row_selection_is_not_null(),
-        );
-        rows = rows.union(
-            &query_indices
-                .spectrum.selected_ion_index
-                .row_selection_is_not_null(),
-        );
+        if let Some(s) = query_indices.scan_index() {
+            rows = rows.union(&s.row_selection_is_not_null());
+        }
+        if let Some(s) = query_indices.precursor_index() {
+            rows = rows.union(&s.row_selection_is_not_null());
+        }
+        if let Some(s) = query_indices.selected_ion_index() {
+            rows = rows.union(&s.row_selection_is_not_null());
+        }
 
         rows
     }
 
-    fn prepare_rows_for(&self, index: u64, query_indices: &QueryIndex) -> RowSelection {
+    fn prepare_rows_for(&self, index: u64, query_indices: &impl SpectrumMetadataIndexLike) -> RowSelection {
         let mut rows = query_indices
-            .spectrum.index_index
+            .index_index()
             .row_selection_contains(index);
 
-        rows = rows.union(
-            &query_indices
-                .spectrum.scan_index
-                .row_selection_contains(index),
-        );
-        rows = rows.union(
-            &query_indices
-                .spectrum.precursor_index
-                .row_selection_contains(index),
-        );
-        rows = rows.union(
-            &query_indices
-                .spectrum.selected_ion_index
-                .row_selection_contains(index),
-        );
+        if let Some(s) = query_indices.scan_index() {
+            rows = rows.union(&s.row_selection_contains(index));
+        }
+        if let Some(s) = query_indices.precursor_index() {
+            rows = rows.union(&s.row_selection_contains(index));
+        }
+        if let Some(s) = query_indices.selected_ion_index() {
+            rows = rows.union(&s.row_selection_contains(index));
+        };
         rows
     }
 
@@ -882,53 +856,58 @@ pub(crate) trait SpectrumMetadataQuerySource: BaseMetadataQuerySource {
                 .column(0)
                 .as_struct()
                 .column(0)
-                .as_any()
-                .downcast_ref()
-                .unwrap();
-            let scan_spectrum_index: &UInt64Array = batch
-                .column(1)
-                .as_struct()
-                .column(0)
-                .as_any()
-                .downcast_ref()
-                .unwrap();
-            let precursor_spectrum_index: &UInt64Array = batch
-                .column(2)
-                .as_struct()
-                .column(0)
-                .as_any()
-                .downcast_ref()
-                .unwrap();
-            let selected_ion_spectrum_index: &UInt64Array = batch
-                .column(3)
-                .as_struct()
-                .column(0)
-                .as_any()
-                .downcast_ref()
-                .unwrap();
+                .as_primitive::<UInt64Type>();
+
+
+            macro_rules! equal_to_index {
+                ($it:ident, $arr:ident) => {
+                    $arr.iter()
+                        .map(|val| val.is_some_and(|val| val == index))
+                        .zip($it)
+                        .map(|(a, b)| a || b)
+                }
+            }
+
+            macro_rules! precursor_filter {
+                ($it:ident, $col:ident) => {
+                    let precursor_spectrum_index: &UInt64Array = $col.as_struct().column(0).as_primitive::<UInt64Type>();
+                    let it = equal_to_index!($it, precursor_spectrum_index);
+
+                    if let Some(col) = batch.column_by_name("selected_ion") {
+                        let selected_ion_spectrum_index =
+                            col.as_struct().column(0).as_primitive::<UInt64Type>();
+
+                        let it = equal_to_index!(it, selected_ion_spectrum_index);
+                        return Ok(it.map(Some).collect());
+                    } else {
+                        return Ok(it.map(Some).collect());
+                    }
+                };
+            }
+
 
             let it = spectrum_index
                 .iter()
                 .map(|val| val.is_some_and(|val| val == index));
-            let it = scan_spectrum_index
-                .iter()
-                .map(|val| val.is_some_and(|val| val == index))
-                .zip(it)
-                .map(|(a, b)| a || b);
 
-            let it = precursor_spectrum_index
-                .iter()
-                .map(|val| val.is_some_and(|val| val == index))
-                .zip(it)
-                .map(|(a, b)| a || b);
+            if let Some(col) = batch.column_by_name("scan") {
+                let scan_spectrum_index: &UInt64Array =
+                    col.as_struct().column(0).as_primitive::<UInt64Type>();
 
-            let it = selected_ion_spectrum_index
-                .iter()
-                .map(|val| val.is_some_and(|val| val == index))
-                .zip(it)
-                .map(|(a, b)| a || b);
+                let it = equal_to_index!(it, scan_spectrum_index);
 
-            Ok(it.map(Some).collect())
+                if let Some(col) = batch.column_by_name("precursor") {
+                    precursor_filter!(it, col);
+                } else {
+                    return Ok(it.map(Some).collect());
+                }
+            }
+
+            if let Some(col) = batch.column_by_name("precursor") {
+                precursor_filter!(it, col);
+            } else {
+                return Ok(it.map(Some).collect());
+            }
         });
         predicate
     }
@@ -1035,9 +1014,7 @@ impl<'a, T: SpectrumMetadataLike + 'a> SpectrumMetadataDecoder<'a, T> {
         let index_arr: &UInt64Array = spec_arr
             .column_by_name("index")
             .unwrap()
-            .as_any()
-            .downcast_ref()
-            .unwrap();
+            .as_primitive();
         let spec_arrays = segment_by_index_array(spec_arr, index_arr, spectrum_index).unwrap();
         for spec_arr in spec_arrays {
             let n_spec = index_arr.len() - index_arr.null_count();
@@ -1124,9 +1101,7 @@ impl<'a, T: SpectrumMetadataLike + 'a> SpectrumMetadataDecoder<'a, T> {
         let index_arr: &UInt64Array = spec_arr
             .column_by_name("index")
             .unwrap()
-            .as_any()
-            .downcast_ref()
-            .unwrap();
+            .as_primitive();
         let n_spec = index_arr.len() - index_arr.null_count();
         if n_spec > 0 {
             let mut local_descr = vec![SpectrumDescription::default(); n_spec];
@@ -1156,8 +1131,7 @@ impl<'a, T: SpectrumMetadataLike + 'a> SpectrumMetadataDecoder<'a, T> {
             }
         }
 
-        if let Some(precursor_arr) = batch.column_by_name("precursor").map(|c| c.as_struct())
-        {
+        if let Some(precursor_arr) = batch.column_by_name("precursor").map(|c| c.as_struct()) {
             let mut precursor_acc = Vec::new();
             self.load_precursors_from(precursor_arr, &mut precursor_acc);
             if self.precursors.is_empty() {
@@ -1743,10 +1717,12 @@ impl AuxiliaryArrayCountDecoder {
             let parts = c.path().parts();
             if parts == [self.context.main_struct_name(), "index"] {
                 index_i = Some(i);
-            }
-            else if parts
+            } else if parts
                 .iter()
-                .zip([self.context.main_struct_name(), "number_of_auxiliary_arrays"])
+                .zip([
+                    self.context.main_struct_name(),
+                    "number_of_auxiliary_arrays",
+                ])
                 .all(|(a, b)| a == b)
             {
                 auxiliary_count_i = Some(i);
@@ -1778,8 +1754,11 @@ impl AuxiliaryArrayCountDecoder {
                 if let Some(values) = $values_array.as_primitive_opt::<$dtype>() {
                     for (i, c) in $index_array.iter().zip(values.iter()) {
                         if i.unwrap() as usize >= self.counts.len() {
-
-                            panic!("Cannot fit {} rows into {} bins", batch.num_rows(), self.counts.len());
+                            panic!(
+                                "Cannot fit {} rows into {} bins",
+                                batch.num_rows(),
+                                self.counts.len()
+                            );
                         }
                         self.counts[i.unwrap() as usize] = c.unwrap_or_default() as u32;
                     }

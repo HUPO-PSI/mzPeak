@@ -12,6 +12,8 @@ chunk_path = Path("small.chunked.mzpeak")
 unpacked_path = Path("small.unpacked.mzpeak")
 numpress_path = Path("small.numpress.mzpeak")
 
+uv_path = Path("has_uv.mzpeak")
+
 
 def common_checks(reader: MzPeakFile, subtests: pytest.Subtests):
     with subtests.test("file level metadata"):
@@ -100,6 +102,7 @@ def test_load_base_chunk(subtests: pytest.Subtests):
     assert reader.spectrum_data.buffer_format() == BufferFormat.Chunk
     common_checks(reader, subtests)
     assert reader.has_secondary_peaks_data
+    assert reader.wavelength_data is None
     with subtests.test("iterator"):
         check_iterator(reader, len(reader))
 
@@ -108,6 +111,7 @@ def test_load_unpacked(subtests: pytest.Subtests):
     reader = MzPeakFile(unpacked_path)
     assert reader.spectrum_data.buffer_format() == BufferFormat.Point
     common_checks(reader, subtests)
+    assert reader.wavelength_data is None
     with subtests.test("iterator"):
         check_iterator(reader)
 
@@ -115,5 +119,18 @@ def test_load_unpacked(subtests: pytest.Subtests):
 def test_load_numpress(subtests: pytest.Subtests):
     reader = MzPeakFile(chunk_path)
     assert reader.spectrum_data.buffer_format() == BufferFormat.Chunk
+    assert reader.wavelength_data is None
     common_checks(reader, subtests)
+
+
+def test_load_uv_data(subtests: pytest.Subtests):
+    reader = MzPeakFile(uv_path)
+    assert reader.spectrum_data.buffer_format() == BufferFormat.Point
+    wl_reader = reader.wavelength_data
+    assert wl_reader is not None
+    assert wl_reader.spectrum_data.buffer_format() == BufferFormat.Point
+    with subtests.test("iterator"):
+        check_iterator(reader)
+    with subtests.test("wavelength iterator"):
+        check_iterator(wl_reader)
 

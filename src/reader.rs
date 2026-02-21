@@ -1,8 +1,5 @@
 use std::{
-    collections::HashMap,
-    fs, io,
-    marker::PhantomData,
-    path::{Path, PathBuf},
+    borrow::Cow, collections::HashMap, fs, io, marker::PhantomData, path::{Path, PathBuf}
 };
 
 use arrow::array::{AsArray, UInt64Array};
@@ -426,6 +423,16 @@ impl<
         Ok(self.spectrum_metadata_cache.as_deref())
     }
 
+    /// Load the descriptive metadata for all chromatograms
+    pub fn load_all_chromatogram_metadata(&mut self) -> io::Result<Option<Cow<'_, [ChromatogramDescription]>>> {
+        Ok(Some(Cow::Owned(self.load_all_chromatgram_metadata_impl()?)))
+    }
+
+    /// Load the descriptive metadata for all wavelength spectra
+    pub fn load_all_wavelength_spectrum_metadata(&mut self) -> io::Result<Option<Cow<'_, [SpectrumDescription]>>> {
+        Ok(Some(Cow::Owned(self.load_all_wavelength_spectrum_metadata_impl()?)))
+    }
+
     /// The location of the archive.
     pub fn path(&self) -> &Path {
         &self.path
@@ -761,8 +768,27 @@ impl<
         self.metadata.spectra.id_index.len()
     }
 
+    pub fn len_chromatograms(&self) -> usize {
+        self.count_chromatograms()
+    }
+
+    pub fn len_wavelength_spectra(&self) -> usize {
+        self.metadata.wavelength_spectra.as_ref().map(|s| s.id_index.len()).unwrap_or_default()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.metadata.spectra.id_index.is_empty()
+    }
+
+    pub fn iter_wavelength_spectra(&mut self) -> io::Result<impl Iterator<Item = MultiLayerSpectrum>> {
+        let descr = self.load_all_wavelength_spectrum_metadata()?.unwrap().to_vec();
+        Ok(descr.into_iter().enumerate().map(|(i, desc)| {
+            if let Ok(arrays) = self.get_wavelength_spectrum_arrays(i as u64) {
+                MultiLayerSpectrum::new(desc, arrays, None, None)
+            } else {
+                MultiLayerSpectrum::new(desc, None, None, None)
+            }
+        }))
     }
 
     /// Read peak data for a spectrum.
@@ -853,7 +879,7 @@ impl<
 
         let builder = SpectrumMetadataReader(self.handle.spectrum_metadata()?);
 
-        let rows = builder.prepare_rows_for(index, &self.query_indices);
+        let rows = builder.prepare_rows_for(index, &self.query_indices.spectrum);
         let predicate = builder.prepare_predicate_for(index);
 
         let reader = builder
@@ -888,8 +914,35 @@ impl<
         &mut self,
         index: u64,
     ) -> io::Result<Option<SpectrumDescription>> {
-        let descs = self.load_all_wavelength_spectrum_metadata_impl()?;
-        Ok(descs.get(index as usize).cloned())
+        // let descs = self.load_all_wavelength_spectrum_metadata_impl()?;
+
+        if let Some(builder) = self.handle.wavelength_spectrum_metadata() {
+            let builder = SpectrumMetadataReader(builder?);
+
+            let rows = builder.prepare_rows_for(index, self.query_indices.wavelength_spectrum_index.as_ref().unwrap());
+            let predicate = builder.prepare_predicate_for(index);
+
+            let reader = builder
+                .0
+                .with_row_selection(rows)
+                .with_row_filter(RowFilter::new(vec![Box::new(predicate)]))
+                .build()?;
+
+            let mut decoder = SpectrumMetadataDecoder::new(self.metadata.wavelength_spectra.as_deref().unwrap());
+
+            for batch in reader {
+                let batch = match batch {
+                    Ok(batch) => batch,
+                    Err(e) => return Err(io::Error::other(e)),
+                };
+                decoder.decode_batch_for(batch, index);
+            }
+
+            let descriptions = decoder.finish();
+            Ok(descriptions.into_iter().find(|v| v.index as u64 == index))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn get_chromatogram_arrays(&mut self, index: u64) -> io::Result<Option<BinaryArrayMap>> {
@@ -1182,7 +1235,7 @@ impl<
 
         let builder = SpectrumMetadataReader(builder);
 
-        let rows = builder.prepare_rows_for_all(&self.query_indices);
+        let rows = builder.prepare_rows_for_all(&self.query_indices.spectrum);
         let predicate = builder.prepare_predicate_for_all();
 
         let reader = builder
@@ -1214,7 +1267,7 @@ impl<
 
         let builder = SpectrumMetadataReader(builder);
 
-        let rows = builder.prepare_rows_for_all(&self.query_indices);
+        let rows = builder.prepare_rows_for_all(&self.query_indices.spectrum);
         let predicate = builder.prepare_predicate_for_all();
 
         let reader = builder

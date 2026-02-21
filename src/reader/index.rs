@@ -1586,20 +1586,26 @@ impl SpectrumQueryIndex for WavelengthSpectrumDataIndex {
 #[derive(Debug, Default, Clone)]
 pub struct WavelengthSpectrumIndex {
     pub index: PageIndex<u64>,
+    pub scan_index: PageIndex<u64>,
     pub data_index: WavelengthSpectrumDataIndex,
 }
 
 impl WavelengthSpectrumIndex {
     pub fn new(
         index: PageIndex<u64>,
+        scan_index: PageIndex<u64>,
         data_index: WavelengthSpectrumDataIndex
     ) -> Self {
         Self {
             index,
+            scan_index,
             data_index,
         }
     }
 }
+
+pub const EMPTY_INDEX: PageIndex<u64> = PageIndex(Vec::new());
+
 
 #[derive(Debug, Default, Clone)]
 pub struct SpectrumMetadataIndex {
@@ -1613,6 +1619,50 @@ pub struct SpectrumMetadataIndex {
     pub data_index: SpectrumDataIndex,
     pub peak_point_index: Option<SpectrumPointIndex>,
 }
+
+pub trait SpectrumMetadataIndexLike {
+    fn index_index(&self) -> &PageIndex<u64>;
+    fn scan_index(&self) -> Option<&PageIndex<u64>>;
+    fn precursor_index(&self) -> Option<&PageIndex<u64>>;
+    fn selected_ion_index(&self) -> Option<&PageIndex<u64>>;
+}
+
+impl SpectrumMetadataIndexLike for SpectrumMetadataIndex {
+    fn index_index(&self) -> &PageIndex<u64> {
+        &self.index_index
+    }
+
+    fn scan_index(&self) -> Option<&PageIndex<u64>> {
+        Some(&self.scan_index)
+    }
+
+    fn precursor_index(&self) -> Option<&PageIndex<u64>> {
+        Some(&self.precursor_index)
+    }
+
+    fn selected_ion_index(&self) -> Option<&PageIndex<u64>> {
+        Some(&self.selected_ion_index)
+    }
+}
+
+impl SpectrumMetadataIndexLike for WavelengthSpectrumIndex {
+    fn index_index(&self) -> &PageIndex<u64> {
+        &self.index
+    }
+
+    fn scan_index(&self) -> Option<&PageIndex<u64>> {
+        Some(&self.scan_index)
+    }
+
+    fn precursor_index(&self) -> Option<&PageIndex<u64>> {
+        None
+    }
+
+    fn selected_ion_index(&self) -> Option<&PageIndex<u64>> {
+        None
+    }
+}
+
 
 #[derive(Debug, Default, Clone)]
 pub struct ChromatogramMetadataIndex {
@@ -1763,6 +1813,12 @@ impl QueryIndex {
             "spectrum.index",
         )
         .unwrap_or_default();
+
+        wavelength_index.scan_index = read_u64_page_index_from(
+            metadata_reader.metadata(),
+            pq_schema,
+            "scan.index"
+        ).unwrap_or_default();
 
         self.wavelength_spectrum_index = Some(wavelength_index);
     }

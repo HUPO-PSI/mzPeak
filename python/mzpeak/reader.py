@@ -686,11 +686,13 @@ class MzPeakFileIter(Iterator[_SpectrumType]):
     def _make_data_iter(self):
         if self.buffer_format == BufferFormat.Point:
             it = self.archive.spectrum_data.handle.iter_batches(columns=["point"])
-            self.data_iter = _BatchIterator(it, self.index, index_column="spectrum_index")
+            self.data_iter = _BatchIterator(it, self.index, index_column=f"{self.archive.spectrum_data._namespace}_index")
         elif self.buffer_format == BufferFormat.ChunkValues:
             it = self.archive.spectrum_data.handle.iter_batches(128, columns=["chunk"])
             self.data_iter = _BatchIterator(
-                it, self.index, index_column="spectrum_index"
+                it,
+                self.index,
+                index_column=f"{self.archive.spectrum_data._namespace}_index",
             )
         else:
             raise ValueError(self.buffer_format)
@@ -736,6 +738,8 @@ class MzPeakFileIter(Iterator[_SpectrumType]):
         self.data_iter.seek(index)
 
     def __next__(self):
+        if self.index >= len(self.archive):
+            raise StopIteration()
         meta = self.archive.spectrum_metadata[self.index]
         if self.peeked:
             if self.peeked[0] == self.index:
@@ -753,11 +757,68 @@ class MzPeakFileIter(Iterator[_SpectrumType]):
         self.index += 1
         return meta
 
+    def __len__(self) -> int:
+        return len(self.archive)
+
     def __repr__(self):
         return f"{self.__class__.__name__}({self.index}, {self.archive})"
 
 
-class MzPeakFile(Sequence[_SpectrumType]):
+class SpectrumCollection(Sequence[_SpectrumType]):
+    spectrum_metadata: MzPeakSpectrumMetadataReader | None = None
+    spectrum_data: MzPeakArrayDataReader | None = None
+
+    def read_spectrum(
+        self, index: int | str | Iterable[int | str] | slice
+    ) -> _SpectrumType | list[_SpectrumType]:
+        if isinstance(index, (int, str)):
+            spec = self.spectrum_metadata[index]
+            index = spec["index"]
+            data = self.spectrum_data[index]
+            spec.update(data)
+        elif isinstance(index, Iterable):
+            if not index:
+                return []
+            spec = [self.read_spectrum(i) for i in index]
+        elif isinstance(index, slice):
+            start = index.start or 0
+            end = index.stop or len(self)
+            step = index.step or 1
+            if step == 1:
+                it = iter(self)
+                it.seek(start)
+                spec = []
+                for s in it:
+                    spec.append(s)
+                    if s["index"] == (end - 1):
+                        break
+            else:
+                spec = self.read_spectrum(range(start, end, step))
+        return spec
+
+    def __iter__(self) -> MzPeakFileIter:
+        return MzPeakFileIter(self)
+
+    def __len__(self):
+        return len(self.spectrum_metadata)
+
+    def __getitem__(
+        self, index: int | str | Iterable[int | str] | slice
+    ) -> _SpectrumType | list[_SpectrumType]:
+        """An alias for :meth:`read_spectrum`."""
+        return self.read_spectrum(index)
+
+    def spectra_signal_for_indices(
+        self, index_range: slice | list[int]
+    ) -> dict[str, np.ndarray]:
+        return self.spectrum_data.read_data_for_range(index_range)
+
+    @property
+    def time(self) -> RTLocator:
+        return RTLocator(self)
+
+
+class MzPeakFile(SpectrumCollection):
     """
     An mzPeak reader for mass spectra, chromatograms, and other
     data types.
@@ -824,6 +885,9 @@ class MzPeakFile(Sequence[_SpectrumType]):
     chromatogram_metadata: MzPeakChromatogramMetadataReader | None = None
     chromatogram_data: MzPeakArrayDataReader | None = None
 
+    _wavelength_spectrum_metadata: MzPeakSpectrumMetadataReader | None = None
+    _wavelength_spectrum_data: MzPeakArrayDataReader | None = None
+
     file_metadata: dict[str, Any]
 
     file_index: FileIndex
@@ -872,6 +936,15 @@ class MzPeakFile(Sequence[_SpectrumType]):
                         self.chromatogram_metadata = MzPeakChromatogramMetadataReader(
                             pa.OSFile(str(f))
                         )
+                    case (EntityType.WavelengthSpectrum, DataKind.DataArrays):
+                        self._wavelength_spectrum_data = MzPeakArrayDataReader(
+                            pa.PythonFile(f),
+                            namespace="wavelength_spectrum",
+                        )
+                    case (EntityType.WavelengthSpectrum, DataKind.Metadata):
+                        self._wavelength_spectrum_data = MzPeakSpectrumMetadataReader(
+                            pa.PythonFile(f),
+                        )
                     case _:
                         pass
         else:
@@ -913,6 +986,15 @@ class MzPeakFile(Sequence[_SpectrumType]):
                         self.chromatogram_metadata = MzPeakChromatogramMetadataReader(
                             pa.PythonFile(f)
                         )
+                    case (EntityType.WavelengthSpectrum, DataKind.DataArrays):
+                        self._wavelength_spectrum_data = MzPeakArrayDataReader(
+                            pa.PythonFile(f),
+                            namespace="wavelength_spectrum",
+                        )
+                    case (EntityType.WavelengthSpectrum, DataKind.Metadata):
+                        self._wavelength_spectrum_metadata = MzPeakSpectrumMetadataReader(
+                            pa.PythonFile(f),
+                        )
                     case _:
                         pass
         except KeyError as err:
@@ -949,11 +1031,6 @@ class MzPeakFile(Sequence[_SpectrumType]):
                     f"Do not understand how to list files from {self._archive} of type {self._archive_storage}"
                 )
 
-    def spectra_signal_for_indices(
-        self, index_range: slice | list[int]
-    ) -> dict[str, np.ndarray]:
-        return self.spectrum_data.read_data_for_range(index_range)
-
     def read_peaks_for(self, index: int):
         if self.spectrum_peak_data is not None:
             return self.spectrum_peak_data[index]
@@ -985,34 +1062,6 @@ class MzPeakFile(Sequence[_SpectrumType]):
 
         self._init_metadata()
 
-    def read_spectrum(
-        self, index: int | str | Iterable[int | str] | slice
-    ) -> _SpectrumType | list[_SpectrumType]:
-        if isinstance(index, (int, str)):
-            spec = self.spectrum_metadata[index]
-            index = spec["index"]
-            data = self.spectrum_data[index]
-            spec.update(data)
-        elif isinstance(index, Iterable):
-            if not index:
-                return []
-            spec = [self.read_spectrum(i) for i in index]
-        elif isinstance(index, slice):
-            start = index.start or 0
-            end = index.stop or len(self)
-            step = index.step or 1
-            if step == 1:
-                it = iter(self)
-                it.seek(start)
-                spec = []
-                for s in it:
-                    spec.append(s)
-                    if s["index"] == (end - 1):
-                        break
-            else:
-                spec = self.read_spectrum(range(start, end, step))
-        return spec
-
     def read_chromatogram(
         self, index: int | str | Iterable[int | str] | slice
     ) -> _SpectrumType | list[_SpectrumType]:
@@ -1034,18 +1083,6 @@ class MzPeakFile(Sequence[_SpectrumType]):
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self._archive.filename!r})"
-
-    def __getitem__(
-        self, index: int | str | Iterable[int | str] | slice
-    ) -> _SpectrumType | list[_SpectrumType]:
-        """An alias for :meth:`read_spectrum`."""
-        return self.read_spectrum(index)
-
-    def __iter__(self) -> MzPeakFileIter:
-        return MzPeakFileIter(self)
-
-    def __len__(self):
-        return len(self.spectrum_metadata)
 
     def extract_tic(self) -> tuple[np.ndarray, np.ndarray]:
         """
@@ -1099,10 +1136,6 @@ class MzPeakFile(Sequence[_SpectrumType]):
         return self.spectrum_metadata.scans
 
     @property
-    def time(self) -> RTLocator:
-        return RTLocator(self)
-
-    @property
     def chromatograms(self) -> pd.DataFrame | None:
         if self.chromatogram_metadata is not None:
             return self.chromatogram_metadata.chromatograms
@@ -1117,10 +1150,23 @@ class MzPeakFile(Sequence[_SpectrumType]):
         ctx.from_arrow(pa.table(self.chromatograms.reset_index()), "chromatograms")
         return ctx
 
+    @property
+    def wavelength_data(self) -> Optional["WavelengthFacet"]:
+        if self._wavelength_spectrum_metadata is None:
+            return None
+        return WavelengthFacet(
+            self._wavelength_spectrum_metadata,
+            self._wavelength_spectrum_data
+        )
 
-class WavelengthFacet:
+
+class WavelengthFacet(SpectrumCollection):
     spectrum_metadata: MzPeakSpectrumMetadataReader | None = None
     spectrum_data: MzPeakArrayDataReader | None = None
+
+    def __init__(self, spectrum_metadata, spectrum_data):
+        self.spectrum_data = spectrum_data
+        self.spectrum_metadata = spectrum_metadata
 
     @property
     def spectra(self) -> pd.DataFrame:
@@ -1129,8 +1175,4 @@ class WavelengthFacet:
     @property
     def scans(self) -> pd.DataFrame:
         return self.spectrum_metadata.scans
-
-    @property
-    def time(self) -> RTLocator:
-        return RTLocator(self)
 

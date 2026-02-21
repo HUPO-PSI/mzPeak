@@ -502,7 +502,7 @@ impl<
 
         let builder = SpectrumMetadataReader(self.handle.spectrum_metadata().await?);
 
-        let rows = builder.prepare_rows_for(index, &self.query_indices);
+        let rows = builder.prepare_rows_for(index, &self.query_indices.spectrum);
         let predicate = builder.prepare_predicate_for(index);
 
         let mut reader = builder
@@ -805,7 +805,7 @@ impl<
         log::trace!("Loading all spectrum metadata");
         let builder = SpectrumMetadataReader(self.handle.spectrum_metadata().await?);
 
-        let rows = builder.prepare_rows_for_all(&self.query_indices);
+        let rows = builder.prepare_rows_for_all(&self.query_indices.spectrum);
         let predicate = builder.prepare_predicate_for_all();
 
         let mut reader = builder

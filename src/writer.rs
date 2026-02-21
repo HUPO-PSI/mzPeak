@@ -1295,10 +1295,12 @@ mod test {
             assert_eq!(arrow::compute::max(indices).unwrap(), 519);
         }
 
-        let spec = new_reader.get_wavelength_spectrum(100).unwrap();
-        dbg!(spec);
-
-
+        let n = new_reader.len_wavelength_spectra();
+        assert_eq!(n, 520);
+        for spec in new_reader.iter_wavelength_spectra()? {
+            let arrays = spec.raw_arrays().unwrap();
+            assert!(arrays.has_array(&ArrayType::WavelengthArray));
+        }
         Ok(())
     }
 
