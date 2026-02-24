@@ -53,7 +53,7 @@ use parquet::{
 
 pub trait SpectrumMetadataLike {
     #[allow(unused)]
-    fn array_indices(&self) -> &ArrayIndex;
+    fn array_indices(&self) -> &Arc<ArrayIndex>;
     #[allow(unused)]
     fn id_index(&self) -> &OffsetIndex;
     fn spectrum_metadata_map(&self) -> Option<&[MetadataColumn]>;
@@ -76,7 +76,7 @@ pub struct SpectrumMetadata {
 }
 
 impl SpectrumMetadataLike for SpectrumMetadata {
-    fn array_indices(&self) -> &ArrayIndex {
+    fn array_indices(&self) -> &Arc<ArrayIndex> {
         &self.array_indices
     }
 
@@ -135,7 +135,7 @@ pub struct WavelengthSpectrumMetadata {
 }
 
 impl SpectrumMetadataLike for WavelengthSpectrumMetadata {
-    fn array_indices(&self) -> &ArrayIndex {
+    fn array_indices(&self) -> &Arc<ArrayIndex> {
         &self.array_indices
     }
 
@@ -648,7 +648,7 @@ pub(crate) fn load_indices_from<T: ArchiveSource>(
 ) -> io::Result<(ReaderMetadata, QueryIndex)> {
     log::trace!("Loading indices");
     let spectrum_metadata_reader = handle.spectrum_metadata()?;
-    let spectrum_data_reader = handle.spectra_data()?;
+    let spectrum_data_reader = handle.spectrum_data()?;
 
     let spectrum_id_index =
         build_id_index::<T>(handle.spectrum_metadata()?, "spectrum", "spectrum")?;
@@ -1319,23 +1319,17 @@ pub(crate) trait ChromatogramMetadataQuerySource: BaseMetadataQuerySource {
                 .column(0)
                 .as_struct()
                 .column(0)
-                .as_any()
-                .downcast_ref()
-                .unwrap();
+                .as_primitive();
             let precursor_spectrum_index: &UInt64Array = batch
                 .column(1)
                 .as_struct()
                 .column(0)
-                .as_any()
-                .downcast_ref()
-                .unwrap();
+                .as_primitive();
             let selected_ion_spectrum_index: &UInt64Array = batch
                 .column(2)
                 .as_struct()
                 .column(0)
-                .as_any()
-                .downcast_ref()
-                .unwrap();
+                .as_primitive();
 
             let it = chromatogram_index.iter().map(|val| val.is_some());
 

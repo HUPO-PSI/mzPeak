@@ -954,53 +954,56 @@ class MzPeakFile(_SpectrumCollectionMixin):
         self._archive_storage = ArchiveStorage.Zip
         self._archive = archive
         visited = set()
+
         try:
             f = archive.getinfo(FileIndex.FILE_NAME)
-            self.file_index = FileIndex.from_json(json.load(archive.open(f)))
-            for e in self.file_index:
-                if e.name in visited:
-                    continue
-                visited.add(e.name)
-                f = archive.open(e.name)
-                match e.entry_type():
-                    case (EntityType.Spectrum, DataKind.DataArrays):
-                        self.spectrum_data = MzPeakArrayDataReader(
-                            pa.PythonFile(f),
-                            namespace="spectrum",
-                        )
-                    case (EntityType.Spectrum, DataKind.Metadata):
-                        self.spectrum_metadata = MzPeakSpectrumMetadataReader(
-                            pa.PythonFile(f),
-                        )
-                    case (EntityType.Spectrum, DataKind.Peaks):
-                        self.spectrum_peak_data = MzPeakArrayDataReader(
-                            pa.PythonFile(f),
-                            namespace="spectrum",
-                        )
-                    case (EntityType.Chromatogram, DataKind.DataArrays):
-                        self.chromatogram_data = MzPeakArrayDataReader(
-                            pa.PythonFile(f),
-                            namespace="chromatogram",
-                        )
-                    case (EntityType.Chromatogram, DataKind.Metadata):
-                        self.chromatogram_metadata = MzPeakChromatogramMetadataReader(
-                            pa.PythonFile(f)
-                        )
-                    case (EntityType.WavelengthSpectrum, DataKind.DataArrays):
-                        self._wavelength_spectrum_data = MzPeakArrayDataReader(
-                            pa.PythonFile(f),
-                            namespace="wavelength_spectrum",
-                        )
-                    case (EntityType.WavelengthSpectrum, DataKind.Metadata):
-                        self._wavelength_spectrum_metadata = MzPeakSpectrumMetadataReader(
-                            pa.PythonFile(f),
-                        )
-                    case _:
-                        pass
         except KeyError as err:
             raise FileNotFoundError(
                 f"Failed to find {FileIndex.FILE_NAME} in mzPeak ZIP archive {archive}"
             ) from err
+
+        self.file_index = FileIndex.from_json(json.load(archive.open(f)))
+        for e in self.file_index:
+            if e.name in visited:
+                continue
+            visited.add(e.name)
+            f = archive.open(e.name)
+            match e.entry_type():
+                case (EntityType.Spectrum, DataKind.DataArrays):
+                    self.spectrum_data = MzPeakArrayDataReader(
+                        pa.PythonFile(f),
+                        namespace="spectrum",
+                    )
+                case (EntityType.Spectrum, DataKind.Metadata):
+                    self.spectrum_metadata = MzPeakSpectrumMetadataReader(
+                        pa.PythonFile(f),
+                    )
+                case (EntityType.Spectrum, DataKind.Peaks):
+                    self.spectrum_peak_data = MzPeakArrayDataReader(
+                        pa.PythonFile(f),
+                        namespace="spectrum",
+                    )
+                case (EntityType.Chromatogram, DataKind.DataArrays):
+                    self.chromatogram_data = MzPeakArrayDataReader(
+                        pa.PythonFile(f),
+                        namespace="chromatogram",
+                    )
+                case (EntityType.Chromatogram, DataKind.Metadata):
+                    self.chromatogram_metadata = MzPeakChromatogramMetadataReader(
+                        pa.PythonFile(f)
+                    )
+                case (EntityType.WavelengthSpectrum, DataKind.DataArrays):
+                    self._wavelength_spectrum_data = MzPeakArrayDataReader(
+                        pa.PythonFile(f),
+                        namespace="wavelength_spectrum",
+                    )
+                case (EntityType.WavelengthSpectrum, DataKind.Metadata):
+                    self._wavelength_spectrum_metadata = MzPeakSpectrumMetadataReader(
+                        pa.PythonFile(f),
+                    )
+                case _:
+                    pass
+
 
     def _from_path(self, path: Path):
         if path.is_dir():

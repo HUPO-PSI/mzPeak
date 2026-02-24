@@ -1214,12 +1214,13 @@ pub enum GenericDataIndex<T: BasicQueryIndex + Default, U: BasicQueryIndex + Bas
     Chunk(U),
 }
 
+
+
 impl<T: BasicQueryIndex + Default, U: BasicQueryIndex + BasicChunkQueryIndex + Default> Default for GenericDataIndex<T, U> {
     fn default() -> Self {
         GenericDataIndex::Point(Default::default())
     }
 }
-
 
 impl<T: BasicQueryIndex + Default, U: BasicQueryIndex + BasicChunkQueryIndex + Default> GenericDataIndex<T, U> {
     pub fn is_point(&self) -> bool {
@@ -1621,13 +1622,21 @@ pub struct SpectrumMetadataIndex {
 }
 
 pub trait SpectrumMetadataIndexLike {
+    type Point: BasicQueryIndex + Default + SpectrumQueryIndex;
+    type Chunk: BasicQueryIndex + BasicChunkQueryIndex + Default;
+
     fn index_index(&self) -> &PageIndex<u64>;
     fn scan_index(&self) -> Option<&PageIndex<u64>>;
     fn precursor_index(&self) -> Option<&PageIndex<u64>>;
     fn selected_ion_index(&self) -> Option<&PageIndex<u64>>;
+
+    fn data_index(&self) -> &GenericDataIndex<Self::Point, Self::Chunk>;
 }
 
 impl SpectrumMetadataIndexLike for SpectrumMetadataIndex {
+    type Point = SpectrumPointIndex;
+    type Chunk = SpectrumChunkIndex;
+
     fn index_index(&self) -> &PageIndex<u64> {
         &self.index_index
     }
@@ -1643,9 +1652,16 @@ impl SpectrumMetadataIndexLike for SpectrumMetadataIndex {
     fn selected_ion_index(&self) -> Option<&PageIndex<u64>> {
         Some(&self.selected_ion_index)
     }
+
+    fn data_index(&self) -> &GenericDataIndex<Self::Point, Self::Chunk> {
+        &self.data_index
+    }
 }
 
 impl SpectrumMetadataIndexLike for WavelengthSpectrumIndex {
+    type Point = WavelengthSpectrumPointIndex;
+    type Chunk = WavelengthSpectrumChunkIndex;
+
     fn index_index(&self) -> &PageIndex<u64> {
         &self.index
     }
@@ -1660,6 +1676,10 @@ impl SpectrumMetadataIndexLike for WavelengthSpectrumIndex {
 
     fn selected_ion_index(&self) -> Option<&PageIndex<u64>> {
         None
+    }
+
+    fn data_index(&self) -> &GenericDataIndex<Self::Point, Self::Chunk> {
+        &self.data_index
     }
 }
 

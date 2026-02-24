@@ -941,7 +941,7 @@ impl<T: ArchiveSource + 'static> ArchiveReader<T> {
         }
     }
 
-    pub fn spectra_data(&self) -> io::Result<ParquetRecordBatchReaderBuilder<T::File>> {
+    pub fn spectrum_data(&self) -> io::Result<ParquetRecordBatchReaderBuilder<T::File>> {
         if let Some(meta) = self.members.spectrum_data_arrays.as_ref() {
             self.archive
                 .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap()))

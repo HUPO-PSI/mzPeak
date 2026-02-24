@@ -1021,7 +1021,7 @@ mod sync_impl {
 
     impl<T: ChunkReader + 'static> PointDataReader<T> {
         /// Read the arrays associated with the points of `index`
-        pub(crate) fn read_points_of<'a, I: SpectrumQueryIndex + Debug + 'a>(
+        pub(crate) fn read_points_of<'a, I: SpectrumQueryIndex + 'a>(
             self,
             index: u64,
             query_index: &'a I,
@@ -1124,9 +1124,9 @@ mod sync_impl {
                 if matches!(context, BufferContext::Spectrum) {
                     let subset = arrow::datatypes::Schema::new(subset.clone());
                     index_column_idx = subset
-                        .column_with_name(BufferContext::Spectrum.index_name())
+                        .column_with_name(context.index_name())
                         .map(|(i, _)| i);
-                    if let Some(coordinate_array_idx) = array_indices.get(&ArrayType::MZArray) {
+                    if let Some(coordinate_array_idx) = array_indices.get(&context.default_sorted_array()) {
                         coordinate_column_idx = subset
                             .column_with_name(&coordinate_array_idx.path.split(".").last().unwrap())
                             .map(|(i, _)| i);
