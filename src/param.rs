@@ -20,7 +20,6 @@ pub const ION_MOBILITY_SCAN_TERMS: [mzdata::params::CURIE; 4] = [
     mzdata::curie!(MS:1003371),
 ];
 
-
 pub type CURIE = mzdata::params::CURIE;
 
 pub use mzdata::curie;
@@ -257,7 +256,6 @@ impl From<mzdata::Param> for MetaParam {
         }
     }
 }
-
 
 /// An adaptation of [`mzdata::meta::SourceFile`]
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -562,7 +560,6 @@ impl From<&mzdata::meta::Sample> for Sample {
     }
 }
 
-
 /// A variadic data type meant to store a value that is either a path to a Parquet column
 /// which holds the value for this entity that varies over rows, a constant [`CURIE`] or
 /// no value stored, the equivalent of [`Option::None`].
@@ -657,7 +654,6 @@ impl MetadataColumn {
         self
     }
 }
-
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MetadataColumnCollection(Vec<MetadataColumn>);

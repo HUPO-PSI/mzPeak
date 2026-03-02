@@ -28,7 +28,9 @@ use crate::{
     archive::{DataKind, EntityType, FileEntry, MzPeakArchiveType, ZipArchiveWriter},
     buffer_descriptors::BufferOverrideTable,
     constants::{
-        CHROMATOGRAM_COUNT, CHROMATOGRAM_DATA_POINT_COUNT, SPECTRUM_COUNT, SPECTRUM_DATA_POINT_COUNT, WAVELENGTH_SPECTRUM_COUNT, WAVELENGTH_SPECTRUM_DATA_ARRAYS_NAME, WAVELENGTH_SPECTRUM_METADATA_NAME
+        CHROMATOGRAM_COUNT, CHROMATOGRAM_DATA_POINT_COUNT, SPECTRUM_COUNT,
+        SPECTRUM_DATA_POINT_COUNT, WAVELENGTH_SPECTRUM_COUNT, WAVELENGTH_SPECTRUM_DATA_ARRAYS_NAME,
+        WAVELENGTH_SPECTRUM_METADATA_NAME,
     },
     peak_series::{ArrayIndex, BufferContext, ToMzPeakDataSeries, array_map_to_schema_arrays},
     writer::{base::GenericDataArrayWriter, builder::SpectrumFieldVisitors},
@@ -864,19 +866,19 @@ impl<
                 )?);
 
                 self.append_key_value_metadata(
-                        WAVELENGTH_SPECTRUM_DATA_POINT_COUNT.into(),
-                        Some(
-                            self.wavelength_spectrum_buffers
-                                .as_ref()
-                                .unwrap()
-                                .point_count()
-                                .to_string(),
-                        ),
-                    );
+                    WAVELENGTH_SPECTRUM_DATA_POINT_COUNT.into(),
+                    Some(
+                        self.wavelength_spectrum_buffers
+                            .as_ref()
+                            .unwrap()
+                            .point_count()
+                            .to_string(),
+                    ),
+                );
 
                 self.append_key_value_metadata(
                     WAVELENGTH_SPECTRUM_COUNT.into(),
-                    Some(self.wavelength_spectrum_metadata_buffer.len().to_string())
+                    Some(self.wavelength_spectrum_metadata_buffer.len().to_string()),
                 );
 
                 self.append_metadata();
@@ -1176,11 +1178,14 @@ mod test {
             .dictionary_page_size(Some(2usize.pow(16)))
             .row_group_size(Some(2usize.pow(16)))
             .page_size(Some(2usize.pow(16)))
-            .add_spectrum_activation_field(CustomBuilderFromParameter::from_spec(
-                mzdata::curie!(MS:1000045),
-                "collision energy",
-                DataType::Float64,
-            ));
+            .add_spectrum_activation_field(
+                CustomBuilderFromParameter::from_spec(
+                    mzdata::curie!(MS:1000045),
+                    "collision energy",
+                    DataType::Float64,
+                )
+                .with_unit_fixed(Unit::Electronvolt.to_curie()),
+            );
 
         let mut writer = builder.build(&mut buf, true);
         writer.copy_metadata_from(&reader);
@@ -1235,10 +1240,6 @@ mod test {
             assert_eq!(a.id(), b.id());
         }
 
-        eprintln!(
-            "{:?}",
-            new_reader.metadata.chromatogram_auxiliary_array_counts
-        );
         let chrom = new_reader.get_chromatogram(0).unwrap();
         for (name, arr) in chrom.arrays.iter() {
             assert_eq!(
@@ -1255,7 +1256,7 @@ mod test {
     fn test_wavelengths() -> io::Result<()> {
         let mut buf = io::Cursor::new(Vec::<u8>::with_capacity(2usize.pow(16u32)));
         let mut reader = mzdata::MZReader::open_path(
-            "test/data/TOFsulfasMS4GHzDualMode+DADSpectra+UVSignal272-NoProfile.mzML"
+            "test/data/TOFsulfasMS4GHzDualMode+DADSpectra+UVSignal272-NoProfile.mzML",
         )?;
         let builder = MzPeakWriter::<io::Cursor<Vec<u8>>>::builder();
 
@@ -1275,8 +1276,10 @@ mod test {
         drop(writer);
 
         let mut new_reader = MzPeakReader::from_buf(buf.into_inner().into())?;
-        let wl_meta_entry = new_reader.file_index().iter().find(
-            |entry| entry.entity_type == EntityType::WavelengthSpectrum && entry.data_kind == DataKind::Metadata);
+        let wl_meta_entry = new_reader.file_index().iter().find(|entry| {
+            entry.entity_type == EntityType::WavelengthSpectrum
+                && entry.data_kind == DataKind::Metadata
+        });
         assert!(wl_meta_entry.is_some());
         let wl_meta_entry = wl_meta_entry.unwrap();
         let batches = new_reader.open_parquet(&wl_meta_entry.name)?.build()?;

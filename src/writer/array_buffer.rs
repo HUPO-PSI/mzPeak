@@ -15,7 +15,9 @@ use crate::{
     buffer_descriptors::{BufferOverrideTable, BufferPriority, BufferTransform},
     chunk_series::{ArrowArrayChunk, ChunkingStrategy},
     filter::{drop_where_column_is_zero_run, nullify_at_zero_pair},
-    peak_series::{ArrayIndex, ArrayIndexEntry, INTENSITY_ARRAY, MZ_ARRAY, TIME_ARRAY, WAVELENGTH_ARRAY},
+    peak_series::{
+        ArrayIndex, ArrayIndexEntry, INTENSITY_ARRAY, MZ_ARRAY, TIME_ARRAY, WAVELENGTH_ARRAY,
+    },
 };
 
 pub trait ArrayBufferWriter {
@@ -509,13 +511,7 @@ impl ArrayBufferWriter for ChunkBuffers {
         &self.chunk_array_fields
     }
 
-    fn add_arrays(
-        &mut self,
-        fields: Fields,
-        arrays: Vec<ArrayRef>,
-        size: usize,
-        is_profile: bool,
-    ) {
+    fn add_arrays(&mut self, fields: Fields, arrays: Vec<ArrayRef>, size: usize, is_profile: bool) {
         self.chunk_buffer
             .push(StructArray::new(fields, arrays, None));
         self.is_profile_buffer.push(is_profile);
@@ -540,7 +536,9 @@ impl ArrayBufferWriter for ChunkBuffers {
             spectrum_time,
             MZ_ARRAY,
             &arrays,
-            ChunkingStrategy::Basic { chunk_size: self.chunking_strategy.chunk_size() },
+            ChunkingStrategy::Basic {
+                chunk_size: self.chunking_strategy.chunk_size(),
+            },
             self.overrides(),
             self.drop_zero_intensity(),
             self.nullify_zero_intensity(),
@@ -551,9 +549,12 @@ impl ArrayBufferWriter for ChunkBuffers {
             &chunks,
             self.buffer_context(),
             self.schema().fields(),
-            &[ChunkingStrategy::Basic { chunk_size: self.chunking_strategy.chunk_size() }],
+            &[ChunkingStrategy::Basic {
+                chunk_size: self.chunking_strategy.chunk_size(),
+            }],
             self.include_time(),
-        ).into_parts();
+        )
+        .into_parts();
         self.add_arrays(fields, arrays, peaks.len(), false);
     }
 
@@ -625,7 +626,9 @@ impl ArrayBufferWriterVariants {
 
     pub fn chunking_strategy(&self) -> Option<&ChunkingStrategy> {
         match self {
-            ArrayBufferWriterVariants::ChunkBuffers(chunk_buffers) => Some(&chunk_buffers.chunking_strategy),
+            ArrayBufferWriterVariants::ChunkBuffers(chunk_buffers) => {
+                Some(&chunk_buffers.chunking_strategy)
+            }
             ArrayBufferWriterVariants::PointBuffers(_) => None,
         }
     }
@@ -768,8 +771,12 @@ impl ArrayBufferWriter for ArrayBufferWriterVariants {
 
     fn point_count_mut(&mut self) -> &mut u64 {
         match self {
-            ArrayBufferWriterVariants::ChunkBuffers(chunk_buffers) => chunk_buffers.point_count_mut(),
-            ArrayBufferWriterVariants::PointBuffers(point_buffers) => point_buffers.point_count_mut(),
+            ArrayBufferWriterVariants::ChunkBuffers(chunk_buffers) => {
+                chunk_buffers.point_count_mut()
+            }
+            ArrayBufferWriterVariants::PointBuffers(point_buffers) => {
+                point_buffers.point_count_mut()
+            }
         }
     }
 }
@@ -879,23 +886,23 @@ impl ArrayBuffersBuilder {
 
     pub(crate) fn add_default_fields_for_context(mut self, buffer_context: BufferContext) -> Self {
         self = match buffer_context {
-            BufferContext::Spectrum => {
-                self.add_field(buffer_context.index_field())
-                    .add_field(MZ_ARRAY.to_field())
-                    .add_field(INTENSITY_ARRAY.to_field())
-            },
-            BufferContext::Chromatogram => {
-                self.add_field(buffer_context.index_field())
-                    .add_field(TIME_ARRAY.to_field())
-                    .add_field(INTENSITY_ARRAY.to_field())
-            },
-            BufferContext::WavelengthSpectrum => {
-                self.add_field(buffer_context.index_field())
-                    .add_field(WAVELENGTH_ARRAY.to_field())
-                    .add_field(INTENSITY_ARRAY.clone()
-                                    .with_context(BufferContext::WavelengthSpectrum)
-                                    .to_field())
-            }
+            BufferContext::Spectrum => self
+                .add_field(buffer_context.index_field())
+                .add_field(MZ_ARRAY.to_field())
+                .add_field(INTENSITY_ARRAY.to_field()),
+            BufferContext::Chromatogram => self
+                .add_field(buffer_context.index_field())
+                .add_field(TIME_ARRAY.to_field())
+                .add_field(INTENSITY_ARRAY.to_field()),
+            BufferContext::WavelengthSpectrum => self
+                .add_field(buffer_context.index_field())
+                .add_field(WAVELENGTH_ARRAY.to_field())
+                .add_field(
+                    INTENSITY_ARRAY
+                        .clone()
+                        .with_context(BufferContext::WavelengthSpectrum)
+                        .to_field(),
+                ),
         };
         self
     }
@@ -1032,7 +1039,7 @@ impl ArrayBuffersBuilder {
                         },
                         BufferContext::WavelengthSpectrum => match name.array_type {
                             _ => {}
-                        }
+                        },
                     }
                     *f = name.update_field(f.clone());
                 }
@@ -1147,7 +1154,7 @@ impl ArrayBuffersBuilder {
             is_profile_buffer: Vec::new(),
             null_zeros: self.null_zeros,
             include_time: self.include_time,
-            point_count: 0
+            point_count: 0,
         }
     }
 }
@@ -1199,7 +1206,8 @@ mod test {
     #[test_log::test]
     fn test_build_chunked() -> std::io::Result<()> {
         let mut builder = ArrayBuffersBuilder::default();
-        builder = builder.prefix("chunk")
+        builder = builder
+            .prefix("chunk")
             .null_zeros(true)
             .chunking_strategy(Some(ChunkingStrategy::Delta { chunk_size: 50.0 }));
         let mut reader = mzdata::MZReader::open_path("small.mzML")?;

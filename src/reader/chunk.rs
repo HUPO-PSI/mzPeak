@@ -225,7 +225,10 @@ trait ChunkQuerySource {
                 BufferFormat::ChunkEncoding => {}
                 BufferFormat::ChunkSecondary => {}
                 BufferFormat::ChunkTransform => {
-                    if cache.is_chunk_transform_for_main_chunk(entry.field_name(), &entry.as_buffer_name()) {
+                    if cache.is_chunk_transform_for_main_chunk(
+                        entry.field_name(),
+                        &entry.as_buffer_name(),
+                    ) {
                         additional_entries.push(entry);
                     }
                 }
@@ -233,7 +236,9 @@ trait ChunkQuerySource {
         }
 
         match (start_entry, end_entry, values_entry) {
-            (Some(start), Some(end), Some(values)) => Some((start, end, values, additional_entries)),
+            (Some(start), Some(end), Some(values)) => {
+                Some((start, end, values, additional_entries))
+            }
             (_, _, _) => None,
         }
     }
@@ -490,52 +495,64 @@ fn coerce_bounds_array(arr: &ArrayRef) -> Vec<f64> {
     }
 }
 
-
-struct BufferNameCache<'a>  {
+struct BufferNameCache<'a> {
     buffer_name_cache: HashMap<String, Option<Arc<BufferName>>>,
     array_indices: &'a ArrayIndex,
 }
 
 impl<'a> BufferNameCache<'a> {
     fn new(array_indices: &'a ArrayIndex) -> Self {
-        Self { buffer_name_cache: Default::default(), array_indices }
+        Self {
+            buffer_name_cache: Default::default(),
+            array_indices,
+        }
     }
 
     fn get(&mut self, field_name: &str) -> Option<Arc<BufferName>> {
         if let Some(v) = self.buffer_name_cache.get(field_name) {
-            return v.clone()
+            return v.clone();
         }
         let name = self
-                .array_indices
-                .iter()
-                .find(|col| col.path.split(".").last().unwrap() == field_name)
-                .map(|v| v.as_buffer_name()).map(Arc::new);
-        self.buffer_name_cache.insert(field_name.to_string(), name.clone());
+            .array_indices
+            .iter()
+            .find(|col| col.path.split(".").last().unwrap() == field_name)
+            .map(|v| v.as_buffer_name())
+            .map(Arc::new);
+        self.buffer_name_cache
+            .insert(field_name.to_string(), name.clone());
         name
     }
 
-    fn is_chunk_transform_for_main_chunk(&self, field_name: &str, buffer_name: &BufferName) -> bool {
-        self.get_transform(field_name, buffer_name).is_some_and(|f| matches!(f.buffer_format, BufferFormat::Chunk))
+    fn is_chunk_transform_for_main_chunk(
+        &self,
+        field_name: &str,
+        buffer_name: &BufferName,
+    ) -> bool {
+        self.get_transform(field_name, buffer_name)
+            .is_some_and(|f| matches!(f.buffer_format, BufferFormat::Chunk))
     }
 
     fn get_transform(&self, field_name: &str, buffer_name: &BufferName) -> Option<Arc<BufferName>> {
         for array_index_entry in self.array_indices.iter() {
-            if matches!(array_index_entry.buffer_format, BufferFormat::Chunk | BufferFormat::ChunkSecondary) {
+            if matches!(
+                array_index_entry.buffer_format,
+                BufferFormat::Chunk | BufferFormat::ChunkSecondary
+            ) {
                 let qname = array_index_entry.as_buffer_name();
                 if qname.array_type == buffer_name.array_type
                     && qname.dtype == buffer_name.dtype
                     && qname.unit == buffer_name.unit
-                    && qname.data_processing_id == buffer_name.data_processing_id {
-                        let qname = Arc::new(qname);
-                        log::trace!("Mapping {field_name} to parent {qname}");
-                        return Some(qname)
+                    && qname.data_processing_id == buffer_name.data_processing_id
+                {
+                    let qname = Arc::new(qname);
+                    log::trace!("Mapping {field_name} to parent {qname}");
+                    return Some(qname);
                 }
             }
         }
-        return None
+        return None;
     }
 }
-
 
 struct ChunkDecoder<'a> {
     buffers: HashMap<Arc<BufferName>, Vec<ArrayRef>>,
@@ -544,7 +561,7 @@ struct ChunkDecoder<'a> {
     bin_map: BinaryArrayMap,
     array_indices: &'a ArrayIndex,
     delta_model: Option<&'a RegressionDeltaModel<f64>>,
-    buffer_name_cache: BufferNameCache<'a>
+    buffer_name_cache: BufferNameCache<'a>,
 }
 
 impl<'a> ChunkDecoder<'a> {
@@ -721,17 +738,23 @@ impl<'a> ChunkDecoder<'a> {
                             }
                             BufferFormat::ChunkBoundsEnd => {
                                 chunk_ends = coerce_bounds_array(arr);
-                            },
+                            }
                             BufferFormat::ChunkEncoding => {
                                 chunk_encodings = AnyCURIEArray::try_from(arr).unwrap().to_vec()
                             }
                             BufferFormat::ChunkTransform => {
-                                if self.buffer_name_cache.get_transform(f.name(), &name).is_some_and(|qname| matches!(qname.buffer_format, BufferFormat::Chunk)) {
+                                if self
+                                    .buffer_name_cache
+                                    .get_transform(f.name(), &name)
+                                    .is_some_and(|qname| {
+                                        matches!(qname.buffer_format, BufferFormat::Chunk)
+                                    })
+                                {
                                     self.main_axis_buffers.push((name, arr.clone()));
                                 } else {
                                     self.buffers.entry(name).or_default().push(arr.clone());
                                 }
-                            },
+                            }
                         }
                     } else {
                         log::warn!("{f:?} failed to map to a chunk buffer");
@@ -745,7 +768,7 @@ impl<'a> ChunkDecoder<'a> {
                 .iter()
                 .copied()
                 .zip(chunk_starts)
-                .zip(chunk_ends)
+                .zip(chunk_ends),
         );
 
         // For each chunk row
@@ -762,34 +785,32 @@ impl<'a> ChunkDecoder<'a> {
                         did_decode = true;
                         match encoding {
                             NO_COMPRESSION => {
-                                (ChunkingStrategy::Basic { chunk_size: 50.0 })
-                                    .decode_arrow(
-                                        &chunk_vals,
-                                        start as f64,
-                                        end as f64,
-                                        self.main_axis.as_mut().unwrap(),
-                                        self.delta_model,
-                                    );
+                                (ChunkingStrategy::Basic { chunk_size: 50.0 }).decode_arrow(
+                                    &chunk_vals,
+                                    start as f64,
+                                    end as f64,
+                                    self.main_axis.as_mut().unwrap(),
+                                    self.delta_model,
+                                );
                             }
                             DELTA_ENCODE => {
-                                (ChunkingStrategy::Delta { chunk_size: 50.0 })
-                                    .decode_arrow(
-                                        &chunk_vals,
-                                        start as f64,
-                                        end as f64,
-                                        self.main_axis.as_mut().unwrap(),
-                                        self.delta_model,
-                                    );
+                                (ChunkingStrategy::Delta { chunk_size: 50.0 }).decode_arrow(
+                                    &chunk_vals,
+                                    start as f64,
+                                    end as f64,
+                                    self.main_axis.as_mut().unwrap(),
+                                    self.delta_model,
+                                );
                             }
                             NUMPRESS_LINEAR => {
                                 (ChunkingStrategy::NumpressLinear { chunk_size: 50.0 })
-                                        .decode_arrow(
-                                            &chunk_vals,
-                                            start as f64,
-                                            end as f64,
-                                            self.main_axis.as_mut().unwrap(),
-                                            self.delta_model,
-                                        );
+                                    .decode_arrow(
+                                        &chunk_vals,
+                                        start as f64,
+                                        end as f64,
+                                        self.main_axis.as_mut().unwrap(),
+                                        self.delta_model,
+                                    );
                             }
                             _ => {
                                 unimplemented!("{encoding}")
@@ -800,24 +821,22 @@ impl<'a> ChunkDecoder<'a> {
                 if !did_decode {
                     match encoding {
                         NO_COMPRESSION => {
-                            (ChunkingStrategy::Basic { chunk_size: 50.0 })
-                                .decode_arrow(
-                                    &arrow::array::new_empty_array(&DataType::Float64),
-                                    start as f64,
-                                    end as f64,
-                                    self.main_axis.as_mut().unwrap(),
-                                    self.delta_model,
-                                );
+                            (ChunkingStrategy::Basic { chunk_size: 50.0 }).decode_arrow(
+                                &arrow::array::new_empty_array(&DataType::Float64),
+                                start as f64,
+                                end as f64,
+                                self.main_axis.as_mut().unwrap(),
+                                self.delta_model,
+                            );
                         }
                         DELTA_ENCODE => {
-                            (ChunkingStrategy::Delta { chunk_size: 50.0 })
-                                .decode_arrow(
-                                    &arrow::array::new_empty_array(&DataType::Float64),
-                                    start as f64,
-                                    end as f64,
-                                    self.main_axis.as_mut().unwrap(),
-                                    self.delta_model,
-                                );
+                            (ChunkingStrategy::Delta { chunk_size: 50.0 }).decode_arrow(
+                                &arrow::array::new_empty_array(&DataType::Float64),
+                                start as f64,
+                                end as f64,
+                                self.main_axis.as_mut().unwrap(),
+                                self.delta_model,
+                            );
                         }
                         NUMPRESS_LINEAR => {
                             // This chunk is never empty if it is valid
@@ -839,7 +858,7 @@ struct ChunkScanDecoder<'a> {
     main_axis: Option<DataArray>,
     metadata: &'a ReaderMetadata,
     query_range: Option<SimpleInterval<f64>>,
-    buffer_name_cache: BufferNameCache<'a>
+    buffer_name_cache: BufferNameCache<'a>,
 }
 
 impl<'a> ChunkScanDecoder<'a> {
@@ -933,12 +952,15 @@ impl<'a> ChunkScanDecoder<'a> {
                                 chunk_encodings = AnyCURIEArray::try_from(arr).unwrap().to_vec()
                             }
                             BufferFormat::ChunkTransform => {
-                                if self.buffer_name_cache.is_chunk_transform_for_main_chunk(f.name(), &name) {
+                                if self
+                                    .buffer_name_cache
+                                    .is_chunk_transform_for_main_chunk(f.name(), &name)
+                                {
                                     self.main_axis_buffers.push((name, arr.clone()));
                                 } else {
                                     self.buffers.entry(name).or_default().push(arr.clone());
                                 }
-                            },
+                            }
                         }
                     } else {
                         log::warn!("{f:?} failed to map to a chunk buffer");
@@ -1028,35 +1050,33 @@ impl<'a> ChunkScanDecoder<'a> {
                 }
             }
             if !did_decode {
-                    match encoding {
-                        NO_COMPRESSION => {
-                            (ChunkingStrategy::Basic { chunk_size: 50.0 })
-                                .decode_arrow(
-                                    &arrow::array::new_empty_array(&DataType::Float64),
-                                    start as f64,
-                                    end as f64,
-                                    self.main_axis.as_mut().unwrap(),
-                                    None,
-                                );
-                        }
-                        DELTA_ENCODE => {
-                            (ChunkingStrategy::Delta { chunk_size: 50.0 })
-                                .decode_arrow(
-                                    &arrow::array::new_empty_array(&DataType::Float64),
-                                    start as f64,
-                                    end as f64,
-                                    self.main_axis.as_mut().unwrap(),
-                                    None,
-                                );
-                        }
-                        NUMPRESS_LINEAR => {
-                            // This chunk is never empty if it is valid
-                        }
-                        _ => {
-                            unimplemented!("{encoding}")
-                        }
+                match encoding {
+                    NO_COMPRESSION => {
+                        (ChunkingStrategy::Basic { chunk_size: 50.0 }).decode_arrow(
+                            &arrow::array::new_empty_array(&DataType::Float64),
+                            start as f64,
+                            end as f64,
+                            self.main_axis.as_mut().unwrap(),
+                            None,
+                        );
+                    }
+                    DELTA_ENCODE => {
+                        (ChunkingStrategy::Delta { chunk_size: 50.0 }).decode_arrow(
+                            &arrow::array::new_empty_array(&DataType::Float64),
+                            start as f64,
+                            end as f64,
+                            self.main_axis.as_mut().unwrap(),
+                            None,
+                        );
+                    }
+                    NUMPRESS_LINEAR => {
+                        // This chunk is never empty if it is valid
+                    }
+                    _ => {
+                        unimplemented!("{encoding}")
                     }
                 }
+            }
         }
 
         // Reuse the same API that builds into a [`DataArray`] incrementally

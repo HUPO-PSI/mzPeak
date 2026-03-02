@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use arrow::array::{
     Array, ArrayBuilder, ArrayRef, ArrowPrimitiveType, AsArray, Float32Array, Float32Builder,
-    Float64Array, Float64Builder, Int32Builder, Int64Builder, LargeListBuilder, PrimitiveArray,
-    StructArray, StructBuilder, UInt8Array, UInt8Builder, UInt64Array, UInt64Builder, Int32Array,
-    Int64Array,
+    Float64Array, Float64Builder, Int32Array, Int32Builder, Int64Array, Int64Builder,
+    LargeListBuilder, PrimitiveArray, StructArray, StructBuilder, UInt8Array, UInt8Builder,
+    UInt64Array, UInt64Builder,
 };
 use arrow::compute::kernels::nullif;
 use arrow::datatypes::{
@@ -375,7 +375,9 @@ impl TryFrom<BufferTransform> for BufferTransformEncoder {
 
     fn try_from(value: BufferTransform) -> Result<Self, Self::Error> {
         match value {
-            BufferTransform::NumpressLinear | BufferTransform::NumpressSLOF | BufferTransform::NumpressPIC => Ok(Self(value)),
+            BufferTransform::NumpressLinear
+            | BufferTransform::NumpressSLOF
+            | BufferTransform::NumpressPIC => Ok(Self(value)),
             BufferTransform::NullInterpolate | BufferTransform::NullZero => {
                 Err(format!("{value:?} does not have an encoder"))
             }
@@ -557,7 +559,9 @@ impl TryFrom<BufferTransform> for BufferTransformDecoder {
 
     fn try_from(value: BufferTransform) -> Result<Self, Self::Error> {
         match value {
-            BufferTransform::NumpressLinear | BufferTransform::NumpressSLOF | BufferTransform::NumpressPIC => Ok(Self(value)),
+            BufferTransform::NumpressLinear
+            | BufferTransform::NumpressSLOF
+            | BufferTransform::NumpressPIC => Ok(Self(value)),
             BufferTransform::NullInterpolate | BufferTransform::NullZero => {
                 Err(format!("{value:?} does not have a decoder"))
             }
@@ -583,7 +587,6 @@ pub struct ArrowArrayChunk {
     /// The rest of the arrays of covering this chunk
     pub arrays: HashMap<BufferName, ArrayRef>,
 }
-
 
 impl ArrowArrayChunk {
     /// Low level constructor for a single chunk record.
@@ -671,11 +674,7 @@ impl ArrowArrayChunk {
             } else {
                 macro_rules! primitive_builder {
                     ($builder:ty) => {
-                        let inner = b
-                            .values()
-                            .as_any_mut()
-                            .downcast_mut::<$builder>()
-                            .unwrap();
+                        let inner = b.values().as_any_mut().downcast_mut::<$builder>().unwrap();
                         inner.append_array(chunk.chunk_values.as_primitive());
                     };
                 }
@@ -752,11 +751,8 @@ impl ArrowArrayChunk {
                         if let Some(arr) = chunk.arrays.get(&buf_name) {
                             macro_rules! primitive_builder {
                                 ($builder:ty) => {
-                                    let inner = b
-                                        .values()
-                                        .as_any_mut()
-                                        .downcast_mut::<$builder>()
-                                        .unwrap();
+                                    let inner =
+                                        b.values().as_any_mut().downcast_mut::<$builder>().unwrap();
                                     inner.append_array(arr.as_primitive());
                                 };
                             }
@@ -948,9 +944,7 @@ impl ArrowArrayChunk {
                 };
                 // If the buffer isn't in the fields for this chunk schema, skip it and store an auxiliary array.
                 if !fields.find(&field_name).is_some() && buffer_name != main_axis {
-                    log::debug!(
-                        "Skipping {field_name} from {arr:?}, not in schema: {fields:?}",
-                    );
+                    log::debug!("Skipping {field_name} from {arr:?}, not in schema: {fields:?}",);
                     auxiliary_arrays.push(AuxiliaryArray::from_data_array(arr)?);
                     continue;
                 }

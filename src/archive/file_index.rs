@@ -1,21 +1,20 @@
 use std::{collections::HashMap, ops::Deref, str::FromStr};
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use serde_with::DeserializeFromStr;
-
 
 /// The facet of the thing being described in this file
 #[derive(Debug, Serialize, DeserializeFromStr, Clone, PartialEq, Eq)]
 pub enum DataKind {
-    #[serde(rename="data arrays")]
+    #[serde(rename = "data arrays")]
     DataArray,
-    #[serde(rename="peaks")]
+    #[serde(rename = "peaks")]
     Peaks,
-    #[serde(rename="metadata")]
+    #[serde(rename = "metadata")]
     Metadata,
-    #[serde(rename="proprietary")]
+    #[serde(rename = "proprietary")]
     Proprietary,
-    #[serde(rename="other")]
+    #[serde(rename = "other")]
     Other(String),
 }
 
@@ -29,26 +28,24 @@ impl FromStr for DataKind {
             "metadata" => Self::Metadata,
             "proprietary" => Self::Proprietary,
             "other" => Self::Other("other".into()),
-            _ => Self::Other(s.to_string())
+            _ => Self::Other(s.to_string()),
         })
     }
 }
 
-
 /// The things being described in one facet or another by this file
 #[derive(Debug, Serialize, DeserializeFromStr, Clone, PartialEq, Eq)]
 pub enum EntityType {
-    #[serde(rename="spectrum")]
-    #[serde(alias="mass spectrum")]
+    #[serde(rename = "spectrum")]
+    #[serde(alias = "mass spectrum")]
     Spectrum,
-    #[serde(rename="chromatogram")]
+    #[serde(rename = "chromatogram")]
     Chromatogram,
-    #[serde(rename="wavelength spectrum")]
+    #[serde(rename = "wavelength spectrum")]
     WavelengthSpectrum,
-    #[serde(rename="other")]
+    #[serde(rename = "other")]
     Other(String),
 }
-
 
 impl FromStr for EntityType {
     type Err = &'static str;
@@ -63,11 +60,10 @@ impl FromStr for EntityType {
             _ => {
                 log::warn!("Found entity type {s}, treating as 'other'");
                 Self::Other(s.to_string())
-            },
+            }
         })
     }
 }
-
 
 /// A single file in the mzPeak archive of a certain type
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -83,38 +79,92 @@ pub struct FileEntry {
 impl FileEntry {
     pub fn archive_type(&self) -> super::MzPeakArchiveType {
         match (&self.entity_type, &self.data_kind) {
-            (EntityType::Spectrum, DataKind::DataArray) => super::MzPeakArchiveType::SpectrumDataArrays,
-            (EntityType::Spectrum, DataKind::Metadata) => super::MzPeakArchiveType::SpectrumMetadata,
-            (EntityType::Spectrum, DataKind::Peaks) => super::MzPeakArchiveType::SpectrumPeakDataArrays,
-            (EntityType::Chromatogram, DataKind::DataArray) => super::MzPeakArchiveType::ChromatogramDataArrays,
-            (EntityType::Chromatogram, DataKind::Metadata) => super::MzPeakArchiveType::ChromatogramMetadata,
-            (EntityType::WavelengthSpectrum, DataKind::DataArray) => super::MzPeakArchiveType::WavelengthSpectrumDataArrays,
-            (EntityType::WavelengthSpectrum, DataKind::Metadata) => super::MzPeakArchiveType::WavelengthSpectrumMetadata,
+            (EntityType::Spectrum, DataKind::DataArray) => {
+                super::MzPeakArchiveType::SpectrumDataArrays
+            }
+            (EntityType::Spectrum, DataKind::Metadata) => {
+                super::MzPeakArchiveType::SpectrumMetadata
+            }
+            (EntityType::Spectrum, DataKind::Peaks) => {
+                super::MzPeakArchiveType::SpectrumPeakDataArrays
+            }
+            (EntityType::Chromatogram, DataKind::DataArray) => {
+                super::MzPeakArchiveType::ChromatogramDataArrays
+            }
+            (EntityType::Chromatogram, DataKind::Metadata) => {
+                super::MzPeakArchiveType::ChromatogramMetadata
+            }
+            (EntityType::WavelengthSpectrum, DataKind::DataArray) => {
+                super::MzPeakArchiveType::WavelengthSpectrumDataArrays
+            }
+            (EntityType::WavelengthSpectrum, DataKind::Metadata) => {
+                super::MzPeakArchiveType::WavelengthSpectrumMetadata
+            }
             (EntityType::Other(_), _) => super::MzPeakArchiveType::Other,
             (_, _) => {
                 log::warn!("Could not map {self:?} to an archive type");
                 super::MzPeakArchiveType::Other
-            },
+            }
         }
     }
 
     pub fn new(name: String, entity_type: EntityType, data_kind: DataKind) -> Self {
-        Self { name, entity_type, data_kind }
+        Self {
+            name,
+            entity_type,
+            data_kind,
+        }
     }
 }
 
 impl From<super::MzPeakArchiveType> for FileEntry {
     fn from(value: super::MzPeakArchiveType) -> Self {
         match value {
-            super::MzPeakArchiveType::SpectrumMetadata => FileEntry::new(value.tag_file_suffix().into(), EntityType::Spectrum, DataKind::Metadata),
-            super::MzPeakArchiveType::SpectrumDataArrays => FileEntry::new(value.tag_file_suffix().into(), EntityType::Spectrum, DataKind::DataArray),
-            super::MzPeakArchiveType::SpectrumPeakDataArrays => FileEntry::new(value.tag_file_suffix().into(), EntityType::Spectrum, DataKind::Peaks),
-            super::MzPeakArchiveType::ChromatogramMetadata => FileEntry::new(value.tag_file_suffix().into(), EntityType::Chromatogram, DataKind::Metadata),
-            super::MzPeakArchiveType::ChromatogramDataArrays => FileEntry::new(value.tag_file_suffix().into(), EntityType::Chromatogram, DataKind::DataArray),
-            super::MzPeakArchiveType::WavelengthSpectrumDataArrays => FileEntry::new(value.tag_file_suffix().into(), EntityType::WavelengthSpectrum, DataKind::DataArray),
-            super::MzPeakArchiveType::WavelengthSpectrumMetadata => FileEntry::new(value.tag_file_suffix().into(), EntityType::WavelengthSpectrum, DataKind::Metadata),
-            super::MzPeakArchiveType::Other => FileEntry::new("".into(), "other".parse().unwrap(), DataKind::Other("other".into())),
-            super::MzPeakArchiveType::Proprietary => FileEntry::new("".into(), EntityType::Other("".into()), DataKind::Proprietary),
+            super::MzPeakArchiveType::SpectrumMetadata => FileEntry::new(
+                value.tag_file_suffix().into(),
+                EntityType::Spectrum,
+                DataKind::Metadata,
+            ),
+            super::MzPeakArchiveType::SpectrumDataArrays => FileEntry::new(
+                value.tag_file_suffix().into(),
+                EntityType::Spectrum,
+                DataKind::DataArray,
+            ),
+            super::MzPeakArchiveType::SpectrumPeakDataArrays => FileEntry::new(
+                value.tag_file_suffix().into(),
+                EntityType::Spectrum,
+                DataKind::Peaks,
+            ),
+            super::MzPeakArchiveType::ChromatogramMetadata => FileEntry::new(
+                value.tag_file_suffix().into(),
+                EntityType::Chromatogram,
+                DataKind::Metadata,
+            ),
+            super::MzPeakArchiveType::ChromatogramDataArrays => FileEntry::new(
+                value.tag_file_suffix().into(),
+                EntityType::Chromatogram,
+                DataKind::DataArray,
+            ),
+            super::MzPeakArchiveType::WavelengthSpectrumDataArrays => FileEntry::new(
+                value.tag_file_suffix().into(),
+                EntityType::WavelengthSpectrum,
+                DataKind::DataArray,
+            ),
+            super::MzPeakArchiveType::WavelengthSpectrumMetadata => FileEntry::new(
+                value.tag_file_suffix().into(),
+                EntityType::WavelengthSpectrum,
+                DataKind::Metadata,
+            ),
+            super::MzPeakArchiveType::Other => FileEntry::new(
+                "".into(),
+                "other".parse().unwrap(),
+                DataKind::Other("other".into()),
+            ),
+            super::MzPeakArchiveType::Proprietary => FileEntry::new(
+                "".into(),
+                EntityType::Other("".into()),
+                DataKind::Proprietary,
+            ),
         }
     }
 }
@@ -123,7 +173,7 @@ impl From<super::MzPeakArchiveType> for FileEntry {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct FileIndex {
     pub files: Vec<FileEntry>,
-    pub metadata: HashMap<String, serde_json::Value>
+    pub metadata: HashMap<String, serde_json::Value>,
 }
 
 impl From<Vec<FileEntry>> for FileIndex {

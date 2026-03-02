@@ -10,11 +10,16 @@ use arrow::array::{AsArray, UInt64Array};
 
 use identity_hash::BuildIdentityHasher;
 use mzdata::{
-    RawSpectrum, io::{DetailLevel, OffsetIndex}, meta::MSDataFileMetadata, params::Unit, prelude::*, spectrum::{
+    RawSpectrum,
+    io::{DetailLevel, OffsetIndex},
+    meta::MSDataFileMetadata,
+    params::Unit,
+    prelude::*,
+    spectrum::{
         ArrayType, BinaryArrayMap, Chromatogram, ChromatogramDescription, ChromatogramType,
         DataArray, MultiLayerSpectrum, PeakDataLevel, SpectrumDescription,
         bindata::BuildFromArrayMap,
-    }
+    },
 };
 use mzpeaks::{
     CentroidPeak, DeconvolutedCentroidLike, DeconvolutedPeak, coordinate::SimpleInterval,
@@ -48,7 +53,7 @@ use crate::{
         },
         metadata::{
             AuxiliaryArrayCountDecoder, ChromatogramMetadataDecoder,
-            ChromatogramMetadataQuerySource, ChromatogramMetadataReader, DeltaModelDecoder,
+            ChromatogramMetadataQuerySource, ChromatogramMetadataReader, PeakInfoDecoder,
             SpectrumMetadata, SpectrumMetadataDecoder, SpectrumMetadataLike,
             SpectrumMetadataQuerySource, SpectrumMetadataReader, TimeEncodedSeriesDecoder,
             TimeIndexDecoder, WavelengthSpectrumMetadata,
@@ -348,7 +353,11 @@ impl DataCache {
 
     // TODO: A facet-specific cache builder. Add a facet wrapping layer that allows them to also take advantage of caching
     #[allow(unused)]
-    pub fn load_data_for_facet<T: MzPeakSpectrumFacet>(reader: &T, row_group_index: usize, index: u64) -> io::Result<Option<Self>> {
+    pub fn load_data_for_facet<T: MzPeakSpectrumFacet>(
+        reader: &T,
+        row_group_index: usize,
+        index: u64,
+    ) -> io::Result<Option<Self>> {
         if let Some(_query_index) = reader.metadata_index().data_index().as_point() {
             let builder = PointDataReader(reader.data_reader()?, reader.buffer_context());
             let rg = builder.load_cache_block(reader.data_reader()?, row_group_index)?;
@@ -362,8 +371,7 @@ impl DataCache {
             );
 
             Ok(Some(Self::Point(cache)))
-        }
-        else if let Some(query_index) = reader.metadata_index().data_index().as_chunked() {
+        } else if let Some(query_index) = reader.metadata_index().data_index().as_chunked() {
             let builder = reader.data_reader()?;
             let builder = ChunkDataReader::new(builder, reader.buffer_context());
             let cache = builder.load_cache_block(
@@ -411,7 +419,7 @@ impl<
             _t: Default::default(),
         };
 
-        this.metadata.spectra.mz_model_deltas = this.load_delta_models()?;
+        this.load_delta_models()?;
         this.metadata.spectra.auxiliary_array_counts =
             this.load_spectrum_auxiliary_array_count()?;
         this.metadata.chromatogram_auxiliary_array_counts =
@@ -519,7 +527,6 @@ impl<
     }
 
     /// Read the complete data arrays for the spectrum at `index`
-    ///
     pub fn get_spectrum_arrays(&mut self, index: u64) -> io::Result<Option<BinaryArrayMap>> {
         let delta_model = self.metadata.model_deltas_for(index as usize);
         let builder = self.handle.spectrum_data()?;
@@ -1122,13 +1129,13 @@ impl<
     }
 
     /// Load median delta coefficient column if it is present.
-    pub(crate) fn load_delta_models(&mut self) -> io::Result<Vec<Option<Vec<f64>>>> {
+    pub(crate) fn load_delta_models(&mut self) -> io::Result<()> {
         let builder = self.handle.spectrum_metadata()?;
 
-        let mut decoder = DeltaModelDecoder::default();
+        let mut decoder = PeakInfoDecoder::default();
         let proj = match decoder.build_projection(&builder) {
             Some(proj) => proj,
-            None => return Ok(Vec::new()),
+            None => return Ok(()),
         };
 
         let reader = builder
@@ -1140,7 +1147,11 @@ impl<
         for batch in reader.flatten() {
             decoder.decode_batch(&batch);
         }
-        Ok(decoder.finish())
+
+        self.metadata.spectra.mz_model_deltas = decoder.model_parameters;
+        self.metadata.spectra.data_point_counts = decoder.data_point_counts;
+        self.metadata.spectra.peak_counts = decoder.peak_counts;
+        Ok(())
     }
 
     pub(crate) fn load_all_spectrum_metadata_impl(&self) -> io::Result<Vec<SpectrumDescription>> {
@@ -1584,7 +1595,7 @@ pub trait MzPeakSpectrumFacet {
 
     fn get_data(&mut self, index: u64) -> io::Result<Option<BinaryArrayMap>> {
         if !matches!(self.detail_level(), DetailLevel::Full) {
-            return Ok(None)
+            return Ok(None);
         }
         let query_indices = self.metadata_index();
 
@@ -1626,12 +1637,8 @@ pub trait MzPeakSpectrumFacet {
         }
     }
 
-    fn iter(
-        &mut self,
-    ) -> io::Result<impl Iterator<Item = Self::Spectrum>> {
-        let descr = self
-            .load_all_metadata()?
-            .to_vec();
+    fn iter(&mut self) -> io::Result<impl Iterator<Item = Self::Spectrum>> {
+        let descr = self.load_all_metadata()?.to_vec();
         Ok(descr.into_iter().enumerate().map(|(i, desc)| {
             if let Ok(arrays) = self.get_data(i as u64) {
                 RawSpectrum::new(desc, arrays.unwrap_or_default()).into()

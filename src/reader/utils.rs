@@ -1,6 +1,10 @@
 use std::collections::HashSet;
 
-use arrow::{array::{AsArray, RecordBatch}, datatypes, error::ArrowError};
+use arrow::{
+    array::{AsArray, RecordBatch},
+    datatypes,
+    error::ArrowError,
+};
 use identity_hash::BuildIdentityHasher;
 use mzpeaks::coordinate::{SimpleInterval, Span1D};
 
@@ -44,7 +48,10 @@ impl MaskSet {
         range: SimpleInterval<u64>,
         includes: Option<HashSet<u64, BuildIdentityHasher<u64>>>,
     ) -> Self {
-        Self { index_range: range, sparse_includes: includes }
+        Self {
+            index_range: range,
+            sparse_includes: includes,
+        }
     }
 
     pub fn split(&mut self) -> Option<Self> {
@@ -58,7 +65,8 @@ impl MaskSet {
         other.index_range.start = new_end + 1;
         self.index_range.end = new_end;
         if let Some(includes) = self.sparse_includes.as_mut() {
-            let mut other_includes = HashSet::with_capacity_and_hasher(includes.len() / 2, Default::default());
+            let mut other_includes =
+                HashSet::with_capacity_and_hasher(includes.len() / 2, Default::default());
             includes.retain(|v| {
                 if other.index_range.contains(v) {
                     other_includes.insert(*v);
@@ -84,7 +92,10 @@ impl MaskSet {
             let start = self.start().max(other.start());
             let end = self.end().min(other.end());
             let range = SimpleInterval::new(start, end);
-            let includes = match (self.sparse_includes.as_ref(), other.sparse_includes.as_ref()) {
+            let includes = match (
+                self.sparse_includes.as_ref(),
+                other.sparse_includes.as_ref(),
+            ) {
                 (None, None) => None,
                 (None, Some(b)) => Some(b.iter().filter(|i| range.contains(*i)).copied().collect()),
                 (Some(a), None) => Some(a.iter().filter(|i| range.contains(*i)).copied().collect()),
@@ -150,7 +161,6 @@ impl SpanDynNumeric for MaskSet {
         }
     }
 }
-
 
 #[cfg(test)]
 mod test {

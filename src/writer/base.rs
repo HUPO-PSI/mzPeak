@@ -27,7 +27,9 @@ use crate::{
     buffer_descriptors::BufferPriority,
     chunk_series::{ArrowArrayChunk, ChunkingStrategy},
     filter::select_delta_model,
-    peak_series::{INTENSITY_ARRAY, MZ_ARRAY, WAVELENGTH_ARRAY, array_map_to_schema_arrays_and_excess},
+    peak_series::{
+        INTENSITY_ARRAY, MZ_ARRAY, WAVELENGTH_ARRAY, array_map_to_schema_arrays_and_excess,
+    },
     spectrum::AuxiliaryArray,
     writer::{
         ArrayBufferWriter, ArrayBufferWriterVariants, ArrayBuffersBuilder, ChromatogramBuilder,
@@ -295,9 +297,21 @@ pub trait AbstractMzPeakWriter {
         let buffers: ArrayBufferWriterVariants = ArrayBuffersBuilder::default()
             .add_default_fields_for_context(BufferContext::WavelengthSpectrum)
             .with_context(BufferContext::WavelengthSpectrum)
-            .add_override(WAVELENGTH_ARRAY.clone().with_dtype(mzdata::spectrum::BinaryDataArrayType::Float64), WAVELENGTH_ARRAY.clone())
-            .add_override(INTENSITY_ARRAY.clone().with_context(BufferContext::WavelengthSpectrum).with_dtype(mzdata::spectrum::BinaryDataArrayType::Float64),
-                            INTENSITY_ARRAY.clone().with_context(BufferContext::WavelengthSpectrum))
+            .add_override(
+                WAVELENGTH_ARRAY
+                    .clone()
+                    .with_dtype(mzdata::spectrum::BinaryDataArrayType::Float64),
+                WAVELENGTH_ARRAY.clone(),
+            )
+            .add_override(
+                INTENSITY_ARRAY
+                    .clone()
+                    .with_context(BufferContext::WavelengthSpectrum)
+                    .with_dtype(mzdata::spectrum::BinaryDataArrayType::Float64),
+                INTENSITY_ARRAY
+                    .clone()
+                    .with_context(BufferContext::WavelengthSpectrum),
+            )
             .build(
                 Arc::new(Schema::empty()),
                 BufferContext::WavelengthSpectrum,
@@ -418,12 +432,15 @@ pub trait AbstractMzPeakWriter {
                         let entry_meta = writer.write_data_arrays(
                             data_arrays,
                             spectrum.signal_continuity() == SignalContinuity::Profile,
-                            writer.buffers().include_time().then(|| spectrum.start_time() as f32),
+                            writer
+                                .buffers()
+                                .include_time()
+                                .then(|| spectrum.start_time() as f32),
                             series_index,
                         )?;
                         let entry_writer = self.wavelength_entry_buffer_mut();
                         entry_writer.append_value(spectrum, entry_meta.auxiliary_arrays);
-                        return Ok(())
+                        return Ok(());
                     } else {
                         log::warn!(
                             "Non-MS spectrum did not have {:?}. Falling through to MS spectrum writing",

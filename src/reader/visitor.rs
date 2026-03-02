@@ -2,11 +2,13 @@ use std::collections::HashMap;
 
 use arrow::{
     array::{
-        Array, ArrayRef, AsArray, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array, LargeStringArray, StringArray, StructArray, UInt8Array, UInt32Array, UInt64Array
+        Array, ArrayRef, AsArray, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array,
+        LargeStringArray, StringArray, StructArray, UInt8Array, UInt32Array, UInt64Array,
     },
     buffer::NullBuffer,
     datatypes::{
-        DataType, FieldRef, Fields, Float32Type, Float64Type, Int8Type, Int32Type, Int64Type, UInt8Type, UInt32Type, UInt64Type
+        DataType, FieldRef, Fields, Float32Type, Float64Type, Int8Type, Int32Type, Int64Type,
+        UInt8Type, UInt32Type, UInt64Type,
     },
 };
 use itertools::Itertools;
@@ -212,16 +214,10 @@ pub fn schema_to_metadata_cols<'a>(
                 columns.push(col);
             } else {
                 if colname_spec.has_unit() {
-                    log::trace!(
-                        "Adding user-defined {colname_spec:?} @ {i} from {prefix}"
-                    );
+                    log::trace!("Adding user-defined {colname_spec:?} @ {i} from {prefix}");
                     columns.push(
-                        MetadataColumn::new(
-                            colname_spec.name,
-                            vec![prefix.clone()],
-                            i,
-                            None).with_unit(colname_spec.unit.as_curie()
-                        )
+                        MetadataColumn::new(colname_spec.name, vec![prefix.clone()], i, None)
+                            .with_unit(colname_spec.unit.as_curie()),
                     )
                 }
             }
@@ -232,7 +228,10 @@ pub fn schema_to_metadata_cols<'a>(
     for (unit_spec, f, i) in unit_cols {
         let mut found = false;
         for col in columns.iter_mut() {
-            if col.accession.is_some() && col.accession == unit_spec.accession && !col.unit.is_defined() {
+            if col.accession.is_some()
+                && col.accession == unit_spec.accession
+                && !col.unit.is_defined()
+            {
                 found = true;
                 *col = col
                     .clone()
@@ -272,13 +271,11 @@ impl<'a> ParameterVisitor<'a> {
         self.destination.resize(n, Default::default());
 
         if let Some(name) = self.root.column_by_name("name") {
-
             if let Some(arr) = name.as_string_opt::<i64>() {
                 for (i, v) in arr.iter().enumerate() {
                     self.destination[i].name = v.unwrap().to_string();
                 }
-            }
-            else if let Some(arr) = name.as_string_opt::<i32>() {
+            } else if let Some(arr) = name.as_string_opt::<i32>() {
                 for (i, v) in arr.iter().enumerate() {
                     self.destination[i].name = v.unwrap().to_string();
                 }
@@ -440,14 +437,12 @@ impl<'a> MzSpectrumVisitor<'a> {
                 let val = arr.value(i);
                 descr.id = val.to_string();
             }
-        }
-        else if let Some(arr) = arr.as_string_opt::<i32>() {
+        } else if let Some(arr) = arr.as_string_opt::<i32>() {
             for (i, descr) in self.iter_instances() {
                 let val = arr.value(i);
                 descr.id = val.to_string();
             }
-        }
-        else {
+        } else {
             panic!("Unsupported data type: {:?}", arr.data_type());
         }
     }
@@ -804,7 +799,8 @@ impl<'a> MzSpectrumVisitor<'a> {
         ];
 
         for (_, (index, colname)) in visited
-            .iter().copied()
+            .iter()
+            .copied()
             .zip(names.into_iter().enumerate())
             .filter(|(seen, _)| !seen)
         {
@@ -856,8 +852,18 @@ impl<'a> MzSpectrumVisitor<'a> {
                     } else {
                         log::trace!("Visited unspecified column {colname}");
                         let unit_name = to_column_name_for_unit(colname);
-                        let mut metacol = MetadataColumn::new(colname.to_string(), vec![colname.to_string()], index, None);
-                        if let Some(unit_col) = spec_arr.column_names().iter().find(|p| **p == unit_name).map(|v| v.to_string()) {
+                        let mut metacol = MetadataColumn::new(
+                            colname.to_string(),
+                            vec![colname.to_string()],
+                            index,
+                            None,
+                        );
+                        if let Some(unit_col) = spec_arr
+                            .column_names()
+                            .iter()
+                            .find(|p| **p == unit_name)
+                            .map(|v| v.to_string())
+                        {
                             metacol = metacol.with_unit(vec![unit_col]);
                         }
                         self.visit_as_param(spec_arr, index, &metacol);
@@ -941,7 +947,6 @@ impl<'a> LargeCURIEStrArray<'a> {
         self.0.iter().map(|v| v.map(|v| v.parse().unwrap()))
     }
 }
-
 
 /// A deprecated struct-based encoding. To be removed before
 /// first stable release.
@@ -1030,7 +1035,6 @@ impl<'a> TryFrom<&'a ArrayRef> for AnyCURIEArray<'a> {
             } else {
                 panic!("Unsupported data type: {:?}", value.data_type());
             }
-
         }
     }
 }
@@ -1355,13 +1359,11 @@ trait VisitorBuilder1<'a, T: ParamDescribed>: VisitorBuilderBase<'a, T> {
         }
         if let Some(params_array) = params_array.as_list_opt::<i64>() {
             process!(params_array);
-        }
-        else if let Some(params_array) = params_array.as_list_opt::<i32>() {
+        } else if let Some(params_array) = params_array.as_list_opt::<i32>() {
             process!(params_array);
         } else {
             panic!("{:?} not supported", params_array.data_type());
         }
-
     }
 
     fn visit_as_param(&mut self, spec_arr: &StructArray, index: usize, metacol: &MetadataColumn) {
@@ -1419,7 +1421,10 @@ trait VisitorBuilder1<'a, T: ParamDescribed>: VisitorBuilderBase<'a, T> {
                 } else if let Some(arr) = spec_arr.column(index).as_string_opt::<i32>() {
                     convert!(arr);
                 } else {
-                    panic!("Unsupported data type: {:?}", spec_arr.column(index).data_type());
+                    panic!(
+                        "Unsupported data type: {:?}",
+                        spec_arr.column(index).data_type()
+                    );
                 }
             }
             DataType::UInt32 => {
@@ -1506,7 +1511,10 @@ where
                 } else if let Some(arr) = spec_arr.column(index).as_string_opt::<i32>() {
                     convert!(arr);
                 } else {
-                    panic!("Unsupported data type: {:?}", spec_arr.column(index).data_type());
+                    panic!(
+                        "Unsupported data type: {:?}",
+                        spec_arr.column(index).data_type()
+                    );
                 }
             }
             DataType::UInt32 => {
@@ -1524,8 +1532,7 @@ where
     }
 
     fn visit_parameters(&mut self, spec_arr: &StructArray) {
-        let params_array =
-            spec_arr.column_by_name("parameters").unwrap();
+        let params_array = spec_arr.column_by_name("parameters").unwrap();
 
         macro_rules! process {
             ($params_array:expr) => {
@@ -1542,11 +1549,9 @@ where
 
         if let Some(arr) = params_array.as_list_opt::<i64>() {
             process!(arr);
-        }
-        else if let Some(arr) = params_array.as_list_opt::<i32>() {
+        } else if let Some(arr) = params_array.as_list_opt::<i32>() {
             process!(arr);
-        }
-        else {
+        } else {
             panic!("Unsupported data type: {:?}", params_array.data_type());
         }
     }
@@ -1623,7 +1628,10 @@ where
                 } else if let Some(arr) = spec_arr.column(index).as_string_opt::<i32>() {
                     convert!(arr);
                 } else {
-                    panic!("Unsupported data type: {:?}", spec_arr.column(index).data_type());
+                    panic!(
+                        "Unsupported data type: {:?}",
+                        spec_arr.column(index).data_type()
+                    );
                 }
             }
             DataType::UInt32 => {
@@ -1644,8 +1652,7 @@ where
     where
         T: ParamDescribed,
     {
-        let params_array =
-            spec_arr.column_by_name("parameters").unwrap();
+        let params_array = spec_arr.column_by_name("parameters").unwrap();
 
         macro_rules! process {
             ($params_array:expr) => {
@@ -1662,11 +1669,9 @@ where
 
         if let Some(arr) = params_array.as_list_opt::<i64>() {
             process!(arr);
-        }
-        else if let Some(arr) = params_array.as_list_opt::<i32>() {
+        } else if let Some(arr) = params_array.as_list_opt::<i32>() {
             process!(arr);
-        }
-        else {
+        } else {
             panic!("Unsupported data type: {:?}", params_array.data_type());
         }
     }
@@ -1708,19 +1713,32 @@ struct ScanWindowSchema {
     lower_limit: Option<usize>,
     upper_limit: Option<usize>,
     unit: Option<CURIE>,
-    parameters: Option<usize>
+    parameters: Option<usize>,
 }
 
 impl ScanWindowSchema {
-    fn new(lower_limit: Option<usize>, upper_limit: Option<usize>, unit: Option<CURIE>, parameters: Option<usize>) -> Self {
-        Self { lower_limit, upper_limit, unit, parameters }
+    fn new(
+        lower_limit: Option<usize>,
+        upper_limit: Option<usize>,
+        unit: Option<CURIE>,
+        parameters: Option<usize>,
+    ) -> Self {
+        Self {
+            lower_limit,
+            upper_limit,
+            unit,
+            parameters,
+        }
     }
 
     fn has_window(&self) -> bool {
         self.lower_limit.is_some() && self.upper_limit.is_some()
     }
 
-    fn limit_arrays<'a>(&self, scan_window_array: &'a StructArray) -> Option<(&'a std::sync::Arc<dyn Array>, &'a std::sync::Arc<dyn Array>)> {
+    fn limit_arrays<'a>(
+        &self,
+        scan_window_array: &'a StructArray,
+    ) -> Option<(&'a std::sync::Arc<dyn Array>, &'a std::sync::Arc<dyn Array>)> {
         self.has_window().then(|| {
             let lower_limit_arr = scan_window_array.column(self.lower_limit.unwrap());
             let upper_limit_arr = scan_window_array.column(self.upper_limit.unwrap());
@@ -1755,13 +1773,13 @@ impl ScanWindowSchema {
                 match colspec.name.as_str() {
                     "parameters" => {
                         parameters_i = Some(i);
-                    },
+                    }
                     "lower_limit" => {
                         lower_bound_i = Some(i);
-                    },
+                    }
                     "upper_limit" => {
                         upper_bound_i = Some(i);
-                    },
+                    }
                     _ => {}
                 }
             }
@@ -1769,7 +1787,6 @@ impl ScanWindowSchema {
         ScanWindowSchema::new(lower_bound_i, upper_bound_i, unit, parameters_i)
     }
 }
-
 
 impl<'a> MzScanVisitor<'a> {
     pub(crate) fn new(
@@ -1974,7 +1991,10 @@ impl<'a> MzScanVisitor<'a> {
         }
     }
 
-    fn visit_scan_windows_inner(scan_window_array: &StructArray, spec: Option<&ScanWindowSchema>) -> Vec<ScanWindow> {
+    fn visit_scan_windows_inner(
+        scan_window_array: &StructArray,
+        spec: Option<&ScanWindowSchema>,
+    ) -> Vec<ScanWindow> {
         let (lower_limit_arr, upper_limit_arr) = if let Some(spec) = spec {
             if let Some((lower_limit_arr, upper_limit_arr)) = spec.limit_arrays(scan_window_array) {
                 (lower_limit_arr, upper_limit_arr)
@@ -2227,8 +2247,18 @@ impl<'a> MzScanVisitor<'a> {
                     } else {
                         log::trace!("Visited unspecified column {colname}");
                         let unit_name = to_column_name_for_unit(colname);
-                        let mut metacol = MetadataColumn::new(colname.to_string(), vec![colname.to_string()], index, None);
-                        if let Some(unit_col) = spec_arr.column_names().iter().find(|p| **p == unit_name).map(|v| v.to_string()) {
+                        let mut metacol = MetadataColumn::new(
+                            colname.to_string(),
+                            vec![colname.to_string()],
+                            index,
+                            None,
+                        );
+                        if let Some(unit_col) = spec_arr
+                            .column_names()
+                            .iter()
+                            .find(|p| **p == unit_name)
+                            .map(|v| v.to_string())
+                        {
                             metacol = metacol.with_unit(vec![unit_col]);
                         }
                         self.visit_as_param(spec_arr, index, Some(&metacol), Some(colname));
@@ -2264,7 +2294,6 @@ impl<'a> VisitorBuilderBase<'a, DoubleIndexed<Precursor>> for MzPrecursorVisitor
 
 impl<'a> VisitorBuilder3<'a, Precursor> for MzPrecursorVisitor<'a> {}
 
-
 #[allow(unused)]
 #[derive(Debug, Clone, Copy)]
 struct IsolationWindowSchema {
@@ -2272,12 +2301,24 @@ struct IsolationWindowSchema {
     lower_limit: Option<usize>,
     upper_limit: Option<usize>,
     unit: Option<CURIE>,
-    parameters: Option<usize>
+    parameters: Option<usize>,
 }
 
 impl IsolationWindowSchema {
-    fn new(target: Option<usize>, lower_limit: Option<usize>, upper_limit: Option<usize>, unit: Option<CURIE>, parameters: Option<usize>) -> Self {
-        Self { target, lower_limit, upper_limit, unit, parameters }
+    fn new(
+        target: Option<usize>,
+        lower_limit: Option<usize>,
+        upper_limit: Option<usize>,
+        unit: Option<CURIE>,
+        parameters: Option<usize>,
+    ) -> Self {
+        Self {
+            target,
+            lower_limit,
+            upper_limit,
+            unit,
+            parameters,
+        }
     }
 
     fn from_fields(fields: &Fields) -> Self {
@@ -2317,13 +2358,13 @@ impl IsolationWindowSchema {
                     }
                     "parameters" => {
                         parameters_i = Some(i);
-                    },
+                    }
                     "lower_bound" => {
                         lower_bound_i = Some(i);
-                    },
+                    }
                     "upper_bound" => {
                         upper_bound_i = Some(i);
-                    },
+                    }
                     _ => {}
                 }
             }
@@ -2331,7 +2372,6 @@ impl IsolationWindowSchema {
         Self::new(target_i, lower_bound_i, upper_bound_i, unit, parameters_i)
     }
 }
-
 
 impl<'a> MzPrecursorVisitor<'a> {
     pub(crate) fn new(
@@ -2375,7 +2415,8 @@ impl<'a> MzPrecursorVisitor<'a> {
                         }
                         let descr = descr.description_mut();
                         descr.isolation_window.target = $arr.value(offset) as f32;
-                        descr.isolation_window.flags = mzdata::spectrum::IsolationWindowState::Explicit;
+                        descr.isolation_window.flags =
+                            mzdata::spectrum::IsolationWindowState::Explicit;
                     }
                 };
             }
@@ -2386,7 +2427,6 @@ impl<'a> MzPrecursorVisitor<'a> {
             } else {
                 panic!("Unsupported data type: {:?}", arr.data_type());
             }
-
         }
         if let Some(arr) = schema.lower_limit.map(|i| root.column(i)) {
             macro_rules! process {
@@ -2397,7 +2437,8 @@ impl<'a> MzPrecursorVisitor<'a> {
                         }
                         let descr = descr.description_mut();
                         descr.isolation_window.lower_bound = $arr.value(offset) as f32;
-                        descr.isolation_window.flags = mzdata::spectrum::IsolationWindowState::Explicit;
+                        descr.isolation_window.flags =
+                            mzdata::spectrum::IsolationWindowState::Explicit;
                     }
                 };
             }
@@ -2418,7 +2459,8 @@ impl<'a> MzPrecursorVisitor<'a> {
                         }
                         let descr = descr.description_mut();
                         descr.isolation_window.upper_bound = $arr.value(offset) as f32;
-                        descr.isolation_window.flags = mzdata::spectrum::IsolationWindowState::Explicit;
+                        descr.isolation_window.flags =
+                            mzdata::spectrum::IsolationWindowState::Explicit;
                     }
                 };
             }
@@ -2434,8 +2476,7 @@ impl<'a> MzPrecursorVisitor<'a> {
 
     fn visit_activation(&mut self, spec_arr: &StructArray, index: usize) {
         let spec_arr = spec_arr.column(index).as_struct();
-        let params_array =
-            spec_arr.column_by_name("parameters").unwrap();
+        let params_array = spec_arr.column_by_name("parameters").unwrap();
 
         macro_rules! process {
             ($params_array:expr) => {
@@ -2860,8 +2901,18 @@ impl<'a> MzSelectedIonVisitor<'a> {
                     } else {
                         log::trace!("Visited unspecified column {colname}");
                         let unit_name = to_column_name_for_unit(colname);
-                        let mut metacol = MetadataColumn::new(colname.to_string(), vec![colname.to_string()], index, None);
-                        if let Some(unit_col) = spec_arr.column_names().iter().find(|p| **p == unit_name).map(|v| v.to_string()) {
+                        let mut metacol = MetadataColumn::new(
+                            colname.to_string(),
+                            vec![colname.to_string()],
+                            index,
+                            None,
+                        );
+                        if let Some(unit_col) = spec_arr
+                            .column_names()
+                            .iter()
+                            .find(|p| **p == unit_name)
+                            .map(|v| v.to_string())
+                        {
                             metacol = metacol.with_unit(vec![unit_col]);
                         }
                         self.visit_as_param(spec_arr, index, Some(&metacol), Some(colname));
@@ -2945,7 +2996,10 @@ impl<'a> MzChromatogramBuilder<'a> {
         }
         process!(i64);
         process!(i32);
-        panic!("Unsupported data type {:?}", chrom_arr.column(index).data_type());
+        panic!(
+            "Unsupported data type {:?}",
+            chrom_arr.column(index).data_type()
+        );
     }
 
     fn visit_polarity(&mut self, chrom_arr: &StructArray, index: usize) {
@@ -3042,7 +3096,7 @@ impl<'a> MzChromatogramBuilder<'a> {
         {
             log::trace!("Visiting chromatogram {colname} ({index})");
             match colname {
-                "number_of_auxiliary_arrays" | "auxiliary_arrays" => {},
+                "number_of_auxiliary_arrays" | "auxiliary_arrays" => {}
                 "polarity" => self.visit_polarity(chrom_arr, index),
                 "chromatogram_type" => self.visit_chromatogram_type(chrom_arr, index),
                 "data_processing_ref" => {}
@@ -3056,8 +3110,18 @@ impl<'a> MzChromatogramBuilder<'a> {
                     } else {
                         log::trace!("Visited unspecified column {colname}");
                         let unit_name = to_column_name_for_unit(colname);
-                        let mut metacol = MetadataColumn::new(colname.to_string(), vec![colname.to_string()], index, None);
-                        if let Some(unit_col) = chrom_arr.column_names().iter().find(|p| **p == unit_name).map(|v| v.to_string()) {
+                        let mut metacol = MetadataColumn::new(
+                            colname.to_string(),
+                            vec![colname.to_string()],
+                            index,
+                            None,
+                        );
+                        if let Some(unit_col) = chrom_arr
+                            .column_names()
+                            .iter()
+                            .find(|p| **p == unit_name)
+                            .map(|v| v.to_string())
+                        {
                             metacol = metacol.with_unit(vec![unit_col]);
                         }
                         self.visit_as_param(chrom_arr, index, &metacol);

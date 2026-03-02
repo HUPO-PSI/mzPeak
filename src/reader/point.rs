@@ -579,7 +579,8 @@ trait PointQuerySource {
         let mut predicates: Vec<Box<dyn ArrowPredicate>> =
             vec![self.prepare_predicate_for_index(index_range, array_indices)];
         if let Some(coordinate_range) = coordinate_range {
-            predicates.extend(self.prepare_predicate_for_coordinate(coordinate_range, array_indices));
+            predicates
+                .extend(self.prepare_predicate_for_coordinate(coordinate_range, array_indices));
         }
         if let Some(ion_mobility_range) = ion_mobility_range {
             predicates
@@ -657,12 +658,7 @@ mod async_impl {
                 let batch =
                     arrow::compute::concat_batches(batches[0].schema_ref(), &batches).unwrap();
                 let points = batch.column(0).as_struct();
-                Self::populate_arrays_from_struct_array(
-                    points,
-                    &mut bin_map,
-                    delta_model,
-                    false,
-                );
+                Self::populate_arrays_from_struct_array(points, &mut bin_map, delta_model, false);
             }
 
             let mut out = BinaryArrayMap::new();
@@ -731,7 +727,9 @@ mod async_impl {
                     index_column_idx = subset
                         .column_with_name(BufferContext::Spectrum.index_name())
                         .map(|(i, _)| i);
-                    if let Some(coordinate_array_idx) = array_indices.get(&self.buffer_context().default_sorted_array()) {
+                    if let Some(coordinate_array_idx) =
+                        array_indices.get(&self.buffer_context().default_sorted_array())
+                    {
                         coordinate_column_idx = subset
                             .column_with_name(&coordinate_array_idx.path.split(".").last().unwrap())
                             .map(|(i, _)| i);
@@ -905,15 +903,16 @@ impl<'a> BatchIterpolater<'a> {
             None => return Ok(batch),
         };
 
-        let coordinate_arr = if let Some(coordinate_arr) = coordinate_arr.as_primitive_opt::<Float32Type>() {
-            let coordinate_arr: Float32Array = fill_nulls_for(coordinate_arr, &model).into();
-            Arc::new(coordinate_arr) as ArrayRef
-        } else if let Some(coordinate_arr) = coordinate_arr.as_primitive_opt::<Float64Type>() {
-            let coordinate_arr: Float64Array = fill_nulls_for(coordinate_arr, &model).into();
-            Arc::new(coordinate_arr) as ArrayRef
-        } else {
-            todo!()
-        };
+        let coordinate_arr =
+            if let Some(coordinate_arr) = coordinate_arr.as_primitive_opt::<Float32Type>() {
+                let coordinate_arr: Float32Array = fill_nulls_for(coordinate_arr, &model).into();
+                Arc::new(coordinate_arr) as ArrayRef
+            } else if let Some(coordinate_arr) = coordinate_arr.as_primitive_opt::<Float64Type>() {
+                let coordinate_arr: Float64Array = fill_nulls_for(coordinate_arr, &model).into();
+                Arc::new(coordinate_arr) as ArrayRef
+            } else {
+                todo!()
+            };
 
         let mut cols: Vec<_> = root_as.columns().iter().cloned().collect();
         cols[self.coordinate_array_idx] = coordinate_arr;
@@ -956,7 +955,8 @@ impl<'a, I: Iterator<Item = Result<RecordBatch, ArrowError>> + RecordBatchReader
         spectrum_index_idx: usize,
         coordinate_array_idx: usize,
     ) -> Self {
-        let interpolator = BatchIterpolater::new(metadata, spectrum_index_idx, coordinate_array_idx);
+        let interpolator =
+            BatchIterpolater::new(metadata, spectrum_index_idx, coordinate_array_idx);
         let schema = source.schema();
         Self {
             source,
@@ -1052,12 +1052,7 @@ mod sync_impl {
                 let batch =
                     arrow::compute::concat_batches(batches[0].schema_ref(), &batches).unwrap();
                 let points = batch.column(0).as_struct();
-                Self::populate_arrays_from_struct_array(
-                    points,
-                    &mut bin_map,
-                    delta_model,
-                    false,
-                );
+                Self::populate_arrays_from_struct_array(points, &mut bin_map, delta_model, false);
             }
 
             let mut out = BinaryArrayMap::new();
@@ -1126,7 +1121,9 @@ mod sync_impl {
                     index_column_idx = subset
                         .column_with_name(context.index_name())
                         .map(|(i, _)| i);
-                    if let Some(coordinate_array_idx) = array_indices.get(&context.default_sorted_array()) {
+                    if let Some(coordinate_array_idx) =
+                        array_indices.get(&context.default_sorted_array())
+                    {
                         coordinate_column_idx = subset
                             .column_with_name(&coordinate_array_idx.path.split(".").last().unwrap())
                             .map(|(i, _)| i);

@@ -9,10 +9,20 @@ use arrow::{
     datatypes::{DataType, Field, FieldRef, Schema, SchemaRef},
 };
 use mzdata::{
-    curie, params::{CURIE, Unit}, prelude::*, spectrum::{ArrayType, Chromatogram, RefPeakDataLevel, ScanPolarity, SignalContinuity, SpectrumDescription}
+    curie,
+    params::{CURIE, Unit},
+    prelude::*,
+    spectrum::{
+        ArrayType, Chromatogram, RefPeakDataLevel, ScanPolarity, SignalContinuity,
+        SpectrumDescription,
+    },
 };
 
-use crate::{spectrum::AuxiliaryArray, writer::builder::SpectrumFieldVisitors};
+use crate::{
+    constants::{CHROMATOGRAM, PRECURSOR, SCAN, SELECTED_ION, SPECTRUM},
+    spectrum::AuxiliaryArray,
+    writer::builder::SpectrumFieldVisitors,
+};
 
 pub trait VisitorBase: Debug {
     fn flatten(&self) -> bool {
@@ -1671,12 +1681,14 @@ const BUILTIN_SPECTRUM_PARAMS: &[CURIE] = &[
 ];
 
 impl SpectrumDetailsBuilder {
-
     fn raw_summaries<
         C: CentroidLike,
         D: DeconvolutedCentroidLike,
         S: SpectrumLike<C, D> + 'static,
-    >(&self, item: &S) -> mzdata::spectrum::SpectrumSummary {
+    >(
+        &self,
+        item: &S,
+    ) -> mzdata::spectrum::SpectrumSummary {
         let summaries = item
             .raw_arrays()
             .map(|v| RefPeakDataLevel::<C, D>::RawData(v).fetch_summaries())
@@ -1689,11 +1701,16 @@ impl SpectrumDetailsBuilder {
         C: CentroidLike,
         D: DeconvolutedCentroidLike,
         S: SpectrumLike<C, D> + 'static,
-    >(&self, item: &S) -> Option<mzdata::spectrum::SpectrumSummary> {
+    >(
+        &self,
+        item: &S,
+    ) -> Option<mzdata::spectrum::SpectrumSummary> {
         let peaks = item.peaks();
         match &peaks {
             RefPeakDataLevel::Missing | RefPeakDataLevel::RawData(_) => None,
-            RefPeakDataLevel::Centroid(_) | RefPeakDataLevel::Deconvoluted(_) => Some(peaks.fetch_summaries()),
+            RefPeakDataLevel::Centroid(_) | RefPeakDataLevel::Deconvoluted(_) => {
+                Some(peaks.fetch_summaries())
+            }
         }
     }
 
@@ -1770,7 +1787,7 @@ impl SpectrumDetailsBuilder {
             match self.peak_summaries(item) {
                 Some(summary) => {
                     self.number_of_peaks.append_value(summary.count as u64);
-                },
+                }
                 None => self.number_of_peaks.append_null(),
             }
         }
@@ -2038,10 +2055,10 @@ impl SpectrumBuilder {
 impl VisitorBase for SpectrumBuilder {
     fn fields(&self) -> Vec<FieldRef> {
         vec![
-            field!("spectrum", self.spectrum.as_struct_type()),
-            field!("scan", self.scan.as_struct_type()),
-            field!("precursor", self.precursor.as_struct_type()),
-            field!("selected_ion", self.selected_ion.as_struct_type()),
+            field!(SPECTRUM, self.spectrum.as_struct_type()),
+            field!(SCAN, self.scan.as_struct_type()),
+            field!(PRECURSOR, self.precursor.as_struct_type()),
+            field!(SELECTED_ION, self.selected_ion.as_struct_type()),
         ]
     }
 
@@ -2076,7 +2093,10 @@ impl ArrayBuilder for SpectrumBuilder {
 
     fn finish_cloned(&self) -> ArrayRef {
         let fields = self.fields();
-        assert!(self.check_lengths_equal(), "Verify all facets are of equal length, call `equalize_lengths` first!");
+        assert!(
+            self.check_lengths_equal(),
+            "Verify all facets are of equal length, call `equalize_lengths` first!"
+        );
         let arrays = vec![
             self.spectrum.finish_cloned(),
             self.scan.finish_cloned(),
@@ -2254,9 +2274,9 @@ pub struct ChromatogramBuilder {
 impl VisitorBase for ChromatogramBuilder {
     fn fields(&self) -> Vec<FieldRef> {
         vec![
-            field!("chromatogram", self.chromatogram.as_struct_type()),
-            field!("precursor", self.precursor.as_struct_type()),
-            field!("selected_ion", self.selected_ion.as_struct_type()),
+            field!(CHROMATOGRAM, self.chromatogram.as_struct_type()),
+            field!(PRECURSOR, self.precursor.as_struct_type()),
+            field!(SELECTED_ION, self.selected_ion.as_struct_type()),
         ]
     }
 
@@ -2358,7 +2378,6 @@ impl ArrayBuilder for ChromatogramBuilder {
     anyways!();
 }
 
-
 #[derive(Debug, Default)]
 pub struct WavelengthSpectrumDetailsBuilder {
     index: UInt64Builder,
@@ -2390,10 +2409,16 @@ impl WavelengthSpectrumDetailsBuilder {
         C: CentroidLike,
         D: DeconvolutedCentroidLike,
         S: SpectrumLike<C, D> + 'static,
-    >(&self, item: &S) -> mzdata::spectrum::SpectrumSummary {
+    >(
+        &self,
+        item: &S,
+    ) -> mzdata::spectrum::SpectrumSummary {
         let mut summaries: mzdata::spectrum::SpectrumSummary = Default::default();
         if let Some(arrays) = item.raw_arrays() {
-            if let Some(waves) = arrays.get(&ArrayType::WavelengthArray).and_then(|v| v.to_f32().ok()) {
+            if let Some(waves) = arrays
+                .get(&ArrayType::WavelengthArray)
+                .and_then(|v| v.to_f32().ok())
+            {
                 let intensities = arrays.intensities().unwrap();
                 summaries.count = waves.len();
 
@@ -2448,10 +2473,13 @@ impl WavelengthSpectrumDetailsBuilder {
         self.id.append_value(item.id());
         self.time.append_value(item.start_time());
         self.spectrum_type.append_option(spectrum_type.as_ref());
-        self.spectrum_representation.append_value(&mzdata::curie!(MS:1000128));
+        self.spectrum_representation
+            .append_value(&mzdata::curie!(MS:1000128));
 
-        self.lowest_observed_wavelength.append_value(summaries.mz_range.0);
-        self.highest_observed_wavelength.append_value(summaries.mz_range.1);
+        self.lowest_observed_wavelength
+            .append_value(summaries.mz_range.0);
+        self.highest_observed_wavelength
+            .append_value(summaries.mz_range.1);
 
         self.base_peak_mz.append_option(base_peak_mz);
         self.base_peak_intensity.append_option(base_peak_intensity);
@@ -2532,7 +2560,10 @@ impl VisitorBase for WavelengthSpectrumDetailsBuilder {
             ),
             field!("MS_1003060_number_of_data_points", DataType::UInt64),
             field!(
-                format!("base_peak_wavelength_unit_{}", Unit::Nanometer.to_curie().unwrap()),
+                format!(
+                    "base_peak_wavelength_unit_{}",
+                    Unit::Nanometer.to_curie().unwrap()
+                ),
                 DataType::Float64
             ),
             field!(
@@ -2657,7 +2688,6 @@ impl ArrayBuilder for WavelengthSpectrumDetailsBuilder {
     }
 }
 
-
 #[derive(Default, Debug)]
 pub struct WavelengthSpectrumBuilder {
     spectrum_index_counter: u64,
@@ -2667,7 +2697,6 @@ pub struct WavelengthSpectrumBuilder {
 }
 
 impl WavelengthSpectrumBuilder {
-
     pub fn add_visitors_from(&mut self, visitors: SpectrumFieldVisitors) {
         self.spectrum.extend_extra_fields(visitors.spectrum_fields);
         self.scan.extend_extra_fields(visitors.spectrum_scan_fields);
@@ -2684,11 +2713,9 @@ impl WavelengthSpectrumBuilder {
     ) -> bool {
         self.id_to_index
             .insert(item.id().to_string(), self.spectrum_index_counter);
-        let out = self.spectrum.append_value(
-            self.spectrum_index_counter,
-            item,
-            auxiliary_arrays,
-        );
+        let out = self
+            .spectrum
+            .append_value(self.spectrum_index_counter, item, auxiliary_arrays);
         for s in item.acquisition().scans.iter() {
             self.scan.append_value(&(self.spectrum_index_counter, s));
         }
@@ -2717,19 +2744,12 @@ impl WavelengthSpectrumBuilder {
     }
 
     fn check_lengths_equal(&self) -> bool {
-        let n = self
-            .spectrum
-            .len()
-            .max(self.scan.len());
-        self.spectrum.len() == n
-            && self.scan.len() == n
+        let n = self.spectrum.len().max(self.scan.len());
+        self.spectrum.len() == n && self.scan.len() == n
     }
 
     pub fn equalize_lengths(&mut self) {
-        let n = self
-            .spectrum
-            .len()
-            .max(self.scan.len());
+        let n = self.spectrum.len().max(self.scan.len());
 
         while n > self.spectrum.len() {
             self.spectrum.append_null();
@@ -2739,14 +2759,13 @@ impl WavelengthSpectrumBuilder {
             self.scan.append_null();
         }
     }
-
 }
 
 impl VisitorBase for WavelengthSpectrumBuilder {
     fn fields(&self) -> Vec<FieldRef> {
         vec![
-            field!("spectrum", self.spectrum.as_struct_type()),
-            field!("scan", self.scan.as_struct_type()),
+            field!(SPECTRUM, self.spectrum.as_struct_type()),
+            field!(SCAN, self.scan.as_struct_type()),
         ]
     }
 
@@ -2755,7 +2774,6 @@ impl VisitorBase for WavelengthSpectrumBuilder {
         self.scan.append_null();
     }
 }
-
 
 impl ArrayBuilder for WavelengthSpectrumBuilder {
     anyways!();
@@ -2768,27 +2786,26 @@ impl ArrayBuilder for WavelengthSpectrumBuilder {
         self.equalize_lengths();
 
         let fields = self.fields();
-        let arrays = vec![
-            self.spectrum.finish(),
-            self.scan.finish(),
-        ];
+        let arrays = vec![self.spectrum.finish(), self.scan.finish()];
 
         Arc::new(StructArray::new(fields.into(), arrays, None))
     }
 
     fn finish_cloned(&self) -> ArrayRef {
         let fields = self.fields();
-        assert!(self.check_lengths_equal(), "Verify all facets are of equal length, call `equalize_lengths` first!");
-        let arrays = vec![
-            self.spectrum.finish_cloned(),
-            self.scan.finish_cloned(),
-        ];
+        assert!(
+            self.check_lengths_equal(),
+            "Verify all facets are of equal length, call `equalize_lengths` first!"
+        );
+        let arrays = vec![self.spectrum.finish_cloned(), self.scan.finish_cloned()];
         Arc::new(StructArray::new(fields.into(), arrays, None))
     }
 }
 
 #[cfg(test)]
 mod test {
+    use crate::constants::SPECTRUM;
+
     use super::*;
     use arrow::{
         array::{Array, AsArray},
@@ -2832,17 +2849,47 @@ mod test {
 
     #[test]
     fn test_custom_param_builder() {
-        let mut builder = CustomBuilderFromParameter::from_spec(mzdata::curie!(MS:999999), "testfoo", DataType::Float64);
+        let mut builder = CustomBuilderFromParameter::from_spec(
+            mzdata::curie!(MS:999999),
+            "testfoo",
+            DataType::Float64,
+        );
         builder.append_null();
-        builder.append_value(&vec![mzdata::Param::builder().curie(mzdata::curie!(MS:999999)).name("testfoo").value(100.0).build()]);
+        builder.append_value(&vec![
+            mzdata::Param::builder()
+                .curie(mzdata::curie!(MS:999999))
+                .name("testfoo")
+                .value(100.0)
+                .build(),
+        ]);
         builder.finish();
-        let mut builder = CustomBuilderFromParameter::from_spec(mzdata::curie!(MS:999999), "testfoo", DataType::LargeUtf8);
+        let mut builder = CustomBuilderFromParameter::from_spec(
+            mzdata::curie!(MS:999999),
+            "testfoo",
+            DataType::LargeUtf8,
+        );
         builder.append_null();
-        builder.append_value(&vec![mzdata::Param::builder().curie(mzdata::curie!(MS:999999)).name("testfoo").value("bar").build()]);
+        builder.append_value(&vec![
+            mzdata::Param::builder()
+                .curie(mzdata::curie!(MS:999999))
+                .name("testfoo")
+                .value("bar")
+                .build(),
+        ]);
         builder.finish();
-        let mut builder = CustomBuilderFromParameter::from_spec(mzdata::curie!(MS:999999), "testfoo", DataType::Boolean);
+        let mut builder = CustomBuilderFromParameter::from_spec(
+            mzdata::curie!(MS:999999),
+            "testfoo",
+            DataType::Boolean,
+        );
         builder.append_null();
-        builder.append_value(&vec![mzdata::Param::builder().curie(mzdata::curie!(MS:999999)).name("testfoo").value(true).build()]);
+        builder.append_value(&vec![
+            mzdata::Param::builder()
+                .curie(mzdata::curie!(MS:999999))
+                .name("testfoo")
+                .value(true)
+                .build(),
+        ]);
         builder.finish();
     }
 
@@ -2877,7 +2924,7 @@ mod test {
         builder.append_null();
         let arrays = builder.finish_cloned();
         let arrays = arrays.as_struct();
-        let arrays = arrays.column_by_name("spectrum").unwrap();
+        let arrays = arrays.column_by_name(SPECTRUM).unwrap();
         let arrays = arrays.as_struct();
 
         let names = arrays.column_names();
@@ -2908,12 +2955,8 @@ mod test {
             .unwrap();
         assert_eq!(arr3.len(), 2);
 
-
-        let meta = crate::reader::visitor::schema_to_metadata_cols(
-            arrays.fields(),
-            "spectrum".into(),
-            None
-        );
+        let meta =
+            crate::reader::visitor::schema_to_metadata_cols(arrays.fields(), SPECTRUM.into(), None);
         let col = meta.find(curie!(MS:1000504)).unwrap();
         assert_eq!(col.unit, Unit::MZ.to_curie().unwrap().into());
         Ok(())

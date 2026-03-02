@@ -364,7 +364,8 @@ fn convert_file(
     builder = builder.add_spectrum_peak_type::<ThermoPeak>();
 
     if args.write_peaks_and_profiles {
-        builder = builder.register_spectrum_peak_type::<ThermoPeak>()
+        builder = builder
+            .register_spectrum_peak_type::<ThermoPeak>()
             .sample_array_types_for_peaks_from_spectrum_source(&mut reader);
     }
 

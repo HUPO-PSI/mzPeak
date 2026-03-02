@@ -9,10 +9,14 @@ use mzdata::{
 use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 
-use crate::{param::{
-    CURIE, curie_deserialize, curie_serialize, opt_curie_deserialize, opt_curie_serialize,
-}, peak_series::{MZ_ARRAY, TIME_ARRAY, WAVELENGTH_ARRAY}};
 use crate::peak_series::array_to_arrow_type;
+use crate::{
+    constants::{CHROMATOGRAM, SPECTRUM},
+    param::{
+        CURIE, curie_deserialize, curie_serialize, opt_curie_deserialize, opt_curie_serialize,
+    },
+    peak_series::{MZ_ARRAY, TIME_ARRAY, WAVELENGTH_ARRAY},
+};
 
 /// Whether an data array series is associated with a spectrum or a chromatogram
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -66,9 +70,9 @@ impl BufferContext {
 
     pub const fn main_struct_name(&self) -> &'static str {
         match self {
-            BufferContext::Spectrum => "spectrum",
-            Self::WavelengthSpectrum => "spectrum",
-            BufferContext::Chromatogram => "chromatogram",
+            BufferContext::Spectrum => SPECTRUM,
+            Self::WavelengthSpectrum => SPECTRUM,
+            BufferContext::Chromatogram => CHROMATOGRAM,
         }
     }
 
@@ -106,7 +110,7 @@ impl FromStr for BufferContext {
             x if x == Self::Spectrum.name() => Self::Spectrum,
             x if x == Self::Chromatogram.name() => Self::Chromatogram,
             x if x == Self::WavelengthSpectrum.name() => Self::WavelengthSpectrum,
-            _ => return Err(format!("Could not map \"{s}\" to BufferContext"))
+            _ => return Err(format!("Could not map \"{s}\" to BufferContext")),
         };
         Ok(x)
     }
@@ -336,7 +340,9 @@ impl Ord for BufferName {
         }
 
         // Different arrays should occur in a certain order
-        match array_type_ordering_ordinal(&self.array_type).cmp(&array_type_ordering_ordinal(&other.array_type)) {
+        match array_type_ordering_ordinal(&self.array_type)
+            .cmp(&array_type_ordering_ordinal(&other.array_type))
+        {
             core::cmp::Ordering::Equal => {}
             ord => return ord,
         }

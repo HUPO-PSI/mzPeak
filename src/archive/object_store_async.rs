@@ -33,9 +33,10 @@ pub trait AsyncArchiveSource: Clone + 'static {
             if let Some(index) = self.file_names().iter().position(|v| v == name) {
                 self.open_entry_by_index(index).await
             } else {
-                Err(
-                    io::Error::new(io::ErrorKind::NotFound, format!("Could not find an entry by name for \"{name}\""))
-                )
+                Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Could not find an entry by name for \"{name}\""),
+                ))
             }
         }
     }
@@ -369,7 +370,11 @@ impl<T: AsyncArchiveSource + 'static> AsyncArchiveReader<T> {
             let metadata = archive.metadata_for_index(i).await.ok();
             let tp = tp.unwrap_or_else(|| MzPeakArchiveType::classify_from_suffix(&name));
 
-            if !matches!(tp, MzPeakArchiveType::Other | MzPeakArchiveType::Proprietary) && metadata.is_none() {
+            if !matches!(
+                tp,
+                MzPeakArchiveType::Other | MzPeakArchiveType::Proprietary
+            ) && metadata.is_none()
+            {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
@@ -496,19 +501,29 @@ impl<T: AsyncArchiveSource + 'static> AsyncArchiveReader<T> {
         }
     }
 
-    pub async fn wavelength_spectrum_data(&self) -> Option<io::Result<ParquetRecordBatchStreamBuilder<T::File>>> {
+    pub async fn wavelength_spectrum_data(
+        &self,
+    ) -> Option<io::Result<ParquetRecordBatchStreamBuilder<T::File>>> {
         if let Some(meta) = self.members.wavelength_data_arrays.as_ref() {
-            Some(self.archive
-                 .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap())).await)
+            Some(
+                self.archive
+                    .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap()))
+                    .await,
+            )
         } else {
             None
         }
     }
 
-    pub async fn wavelength_spectrum_metadata(&self) -> Option<io::Result<ParquetRecordBatchStreamBuilder<T::File>>> {
+    pub async fn wavelength_spectrum_metadata(
+        &self,
+    ) -> Option<io::Result<ParquetRecordBatchStreamBuilder<T::File>>> {
         if let Some(meta) = self.members.wavelength_metadata.as_ref() {
-            Some(self.archive
-                 .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap())).await)
+            Some(
+                self.archive
+                    .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap()))
+                    .await,
+            )
         } else {
             None
         }
@@ -518,7 +533,10 @@ impl<T: AsyncArchiveSource + 'static> AsyncArchiveReader<T> {
         self.archive.file_names()
     }
 
-    pub fn open_stream(&self, name: &str) -> impl Future<Output = Result<<T as AsyncArchiveSource>::File, io::Error>> {
+    pub fn open_stream(
+        &self,
+        name: &str,
+    ) -> impl Future<Output = Result<<T as AsyncArchiveSource>::File, io::Error>> {
         self.archive.open_stream(name)
     }
 }

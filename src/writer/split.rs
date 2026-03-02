@@ -19,7 +19,10 @@ use crate::{
     chunk_series::ChunkingStrategy,
     peak_series::ArrayIndex,
     writer::{
-        AbstractMzPeakWriter, ArrayBufferWriter, ArrayBufferWriterVariants, ArrayBuffersBuilder, ChromatogramBuilder, MiniPeakWriterType, SpectrumBuilder, VisitorBase, WavelengthSpectrumBuilder, WriteBatchConfig, base::GenericDataArrayWriter, builder::SpectrumFieldVisitors, implement_mz_metadata
+        AbstractMzPeakWriter, ArrayBufferWriter, ArrayBufferWriterVariants, ArrayBuffersBuilder,
+        ChromatogramBuilder, MiniPeakWriterType, SpectrumBuilder, VisitorBase,
+        WavelengthSpectrumBuilder, WriteBatchConfig, base::GenericDataArrayWriter,
+        builder::SpectrumFieldVisitors, implement_mz_metadata,
     },
 };
 

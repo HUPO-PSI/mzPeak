@@ -21,8 +21,8 @@ struct App {
     #[arg(short, long, default_value = "0.8-1.2")]
     im_range: CoordinateRange<f64>,
 
-    #[arg(short='l', long)]
-    ms_level_range: Option<CoordinateRange<u8>>
+    #[arg(short = 'l', long)]
+    ms_level_range: Option<CoordinateRange<u8>>,
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 16)]
@@ -46,12 +46,15 @@ async fn main() -> io::Result<()> {
         SimpleInterval::new(args.time_range.start.unwrap(), args.time_range.end.unwrap());
     let mz_range = SimpleInterval::new(args.mz_range.start.unwrap(), args.mz_range.end.unwrap());
     let im_range = SimpleInterval::new(args.im_range.start.unwrap(), args.im_range.end.unwrap());
-    let ms_level_range = args.ms_level_range.map(|r| {
-        SimpleInterval::new(
-            r.start.unwrap_or_default() as u8,
-            r.end.map(|v| v as u8).unwrap_or(u8::MAX),
-        )
-    }).unwrap_or(SimpleInterval::new(0, u8::MAX));
+    let ms_level_range = args
+        .ms_level_range
+        .map(|r| {
+            SimpleInterval::new(
+                r.start.unwrap_or_default() as u8,
+                r.end.map(|v| v as u8).unwrap_or(u8::MAX),
+            )
+        })
+        .unwrap_or(SimpleInterval::new(0, u8::MAX));
 
     reader.start_from_time(time_range.start as f64).await?;
     let mut it = reader.as_stream();

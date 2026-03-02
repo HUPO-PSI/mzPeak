@@ -1,10 +1,6 @@
 use mzdata::{prelude::*, spectrum::ArrayType};
 use mzpeak_prototyping::MzPeakReader;
-use std::{
-    env,
-    io,
-    path::PathBuf,
-};
+use std::{env, io, path::PathBuf};
 
 fn fetch(path: &PathBuf, index: usize) -> io::Result<()> {
     let mut reader = MzPeakReader::new(path)?;

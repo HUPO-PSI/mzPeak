@@ -20,7 +20,7 @@ use crate::spectrum::AuxiliaryArray;
 
 pub use crate::buffer_descriptors::{
     ArrayIndex, ArrayIndexEntry, BufferContext, BufferFormat, BufferName, SerializedArrayIndex,
-    SerializedArrayIndexEntry, array_type_ordering_ordinal, array_type_from_accession,
+    SerializedArrayIndexEntry, array_type_from_accession, array_type_ordering_ordinal,
     binary_datatype_from_accession,
 };
 
@@ -95,7 +95,9 @@ pub fn array_map_to_schema_arrays_and_excess(
                 .find(|c| c.name() == fieldref.name())
                 .is_none()
             {
-                log::trace!("{fieldref:?} |\n{buffer_name:?}\ndid not map to schema\n{schema:#?}\nwith overrides\n{overrides:#?}");
+                log::trace!(
+                    "{fieldref:?} |\n{buffer_name:?}\ndid not map to schema\n{schema:#?}\nwith overrides\n{overrides:#?}"
+                );
                 auxiliary.push(AuxiliaryArray::from_data_array(v)?);
                 continue;
             }
@@ -364,21 +366,20 @@ pub const ION_MOBILITY_ARRAY_TYPES: [ArrayType; 10] = [
     ArrayType::IonMobilityArray,
 ];
 
-
 #[cfg(test)]
 mod test {
     use super::*;
 
     #[test]
     fn test_complex_peaks() {
-
         assert_eq!(DeconvolutedPeak::to_fields().len(), 4);
 
         let (fields, arrays) = DeconvolutedPeak::to_arrays(
             0,
             Some(0.32),
             &[DeconvolutedPeak::new(602.1, 12053.67, 2, 0)],
-            &BufferOverrideTable::default());
+            &BufferOverrideTable::default(),
+        );
 
         assert_eq!(fields.len(), 5);
 
@@ -391,8 +392,9 @@ mod test {
         let (fields, arrays) = IonMobilityAwareCentroidPeak::to_arrays(
             0,
             Some(0.32),
-            &[IonMobilityAwareCentroidPeak::new(602.1,  32.0,12053.67, 0)],
-            &BufferOverrideTable::default());
+            &[IonMobilityAwareCentroidPeak::new(602.1, 32.0, 12053.67, 0)],
+            &BufferOverrideTable::default(),
+        );
 
         assert_eq!(fields.len(), 5);
 
@@ -405,8 +407,11 @@ mod test {
         let (fields, arrays) = IonMobilityAwareDeconvolutedPeak::to_arrays(
             0,
             Some(0.32),
-            &[IonMobilityAwareDeconvolutedPeak::new(602.1,  32.0, 2, 12053.67, 0)],
-            &BufferOverrideTable::default());
+            &[IonMobilityAwareDeconvolutedPeak::new(
+                602.1, 32.0, 2, 12053.67, 0,
+            )],
+            &BufferOverrideTable::default(),
+        );
 
         assert_eq!(fields.len(), 6);
 

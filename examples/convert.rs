@@ -338,7 +338,8 @@ pub fn convert_file(input_path: &Path, output_path: &Path, args: &ConvertArgs) -
         let reader = MZReaderType::open_gzipped_read_seek(io::BufReader::new(
             fs::File::open(input_path)
                 .inspect_err(|e| eprintln!("Failed to open base compressed file: {e}"))?,
-        )).inspect_err(|e| eprintln!("Failed to open data file: {e}"))?;
+        ))
+        .inspect_err(|e| eprintln!("Failed to open data file: {e}"))?;
         convert_from_reader(reader, output_path, args)
     } else {
         let reader = MZReaderType::<_, CentroidPeak, DeconvolutedPeak>::open_path(&input_path)

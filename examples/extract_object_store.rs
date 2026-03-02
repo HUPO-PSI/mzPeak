@@ -19,8 +19,8 @@ struct App {
     #[arg(short, long, default_value = "0.8-1.2")]
     im_range: CoordinateRange<f64>,
 
-    #[arg(short='l', long)]
-    ms_level_range: Option<CoordinateRange<u8>>
+    #[arg(short = 'l', long)]
+    ms_level_range: Option<CoordinateRange<u8>>,
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 16)]

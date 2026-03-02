@@ -2,7 +2,7 @@ mod sync;
 
 mod file_index;
 
-pub use file_index::{DataKind, FileEntry, EntityType, FileIndex};
+pub use file_index::{DataKind, EntityType, FileEntry, FileIndex};
 
 #[cfg(feature = "async")]
 mod object_store_async;

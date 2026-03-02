@@ -43,7 +43,7 @@ use crate::{
         index::{PageQuery, QueryIndex, SpanDynNumeric},
         metadata::{
             AuxiliaryArrayCountDecoder, BaseMetadataQuerySource, ChromatogramMetadataDecoder,
-            ChromatogramMetadataQuerySource, DeltaModelDecoder, ParquetIndexExtractor,
+            ChromatogramMetadataQuerySource, ParquetIndexExtractor, PeakInfoDecoder,
             SpectrumMetadataDecoder, SpectrumMetadataQuerySource, TimeIndexDecoder,
         },
         point::{AsyncPointDataReader, DataPointCache, PointDataArrayReader},
@@ -406,13 +406,12 @@ impl<
             _t: PhantomData,
         };
 
-        let mz_model_deltas = this.load_delta_models().await?;
+        this.load_delta_models().await?;
         let spectrum_auxiliary_array_counts = this.load_spectrum_auxiliary_array_count().await?;
         let chromatogram_auxiliary_array_counts =
             this.load_chromatogram_auxiliary_array_count().await?;
 
         let meta = Arc::get_mut(&mut this.metadata).unwrap();
-        meta.spectra.mz_model_deltas = mz_model_deltas;
         meta.spectra.auxiliary_array_counts = spectrum_auxiliary_array_counts;
         meta.chromatogram_auxiliary_array_counts = chromatogram_auxiliary_array_counts;
 
@@ -616,7 +615,7 @@ impl<
             ion_mobility_range
         };
 
-        if let Some(query_index) =  self.query_indices.spectrum.data_index.as_chunked() {
+        if let Some(query_index) = self.query_indices.spectrum.data_index.as_chunked() {
             let it = AsyncSpectrumChunkReader::new(builder).scan_chunks_for(
                 index_range,
                 mz_range,
@@ -742,7 +741,8 @@ impl<
 
         let rows = self
             .query_indices
-            .spectrum.time_index
+            .spectrum
+            .time_index
             .row_selection_overlaps(&time_range);
 
         let builder = self.handle.spectrum_metadata().await?;
@@ -976,7 +976,8 @@ impl<
 
         let rows = self
             .query_indices
-            .spectrum.index_index
+            .spectrum
+            .index_index
             .row_selection_contains(index);
 
         let predicate_mask = ProjectionMask::columns(
@@ -1007,14 +1008,14 @@ impl<
     }
 
     /// Load median delta coefficient column if it is present.
-    pub(crate) async fn load_delta_models(&self) -> io::Result<Vec<Option<Vec<f64>>>> {
+    pub(crate) async fn load_delta_models(&mut self) -> io::Result<()> {
         let builder = self.handle.spectrum_metadata().await?;
 
-        let mut decoder = DeltaModelDecoder::default();
+        let mut decoder = PeakInfoDecoder::default();
 
         let proj = match decoder.build_projection(&builder) {
             Some(proj) => proj,
-            None => return Ok(Vec::new()),
+            None => return Ok(()),
         };
 
         let mut reader = builder
@@ -1028,8 +1029,11 @@ impl<
         while let Some(batch) = reader.next().await.transpose()? {
             decoder.decode_batch(&batch);
         }
-
-        Ok(decoder.finish())
+        let meta = Arc::get_mut(&mut self.metadata).unwrap();
+        meta.spectra.mz_model_deltas = decoder.model_parameters;
+        meta.spectra.data_point_counts = decoder.data_point_counts;
+        meta.spectra.peak_counts = decoder.peak_counts;
+        Ok(())
     }
 
     /// Read the complete data arrays for the spectrum at `index`
@@ -1118,7 +1122,10 @@ impl<
         let out = reader
             .read_points_of(
                 index,
-                self.query_indices.chromatogram_data_index.as_point().unwrap(),
+                self.query_indices
+                    .chromatogram_data_index
+                    .as_point()
+                    .unwrap(),
                 &self.metadata.chromatogram_array_indices,
                 None,
             )

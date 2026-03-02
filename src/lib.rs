@@ -1,8 +1,8 @@
 pub mod chunk_series;
+pub mod constants;
 pub mod param;
 pub mod peak_series;
 pub mod spectrum;
-pub mod constants;
 
 pub mod reader;
 pub mod writer;

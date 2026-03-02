@@ -25,7 +25,11 @@ pub fn collect_deltas<T: Float, I: IntoIterator<Item = T>>(iter: I, sort: bool) 
     deltas
 }
 
-fn collect_deltas_in<T: Float, I: IntoIterator<Item = T>>(iter: I, sort: bool, deltas: &mut Vec<T>) {
+fn collect_deltas_in<T: Float, I: IntoIterator<Item = T>>(
+    iter: I,
+    sort: bool,
+    deltas: &mut Vec<T>,
+) {
     let mut last = None;
     for v in iter {
         if let Some(last) = last {
@@ -65,7 +69,6 @@ pub fn estimate_median_delta<T: Float, I: IntoIterator<Item = T>>(iter: I) -> (T
     (m, this.deltas)
 }
 
-
 #[derive(Debug)]
 struct MedianDeltaEstimator<T: Float> {
     deltas: Vec<T>,
@@ -78,7 +81,7 @@ impl<T: Float> Default for MedianDeltaEstimator<T> {
 }
 
 impl<T: Float> MedianDeltaEstimator<T> {
-    pub fn estimate_median_delta<I: IntoIterator<Item=T>>(&mut self, iter: I) -> T {
+    pub fn estimate_median_delta<I: IntoIterator<Item = T>>(&mut self, iter: I) -> T {
         self.deltas.clear();
         collect_deltas_in(iter, true, &mut self.deltas);
         if self.deltas.is_empty() {
@@ -96,7 +99,6 @@ impl<T: Float> MedianDeltaEstimator<T> {
         }
     }
 }
-
 
 /// Fit a polynomial linear regression model.
 ///
@@ -125,7 +127,7 @@ where
         }
     });
 
-    let y = nalgebra::DMatrix::from_column_slice(dx_data.len(), 1,&dx_data);
+    let y = nalgebra::DMatrix::from_column_slice(dx_data.len(), 1, &dx_data);
 
     if let Some(weights) = chol_weights {
         let weights = nalgebra::DVectorView::from_slice_generic(
@@ -415,7 +417,6 @@ impl<'a> Iterator for NullTokenizer<'a> {
 }
 
 impl<'a> NullTokenizer<'a> {
-
     fn new(array: &'a NullBuffer) -> Self {
         let mut this = Self {
             array,
@@ -480,7 +481,10 @@ impl<'a> NullTokenizer<'a> {
         } else {
             // We stepped from one null into a run of values, this is probably not
             // right. We don't have a way to back-fill these accurately.
-            log::error!("Null array tokenizer found malformed unpaired null: stepped from index {prev} -> {}", self.i);
+            log::error!(
+                "Null array tokenizer found malformed unpaired null: stepped from index {prev} -> {}",
+                self.i
+            );
             false
         }
     }
@@ -546,7 +550,7 @@ where
     T::Native: Float + AddAssign,
 {
     let Some(nulls) = array.nulls() else {
-        return array.values().to_vec()
+        return array.values().to_vec();
     };
 
     let it = NullTokenizer::new(nulls);
@@ -566,7 +570,8 @@ where
                     buffer.push(val - delta_at);
                     buffer.push(val);
                 } else {
-                    let local_delta = median_estimator.estimate_median_delta(real_values.iter().flatten());
+                    let local_delta =
+                        median_estimator.estimate_median_delta(real_values.iter().flatten());
                     let val0 = real_values.value(0);
                     buffer.push(val0 - local_delta);
                     buffer.extend(real_values.iter().flatten());
@@ -582,7 +587,8 @@ where
                     let delta_at = common_delta.predict(val);
                     buffer.push(val + delta_at);
                 } else {
-                    let local_delta = median_estimator.estimate_median_delta(real_values.iter().flatten());
+                    let local_delta =
+                        median_estimator.estimate_median_delta(real_values.iter().flatten());
                     buffer.extend(real_values.iter().flatten());
                     buffer.push(*buffer.last().unwrap() + local_delta);
                 }
@@ -597,7 +603,8 @@ where
                     buffer.push(val);
                     buffer.push(val + delta_at);
                 } else if length > 1 {
-                    let local_delta = median_estimator.estimate_median_delta(real_values.iter().flatten());
+                    let local_delta =
+                        median_estimator.estimate_median_delta(real_values.iter().flatten());
                     let val0 = real_values.value(0);
                     buffer.push(val0 - local_delta);
                     buffer.extend(real_values.iter().flatten());
@@ -950,7 +957,15 @@ mod test {
         assert_eq!(states.len(), 2);
         assert_eq!(states[0], NullFillState::NullEnd(1));
         assert_eq!(states[1], NullFillState::NullStart(2));
-        let data = Float64Array::from(vec![Some(50.0), Some(50.0), None, Some(50.2), None, Some(50.3), None]);
+        let data = Float64Array::from(vec![
+            Some(50.0),
+            Some(50.0),
+            None,
+            Some(50.2),
+            None,
+            Some(50.3),
+            None,
+        ]);
         let it = NullTokenizer::new(data.nulls().unwrap());
         for state in it {
             eprintln!("state = {state:?}");
@@ -1037,7 +1052,13 @@ mod test {
 
         let tokenizer = NullTokenizer::new(data.nulls().unwrap());
         let states: Vec<_> = tokenizer.collect();
-        assert_eq!(vec![NullFillState::NullBounded(0, 4), NullFillState::NullStart(7)], states);
+        assert_eq!(
+            vec![
+                NullFillState::NullBounded(0, 4),
+                NullFillState::NullStart(7)
+            ],
+            states
+        );
 
         let data = Float64Array::from(vec![
             Some(101.0),
@@ -1051,7 +1072,10 @@ mod test {
 
         let tokenizer = NullTokenizer::new(data.nulls().unwrap());
         let states: Vec<_> = tokenizer.collect();
-        assert_eq!(vec![NullFillState::NullEnd(3), NullFillState::NullStart(6)], states);
+        assert_eq!(
+            vec![NullFillState::NullEnd(3), NullFillState::NullStart(6)],
+            states
+        );
     }
 
     #[test]
@@ -1081,10 +1105,7 @@ mod test {
 
     #[test]
     fn test_null_end_short() {
-        let data = Float64Array::from(vec![
-            Some(101.0),
-            None,
-        ]);
+        let data = Float64Array::from(vec![Some(101.0), None]);
 
         let tokenizer = NullTokenizer::new(data.nulls().unwrap());
         for s in tokenizer {
@@ -2785,13 +2806,14 @@ mod test {
 
         let schema = Arc::new(Schema::new(vec![
             Arc::new(Field::new("m/z array", DataType::Float64, true)),
-            Arc::new(Field::new("intensity array", DataType::Float32, true))
+            Arc::new(Field::new("intensity array", DataType::Float32, true)),
         ]));
 
-        let batch = RecordBatch::try_new(schema.clone(), vec![
-            Arc::new(mzs) as ArrayRef,
-            Arc::new(intensities),
-        ]).unwrap();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(mzs) as ArrayRef, Arc::new(intensities)],
+        )
+        .unwrap();
 
         let trimmed_batch = drop_where_column_is_zero_run(&batch, 1).unwrap();
         let trimmed_batch = nullify_at_zero_pair(&trimmed_batch, 1, &[0, 1]).unwrap();
