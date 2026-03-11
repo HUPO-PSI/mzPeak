@@ -396,12 +396,12 @@ impl<
     pub fn new<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let path: PathBuf = path.as_ref().into();
         let handle = ArchiveReader::<T>::from_path(path.clone())?;
-        let this = Self::initialize_from_archive_reader(handle, path)?;
+        let this = Self::from_archive_reader(handle, path)?;
 
         Ok(this)
     }
 
-    fn initialize_from_archive_reader(
+    pub fn from_archive_reader(
         mut handle: ArchiveReader<T>,
         path: PathBuf,
     ) -> io::Result<Self> {
@@ -1776,13 +1776,13 @@ impl<
     /// See the safety notes on [`memmap2::Mmap`] for more explanation on why this operation is unsafe.
     pub unsafe fn memmap(handle: fs::File, path: Option<PathBuf>) -> io::Result<Self> {
         let mem = unsafe { ArchiveReader::memmap(handle)? };
-        Self::initialize_from_archive_reader(mem, path.unwrap_or_default())
+        Self::from_archive_reader(mem, path.unwrap_or_default())
     }
 
     pub fn from_buf(buf: bytes::Bytes) -> io::Result<Self> {
         let mem = DispatchArchiveSource::MemoryMapZip(ZipArchiveBytesSource::new(buf)?);
         let mem = ArchiveReader::from_archive(mem)?;
-        Self::initialize_from_archive_reader(mem, PathBuf::default())
+        Self::from_archive_reader(mem, PathBuf::default())
     }
 }
 

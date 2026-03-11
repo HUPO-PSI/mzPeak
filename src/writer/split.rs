@@ -206,6 +206,7 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
             &use_chunked_encoding,
             compression,
             write_batch_config,
+            None,
         );
 
         let separate_peak_writer = if let Some(peak_buffer_builder) = store_peaks_and_profiles_apart
@@ -225,6 +226,7 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
                 &None,
                 compression,
                 write_batch_config,
+                None,
             );
 
             let peak_writer = ArrowWriter::try_new_with_options(
@@ -243,7 +245,7 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
             None
         };
 
-        let metadata_props = Self::spectrum_metadata_writer_props(&metadata_fields);
+        let metadata_props = Self::spectrum_metadata_writer_props(&metadata_fields, None);
 
         let mut this = Self {
             path,
@@ -401,7 +403,7 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
                 )?,
                 metadata_fields.clone(),
                 ArrowWriterOptions::new()
-                    .with_properties(Self::spectrum_metadata_writer_props(&metadata_fields)),
+                    .with_properties(Self::spectrum_metadata_writer_props(&metadata_fields, None)),
             )?;
             self.flush_chromatogram_metadata_records(&mut writer)?;
             self.append_key_value_metadata(
@@ -425,6 +427,7 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
                     BufferContext::Chromatogram.index_field().name().to_string(),
                     &None,
                     self.compression,
+                    None,
                 )),
             )?;
 

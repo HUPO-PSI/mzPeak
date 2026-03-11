@@ -5,8 +5,10 @@ use mzdata::spectrum::{
 };
 
 use parquet::basic::{Compression, ZstdLevel};
+use parquet::encryption::encrypt::FileEncryptionProperties;
 use std::collections::HashMap;
 use std::io::prelude::*;
+use std::sync::Arc;
 use std::{fmt::Debug, path::PathBuf};
 
 use crate::buffer_descriptors::BufferTransform;
@@ -56,6 +58,7 @@ pub struct MzPeakWriterBuilder {
     pub(crate) spectrum_selected_ion_fields: Vec<Box<dyn StructVisitorBuilder<SelectedIon>>>,
     pub(crate) spectrum_scan_fields: Vec<Box<dyn StructVisitorBuilder<ScanEvent>>>,
     pub(crate) spectrum_activation_fields: Vec<Box<dyn StructVisitorBuilder<Activation>>>,
+    pub(crate) encryption_properties: HashMap<String, Arc<FileEncryptionProperties>>,
 }
 
 impl Default for MzPeakWriterBuilder {
@@ -78,6 +81,7 @@ impl Default for MzPeakWriterBuilder {
             spectrum_selected_ion_fields: Vec::new(),
             spectrum_scan_fields: Vec::new(),
             spectrum_activation_fields: Vec::new(),
+            encryption_properties: Default::default(),
         }
     }
 }
@@ -291,6 +295,7 @@ impl MzPeakWriterBuilder {
             self.store_peaks_and_profiles_apart,
             self.write_batch_config,
             spectrum_fields,
+            self.encryption_properties,
         )
     }
 
@@ -300,6 +305,20 @@ impl MzPeakWriterBuilder {
 
     pub fn chromatogram_overrides(&self) -> BufferOverrideTable {
         self.chromatogram_arrays.overrides()
+    }
+
+    pub fn get_encryption_properties(&self) -> &HashMap<String, Arc<FileEncryptionProperties>> {
+        &self.encryption_properties
+    }
+
+    pub fn encryption_properties(mut self, encryption_properties: HashMap<String, Arc<FileEncryptionProperties>>) -> Self {
+        self.encryption_properties = encryption_properties;
+        self
+    }
+
+    pub fn encrypt_parquet(mut self, name: String, encryption_properties: Arc<FileEncryptionProperties>) -> Self {
+        self.encryption_properties.insert(name, encryption_properties);
+        self
     }
 }
 

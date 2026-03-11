@@ -12,14 +12,12 @@ use mzdata::{
     },
 };
 use parquet::{
-    arrow::{ArrowSchemaConverter, ArrowWriter},
-    basic::{Compression, Encoding, ZstdLevel},
-    file::{
+    arrow::{ArrowSchemaConverter, ArrowWriter}, basic::{Compression, Encoding, ZstdLevel}, encryption::encrypt::FileEncryptionProperties, file::{
         metadata::SortingColumn,
         properties::{
             DEFAULT_DICTIONARY_PAGE_SIZE_LIMIT, EnabledStatistics, WriterProperties, WriterVersion,
         },
-    },
+    }
 };
 
 use crate::{
@@ -722,7 +720,7 @@ pub trait AbstractMzPeakWriter {
     /// the provided schema.
     ///
     /// This currently uses a constant Zstd compression level.
-    fn spectrum_metadata_writer_props(metadata_fields: &SchemaRef) -> WriterProperties {
+    fn spectrum_metadata_writer_props(metadata_fields: &SchemaRef, encryption_properties: Option<Arc<FileEncryptionProperties>>) -> WriterProperties {
         let parquet_schema = Arc::new(
             ArrowSchemaConverter::new()
                 .convert(metadata_fields)
@@ -743,7 +741,7 @@ pub trait AbstractMzPeakWriter {
             }
         }
 
-        WriterProperties::builder()
+        let mut builder = WriterProperties::builder()
             .set_compression(parquet::basic::Compression::ZSTD(
                 ZstdLevel::try_new(3).unwrap(),
             ))
@@ -751,8 +749,12 @@ pub trait AbstractMzPeakWriter {
             .set_sorting_columns(Some(sorted))
             .set_column_bloom_filter_enabled("spectrum.id".into(), true)
             .set_writer_version(WriterVersion::PARQUET_2_0)
-            .set_statistics_enabled(EnabledStatistics::Page)
-            .build()
+            .set_statistics_enabled(EnabledStatistics::Page);
+
+        if let Some(encryption_props) = encryption_properties {
+            builder = builder.with_file_encryption_properties(encryption_props);
+        }
+        builder.build()
     }
 
     /// Generate the [`WriterProperties`] for a generic data arrays file, based upon
@@ -766,6 +768,7 @@ pub trait AbstractMzPeakWriter {
         use_chunked_encoding: &Option<ChunkingStrategy>,
         compression: Compression,
         byte_shuffle_needles: &[&str],
+        encryption_properties: Option<Arc<FileEncryptionProperties>>
     ) -> WriterProperties {
         let parquet_schema = Arc::new(
             ArrowSchemaConverter::new()
@@ -826,6 +829,9 @@ pub trait AbstractMzPeakWriter {
             }
         }
 
+        if let Some(encryption_props) = encryption_properties {
+            data_props = data_props.with_file_encryption_properties(encryption_props);
+        }
         data_props.build()
     }
 
@@ -839,6 +845,7 @@ pub trait AbstractMzPeakWriter {
         index_path: String,
         use_chunked_encoding: &Option<ChunkingStrategy>,
         compression: Compression,
+        encryption_properties: Option<Arc<FileEncryptionProperties>>
     ) -> WriterProperties {
         Self::generic_data_writer_props(
             data_buffer,
@@ -846,6 +853,7 @@ pub trait AbstractMzPeakWriter {
             use_chunked_encoding,
             compression,
             &["_time", ".time"],
+            encryption_properties,
         )
     }
 
@@ -864,6 +872,7 @@ pub trait AbstractMzPeakWriter {
         use_chunked_encoding: &Option<ChunkingStrategy>,
         compression: Compression,
         write_batch_config: WriteBatchConfig,
+        encryption_properties: Option<Arc<FileEncryptionProperties>>,
     ) -> WriterProperties {
         let parquet_schema = Arc::new(
             ArrowSchemaConverter::new()
@@ -945,6 +954,10 @@ pub trait AbstractMzPeakWriter {
                 data_props =
                     data_props.set_column_encoding(c.path().clone(), Encoding::DELTA_BINARY_PACKED);
             }
+        }
+
+        if let Some(encryption_props) = encryption_properties {
+            data_props = data_props.with_file_encryption_properties(encryption_props)
         }
 
         data_props.build()

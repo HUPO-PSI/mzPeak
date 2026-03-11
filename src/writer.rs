@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs,
     io::{self, prelude::*},
     marker::PhantomData,
@@ -13,6 +14,7 @@ use mzpeaks::{CentroidPeak, DeconvolutedPeak};
 use parquet::{
     arrow::{ArrowWriter, arrow_writer::ArrowWriterOptions},
     basic::Compression,
+    encryption::encrypt::FileEncryptionProperties,
     file::metadata::KeyValue,
 };
 
@@ -473,6 +475,7 @@ pub struct MzPeakWriterType<
 
     buffer_size: usize,
     compression: Compression,
+    encryption_properties: HashMap<String, Arc<FileEncryptionProperties>>,
 
     #[allow(unused)]
     write_batch_config: WriteBatchConfig,
@@ -592,6 +595,7 @@ impl<
         store_peaks_and_profiles_apart: Option<ArrayBuffersBuilder>,
         write_batch_config: WriteBatchConfig,
         spectrum_fields: SpectrumFieldVisitors,
+        encryption_properties: HashMap<String, Arc<FileEncryptionProperties>>,
     ) -> Self {
         let mut spectrum_metadata_buffer = SpectrumBuilder::default();
         spectrum_metadata_buffer.add_visitors_from(spectrum_fields);
@@ -634,6 +638,10 @@ impl<
         let mut writer = ZipArchiveWriter::new(writer);
         writer.start_spectrum_data().unwrap();
 
+        let spectrum_data_encryption_props = encryption_properties
+            .get(&FileEntry::from(MzPeakArchiveType::SpectrumDataArrays).name)
+            .cloned();
+
         let data_props = Self::spectrum_data_writer_props(
             &spectrum_buffers,
             spectrum_buffers.index_path(),
@@ -641,6 +649,7 @@ impl<
             &use_chunked_encoding,
             compression,
             write_batch_config,
+            spectrum_data_encryption_props,
         );
 
         let separate_peak_writer = if let Some(peak_buffer_builder) = store_peaks_and_profiles_apart
@@ -651,6 +660,9 @@ impl<
                 .include_time(spectrum_buffers.include_time())
                 .build(Arc::new(Schema::empty()), BufferContext::Spectrum, false);
 
+            let peak_encrytion_props = encryption_properties
+                .get(&FileEntry::from(MzPeakArchiveType::SpectrumPeakDataArrays).name)
+                .cloned();
             let peak_data_props = Self::spectrum_data_writer_props(
                 &peak_buffer,
                 peak_buffer.index_path(),
@@ -658,6 +670,7 @@ impl<
                 &None,
                 compression,
                 write_batch_config,
+                peak_encrytion_props,
             );
 
             let peak_writer = ArrowWriter::try_new_with_options(
@@ -699,6 +712,7 @@ impl<
             wavelength_spectrum_buffers: None,
             wavelength_spectrum_metadata_buffer: Default::default(),
             _t: PhantomData,
+            encryption_properties,
         };
         this.add_spectrum_array_metadata();
         this
@@ -829,11 +843,21 @@ impl<
 
             writer.start_spectrum_metadata().unwrap();
             let metadata_fields = self.spectrum_metadata_buffer.schema();
+            let encryption_props = self
+                .encryption_properties
+                .get(
+                    FileEntry::from(MzPeakArchiveType::SpectrumMetadata)
+                        .name
+                        .as_str(),
+                )
+                .cloned();
             self.archive_writer = Some(ArrowWriter::try_new_with_options(
                 writer,
                 metadata_fields.clone(),
-                ArrowWriterOptions::new()
-                    .with_properties(Self::spectrum_metadata_writer_props(&metadata_fields)),
+                ArrowWriterOptions::new().with_properties(Self::spectrum_metadata_writer_props(
+                    &metadata_fields,
+                    encryption_props,
+                )),
             )?);
             self.flush_spectrum_metadata_records()?;
             self.append_metadata();
@@ -849,6 +873,14 @@ impl<
             writer = self.archive_writer.take().unwrap().into_inner()?;
 
             if !self.wavelength_spectrum_metadata_buffer.is_empty() {
+                let encryption_props = self
+                    .encryption_properties
+                    .get(
+                        FileEntry::from(MzPeakArchiveType::WavelengthSpectrumMetadata)
+                            .name
+                            .as_str(),
+                    )
+                    .cloned();
                 let entry = FileEntry::new(
                     WAVELENGTH_SPECTRUM_METADATA_NAME.into(),
                     EntityType::WavelengthSpectrum,
@@ -861,8 +893,9 @@ impl<
                 self.archive_writer = Some(ArrowWriter::try_new_with_options(
                     writer,
                     metadata_fields.clone(),
-                    ArrowWriterOptions::new()
-                        .with_properties(Self::spectrum_metadata_writer_props(&metadata_fields)),
+                    ArrowWriterOptions::new().with_properties(
+                        Self::spectrum_metadata_writer_props(&metadata_fields, encryption_props),
+                    ),
                 )?);
 
                 self.append_key_value_metadata(
@@ -898,6 +931,14 @@ impl<
 
                 let schema_props = if let Some(buffers) = self.wavelength_spectrum_buffers.as_ref()
                 {
+                    let encryption_props = self
+                        .encryption_properties
+                        .get(
+                            FileEntry::from(MzPeakArchiveType::WavelengthSpectrumDataArrays)
+                                .name
+                                .as_str(),
+                        )
+                        .cloned();
                     let schema = buffers.schema().clone();
                     let props = Self::generic_data_writer_props(
                         buffers.buffers(),
@@ -908,6 +949,7 @@ impl<
                         &buffers.use_chunked_encoding().copied(),
                         self.compression,
                         &["wavelength"],
+                        encryption_props,
                     );
                     Some((schema, props))
                 } else {
@@ -950,11 +992,20 @@ impl<
             if !self.chromatogram_metadata_buffer.is_empty() {
                 writer.start_chromatogram_metadata().unwrap();
                 let metadata_fields = self.chromatogram_metadata_buffer.schema();
+                let encryption_props = self
+                    .encryption_properties
+                    .get(
+                        FileEntry::from(MzPeakArchiveType::ChromatogramMetadata)
+                            .name
+                            .as_str(),
+                    )
+                    .cloned();
                 self.archive_writer = Some(ArrowWriter::try_new_with_options(
                     writer,
                     metadata_fields.clone(),
-                    ArrowWriterOptions::new()
-                        .with_properties(Self::spectrum_metadata_writer_props(&metadata_fields)),
+                    ArrowWriterOptions::new().with_properties(
+                        Self::spectrum_metadata_writer_props(&metadata_fields, encryption_props),
+                    ),
                 )?);
                 self.flush_chromatogram_metadata_records()?;
                 self.append_key_value_metadata(
@@ -966,7 +1017,14 @@ impl<
                     Some(self.chromatogram_buffers.point_count().to_string()),
                 );
                 writer = self.archive_writer.take().unwrap().into_inner()?;
-
+                let encryption_props = self
+                    .encryption_properties
+                    .get(
+                        FileEntry::from(MzPeakArchiveType::ChromatogramDataArrays)
+                            .name
+                            .as_str(),
+                    )
+                    .cloned();
                 writer.start_chromatogram_data().unwrap();
                 self.archive_writer = Some(ArrowWriter::try_new_with_options(
                     writer,
@@ -977,6 +1035,7 @@ impl<
                             BufferContext::Chromatogram.index_field().name().to_string(),
                             &None,
                             self.compression,
+                            encryption_props,
                         ),
                     ),
                 )?);

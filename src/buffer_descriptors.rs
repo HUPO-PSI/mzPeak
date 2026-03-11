@@ -122,6 +122,103 @@ impl Display for BufferContext {
     }
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CustomBufferContext {
+    pub index_name: String,
+    pub time_name: String,
+    pub name: String,
+    pub main_struct_name: String,
+    pub default_sorted_array: ArrayType,
+    pub main_axis: BufferName,
+}
+
+impl CustomBufferContext {
+    pub fn new(
+        index_name: String,
+        time_name: String,
+        name: String,
+        main_struct_name: String,
+        default_sorted_array: ArrayType,
+        main_axis: BufferName,
+    ) -> Self {
+        Self {
+            index_name,
+            time_name,
+            name,
+            main_struct_name,
+            default_sorted_array,
+            main_axis,
+        }
+    }
+}
+
+pub trait BufferContextMethods {
+    fn index_name(&self) -> &str;
+
+    fn time_name(&self) -> &str;
+
+    fn name(&self) -> &str;
+
+    fn main_struct_name(&self) -> &str;
+
+    fn default_sorted_array(&self) -> ArrayType;
+
+    fn main_axis(&self) -> BufferName;
+
+}
+
+impl BufferContextMethods for BufferContext {
+    fn index_name(&self) -> &str {
+        self.index_name()
+    }
+
+    fn time_name(&self) -> &str {
+        self.time_name()
+    }
+
+    fn name(&self) -> &str {
+        self.name()
+    }
+
+    fn default_sorted_array(&self) -> ArrayType {
+        self.default_sorted_array()
+    }
+
+    fn main_axis(&self) -> BufferName {
+        self.main_axis()
+    }
+
+    fn main_struct_name(&self) -> &str {
+        self.main_struct_name()
+    }
+}
+
+impl BufferContextMethods for CustomBufferContext {
+    fn index_name(&self) -> &str {
+        &self.index_name
+    }
+
+    fn time_name(&self) -> &str {
+        &self.time_name
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn default_sorted_array(&self) -> ArrayType {
+        self.default_sorted_array.clone()
+    }
+
+    fn main_axis(&self) -> BufferName {
+        self.main_axis.clone()
+    }
+
+    fn main_struct_name(&self) -> &str {
+        &self.main_struct_name
+    }
+}
+
 /// The layout of a buffer denoting the shape of the data in each position in the buffer.
 ///
 /// This is part of a [`BufferName`] and helps guide a reader in decoding signal data.

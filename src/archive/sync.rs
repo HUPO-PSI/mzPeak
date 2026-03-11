@@ -1,8 +1,11 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, prelude::*};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use bytes::{Buf, Bytes};
+use parquet::encryption::decrypt::FileDecryptionProperties;
 use parquet::file::reader::{ChunkReader, Length};
 use zip::{
     CompressionMethod,
@@ -471,6 +474,7 @@ pub struct ZipArchiveBytesSource {
     archive_offset: Config,
     pub file_names: Vec<String>,
     pub file_index: FileIndex,
+    decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>
 }
 
 impl ZipArchiveBytesSource {
@@ -482,6 +486,7 @@ impl ZipArchiveBytesSource {
             archive_offset,
             file_names,
             file_index: file_index.unwrap_or_default(),
+            decryption_properties: Default::default(),
         })
     }
 
@@ -524,6 +529,14 @@ impl ArchiveSource for ZipArchiveBytesSource {
     fn can_split(&self) -> bool {
         true
     }
+
+    fn set_decryption_properties(&mut self, decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>) {
+        self.decryption_properties = decryption_properties;
+    }
+
+    fn decryption_properties(&self) -> &HashMap<String, Arc<FileDecryptionProperties>> {
+        &self.decryption_properties
+    }
 }
 
 pub struct ZipArchiveSource {
@@ -531,6 +544,7 @@ pub struct ZipArchiveSource {
     archive_offset: Config,
     pub file_names: Vec<String>,
     pub file_index: FileIndex,
+    decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>
 }
 
 fn zip_archive_to_config<R: io::Read + io::Seek>(
@@ -609,6 +623,7 @@ impl ZipArchiveSource {
             archive_offset,
             file_names,
             file_index: file_index.unwrap_or_default(),
+            decryption_properties: Default::default(),
         })
     }
 
@@ -623,6 +638,7 @@ pub struct SplittingZipArchiveSource {
     archive_offset: Config,
     pub file_names: Vec<String>,
     pub file_index: FileIndex,
+    decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>,
 }
 
 impl SplittingZipArchiveSource {
@@ -634,6 +650,7 @@ impl SplittingZipArchiveSource {
             archive_offset,
             file_names,
             file_index: file_index.unwrap_or_default(),
+            decryption_properties: Default::default(),
         })
     }
 
@@ -701,13 +718,25 @@ pub trait ArchiveSource: Sized + 'static {
         }
     }
 
+    fn decryption_properties_for_index(&self, index: usize) -> Option<Arc<FileDecryptionProperties>> {
+        self.file_names().get(index).and_then(|s| self.decryption_properties().get(s.as_str()).cloned())
+    }
+
+    fn set_decryption_properties(&mut self, decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>);
+
+    fn decryption_properties(&self) -> &HashMap<String, Arc<FileDecryptionProperties>>;
+
     /// Load the Parquet metadata for the specified index.
     ///
     /// # Note
     /// This fails if the requested file is *not* a Parquet file.
     fn metadata_for_index(&self, index: usize) -> io::Result<ArrowReaderMetadata> {
         let handle = self.open_entry_by_index(index)?;
-        let opts = ArrowReaderOptions::new().with_page_index(true);
+
+        let mut opts = ArrowReaderOptions::new().with_page_index(true);
+        if let Some(enc) = self.decryption_properties_for_index(index) {
+            opts = opts.with_file_decryption_properties(enc);
+        }
         Ok(ArrowReaderMetadata::load(&handle, opts)?)
     }
 
@@ -747,6 +776,14 @@ impl ArchiveSource for ZipArchiveSource {
     fn file_index(&self) -> &FileIndex {
         &self.file_index
     }
+
+    fn set_decryption_properties(&mut self, decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>) {
+        self.decryption_properties = decryption_properties;
+    }
+
+    fn decryption_properties(&self) -> &HashMap<String, Arc<FileDecryptionProperties>> {
+        &self.decryption_properties
+    }
 }
 
 impl ArchiveSource for SplittingZipArchiveSource {
@@ -771,12 +808,21 @@ impl ArchiveSource for SplittingZipArchiveSource {
     fn file_index(&self) -> &FileIndex {
         &self.file_index
     }
+
+    fn set_decryption_properties(&mut self, decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>) {
+        self.decryption_properties = decryption_properties;
+    }
+
+    fn decryption_properties(&self) -> &HashMap<String, Arc<FileDecryptionProperties>> {
+        &self.decryption_properties
+    }
 }
 
 pub struct DirectorySource {
     archive_path: PathBuf,
     pub file_names: Vec<String>,
     pub file_index: FileIndex,
+    pub decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>,
 }
 
 impl DirectorySource {
@@ -799,6 +845,7 @@ impl DirectorySource {
             archive_path,
             file_names,
             file_index: file_index.unwrap_or_default(),
+            decryption_properties: Default::default(),
         })
     }
 
@@ -836,6 +883,14 @@ impl ArchiveSource for DirectorySource {
 
     fn file_index(&self) -> &FileIndex {
         &self.file_index
+    }
+
+    fn set_decryption_properties(&mut self, decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>) {
+        self.decryption_properties = decryption_properties;
+    }
+
+    fn decryption_properties(&self) -> &HashMap<String, Arc<FileDecryptionProperties>> {
+        &self.decryption_properties
     }
 }
 
@@ -910,6 +965,12 @@ impl<T: ArchiveSource + 'static> ArchiveReader<T> {
 
     pub fn from_path(archive_path: PathBuf) -> io::Result<Self> {
         let archive = T::from_path(archive_path)?;
+        Self::from_archive(archive)
+    }
+
+    pub fn from_path_with_decryption(archive_path: PathBuf, decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>) -> io::Result<Self> {
+        let mut archive = T::from_path(archive_path)?;
+        archive.set_decryption_properties(decryption_properties);
         Self::from_archive(archive)
     }
 
@@ -1067,6 +1128,14 @@ impl ArchiveSource for DispatchArchiveSource {
     fn file_index(&self) -> &FileIndex {
         dispatch!(self, src, { src.file_index() })
     }
+
+    fn set_decryption_properties(&mut self, decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>) {
+        dispatch!(self, src, { src.set_decryption_properties(decryption_properties); })
+    }
+
+    fn decryption_properties(&self) -> &HashMap<String, Arc<FileDecryptionProperties>> {
+        dispatch!(self, src, { &src.decryption_properties })
+    }
 }
 
 impl ArchiveReader<DispatchArchiveSource> {
@@ -1082,6 +1151,12 @@ impl ArchiveReader<DispatchArchiveSource> {
         Self::from_archive(archive)
     }
 
+    pub fn new_with_decryption(file: fs::File, decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>) -> io::Result<Self> {
+        let mut archive = DispatchArchiveSource::Zip(ZipArchiveSource::new(file)?);
+        archive.set_decryption_properties(decryption_properties);
+        Self::from_archive(archive)
+    }
+
     /// Create a memory-mapped reader for `handle`.
     ///
     /// A memory-mapped reader may be faster in some circumstances, but the caller **MUST** ensure the
@@ -1094,6 +1169,14 @@ impl ArchiveReader<DispatchArchiveSource> {
         let map = unsafe { memmap2::Mmap::map(&file)? };
         let buf = bytes::Bytes::from_owner(map);
         let archive = DispatchArchiveSource::MemoryMapZip(ZipArchiveBytesSource::new(buf)?);
+        Self::from_archive(archive)
+    }
+
+    pub unsafe fn memmap_with_decryption(file: fs::File, decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>) -> io::Result<Self> {
+        let map = unsafe { memmap2::Mmap::map(&file)? };
+        let buf = bytes::Bytes::from_owner(map);
+        let mut archive = DispatchArchiveSource::MemoryMapZip(ZipArchiveBytesSource::new(buf)?);
+        archive.set_decryption_properties(decryption_properties);
         Self::from_archive(archive)
     }
 }
