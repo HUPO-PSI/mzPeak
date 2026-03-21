@@ -5,7 +5,6 @@ use mzdata::mzpeaks::coordinate::{CoordinateRange, SimpleInterval, Span1D};
 use mzdata::prelude::*;
 use std::{io, sync::Arc};
 
-use object_store::ObjectStore;
 
 #[derive(clap::Parser)]
 struct App {

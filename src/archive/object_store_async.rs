@@ -553,7 +553,6 @@ mod test {
     #[test_log::test]
     async fn test_local() -> io::Result<()> {
         let store = object_store::local::LocalFileSystem::new_with_prefix(".")?;
-        // let v = store.path_to_filesystem(&ObjectPath::from("small.mzpeak"))?;
 
         let handle = AsyncZipArchiveSource::new(Arc::new(store), "small.mzpeak".into()).await?;
 
@@ -576,21 +575,36 @@ mod test {
         Ok(())
     }
 
-    // #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    // async fn test_http() -> io::Result<()> {
-    //     let store = object_store::http::HttpBuilder::new()
-    //         .with_url("http://127.0.0.1:8000/")
-    //         .with_client_options(
-    //             ClientOptions::new()
-    //                 .with_allow_http(true)
-    //                 .with_timeout(std::time::Duration::new(10, 0))
-    //         )
-    //         .build()?;
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[test_log::test]
+    async fn test_local_opendal() -> io::Result<()> {
+        let mut cmd = match std::process::Command::new("miniserve").args([ ".", "--port", "8030"]).spawn() {
+            Ok(cmd) => cmd,
+            Err(e) => {
+                log::warn!("miniserve not installed, http client tests not run, {e}");
+                return Ok(())
+            }
+        };
+        let op = opendal::Operator::new(opendal::services::Http::default().endpoint("http://127.0.0.1:8030").root("/")).unwrap().finish();
+        let store = Arc::new(object_store_opendal::OpendalStore::new(op));
+        let handle = AsyncZipArchiveSource::new(store, "/small.mzpeak".into()).await?;
 
-    //     let path = ObjectPath::from("small.mzpeak");
-    //     let handle = AsyncZipArchiveSource::new(Arc::new(store), path).await?;
+        for (i, f) in handle.file_names().iter().enumerate() {
+            if f.ends_with(MzPeakArchiveType::SpectrumMetadata.tag_file_suffix()) {
+                let dataset = handle.read_index(i, None).await?;
+                let meta = dataset.metadata();
+                let kv_data = meta.file_metadata().key_value_metadata().unwrap();
+                assert!(!kv_data.is_empty())
+            }
+        }
 
-    //     eprintln!("{:?}",handle.file_names());
-    //     Ok(())
-    // }
+        assert_eq!(handle.file_index().len(), 4);
+
+        let mut buf = String::new();
+        let mut reader = handle.open_stream("mzpeak_index.json").await?;
+        reader.read_to_string(&mut buf).await?;
+        assert!(buf.len() > 0);
+        cmd.kill()?;
+        Ok(())
+    }
 }

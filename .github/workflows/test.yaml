@@ -26,6 +26,9 @@ jobs:
           override: true
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+      - name: Install miniserve for HTTP tests
+        run: |
+          cargo install miniserve
       - name: Run cargo test
         uses: actions-rs/cargo@v1
         with:
