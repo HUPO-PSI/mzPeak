@@ -244,11 +244,11 @@ You can also specify a chunk size like 'delta:50'. Defaults to 'delta:50'. It wi
     )]
     pub include_time_with_spectrum_data: bool,
 
-    /// A secret key to use to AES encrypt the spectrum data, preventing it from being read without the given key.
+    /// A secret key to use to AES encrypt all data, preventing it from being read without the given key.
     ///
     /// The key must be 16, 24, or 32 bytes long.
     #[arg(long)]
-    pub encrypt_spectra: Option<String>,
+    pub encrypt: Option<String>,
 }
 
 impl ConvertArgs {
@@ -375,7 +375,7 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
     let handle = fs::File::create(output_path)?;
     let mut builder = configure_writer_builder(args);
 
-    if let Some(encryption_key) = args.encrypt_spectra.as_ref() {
+    if let Some(encryption_key) = args.encrypt.as_ref() {
         match encryption_key.as_bytes().len() {
             16 | 24 | 32 => {}
             _ => {
@@ -384,10 +384,14 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
         }
         let encryption_props =
             FileEncryptionProperties::builder(encryption_key.as_bytes().to_vec())
-                .with_footer_key_metadata(b"{}".to_vec())
+                .with_footer_key_metadata(r#"{"isFooterKey": true, "keyMaterialType": "PKMT1", "internalStorage": true, "doubleWrapping": false,
+                                              "kmsInstanceID": "dummy_kms_instance_id", "kmsInstanceURL": "dummy_kms_instance_url", "masterKeyID": "dummy_master_key_id",
+                                              "wrappedDEK": "dummy_wrapped_dek"}"#.as_bytes().to_vec())
                 .with_aad_prefix_storage(true)
                 .build()
                 .unwrap();
+        log::debug!("key {:?}", encryption_props.footer_key());
+        log::debug!("key metadata {:?}", encryption_props.footer_key_metadata());
         builder = builder
             .encrypt_parquet(
                 MzPeakArchiveType::SpectrumDataArrays
@@ -396,7 +400,25 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
                 encryption_props.clone(),
             )
             .encrypt_parquet(
+                MzPeakArchiveType::SpectrumPeakDataArrays
+                    .tag_file_suffix()
+                    .into(),
+                encryption_props.clone(),
+            )
+            .encrypt_parquet(
                 MzPeakArchiveType::SpectrumMetadata.tag_file_suffix().into(),
+                encryption_props.clone(),
+            )
+            .encrypt_parquet(
+                MzPeakArchiveType::ChromatogramDataArrays
+                    .tag_file_suffix()
+                    .into(),
+                encryption_props.clone(),
+            )
+            .encrypt_parquet(
+                MzPeakArchiveType::ChromatogramMetadata
+                    .tag_file_suffix()
+                    .into(),
                 encryption_props.clone(),
             );
     }

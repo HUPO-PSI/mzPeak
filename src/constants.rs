@@ -36,5 +36,7 @@ pub const SPECTRUM_TIME: &'static str = "spectrum_time";
 pub const WAVELENGTH_SPECTRUM_INDEX: &'static str = "wavelength_spectrum_index";
 pub const WAVELENGTH_SPECTRUM_TIME: &'static str = "wavelength_spectrum_time";
 
+pub const CHROMATOGRAM_INDEX: &'static str = "chromatogram_index";
+
 pub const NUMBER_OF_DATA_POINTS: &'static str = "MS_1003060_number_of_data_points";
 pub const NUMBER_OF_PEAKS: &'static str = "MS_1003059_number_of_peaks";

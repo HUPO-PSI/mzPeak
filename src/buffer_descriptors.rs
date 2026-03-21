@@ -9,7 +9,7 @@ use mzdata::{
 use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 
-use crate::peak_series::array_to_arrow_type;
+use crate::{constants::{CHROMATOGRAM_INDEX, SPECTRUM_INDEX, SPECTRUM_TIME, WAVELENGTH_SPECTRUM_INDEX, WAVELENGTH_SPECTRUM_TIME}, peak_series::array_to_arrow_type};
 use crate::{
     constants::{CHROMATOGRAM, SPECTRUM},
     param::{
@@ -29,9 +29,9 @@ pub enum BufferContext {
 impl BufferContext {
     pub const fn index_name(&self) -> &'static str {
         match self {
-            BufferContext::Spectrum => "spectrum_index",
-            Self::WavelengthSpectrum => "wavelength_spectrum_index",
-            BufferContext::Chromatogram => "chromatogram_index",
+            BufferContext::Spectrum => SPECTRUM_INDEX,
+            Self::WavelengthSpectrum => WAVELENGTH_SPECTRUM_INDEX,
+            BufferContext::Chromatogram => CHROMATOGRAM_INDEX,
         }
     }
 
@@ -50,8 +50,8 @@ impl BufferContext {
 
     pub const fn time_name(&self) -> &'static str {
         match self {
-            BufferContext::Spectrum => "spectrum_time",
-            Self::WavelengthSpectrum => "wavelength_spectrum_time",
+            BufferContext::Spectrum => SPECTRUM_TIME,
+            Self::WavelengthSpectrum => WAVELENGTH_SPECTRUM_TIME,
             BufferContext::Chromatogram => "chromatogram_time",
         }
     }

@@ -26,6 +26,11 @@ fn main() -> io::Result<()> {
         let dec = FileDecryptionProperties::builder(key.as_bytes().to_vec()).build().unwrap();
         dec_props.insert(MzPeakArchiveType::SpectrumDataArrays.tag_file_suffix().to_string(), dec.clone());
         dec_props.insert(MzPeakArchiveType::SpectrumMetadata.tag_file_suffix().to_string(), dec.clone());
+        dec_props.insert(MzPeakArchiveType::SpectrumPeakDataArrays.tag_file_suffix().to_string(), dec.clone());
+        dec_props.insert(MzPeakArchiveType::ChromatogramDataArrays.tag_file_suffix().to_string(), dec.clone());
+        dec_props.insert(MzPeakArchiveType::ChromatogramMetadata.tag_file_suffix().to_string(), dec.clone());
+        dec_props.insert(MzPeakArchiveType::WavelengthSpectrumMetadata.tag_file_suffix().to_string(), dec.clone());
+        dec_props.insert(MzPeakArchiveType::WavelengthSpectrumDataArrays.tag_file_suffix().to_string(), dec.clone());
     }
 
     let archive = ArchiveReader::<DispatchArchiveSource>::from_path_with_decryption(
