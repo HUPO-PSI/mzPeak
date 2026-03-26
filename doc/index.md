@@ -598,7 +598,9 @@ def find_pairs(mask: Sequence[bool]) -> Sequence[int]:
 
     .. warning::
       This function *can* fail or produce incorrect output if there are runs of
-      :const:`True` values longer than 2 in the ``mask``
+      :const:`True` values longer than 2 in the ``mask``. It is also necessary to
+      buffer all data for an entry before invoking this function so that batches
+      do not artificially disrupt pairs.
 
     Parameters
     ----------
