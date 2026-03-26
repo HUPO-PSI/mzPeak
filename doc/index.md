@@ -1090,6 +1090,8 @@ Perhaps, but the top-level structure leaves the door open for two use-cases:
 
 An mzPeak archive is made up of multiple named files. To leave room for future files and avoid having to do complicated file name resolution, we use an index file that identifies the contents of each file. This broadly defines the kinds of schemas those files might have. The file _MUST_ be serialized with UTF8.
 
+TODO: Add wavelength files to examples
+
 ```json
 {
   "files": [
