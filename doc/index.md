@@ -55,6 +55,9 @@
 - [Chromatogram Signal Data - `chromatograms_data.parquet`](#chromatogram-signal-data---chromatograms_dataparquet)
   - [Recommendations](#recommendations-1)
 - [Chromatogram Metadata - `chromatograms_metadata.parquet`](#chromatogram-metadata---chromatograms_metadataparquet)
+- [Wavelength Spectrum Signal Data File - `wavelength_spectra_data.parquet`](#wavelength-spectrum-signal-data-file---wavelength_spectra_dataparquet)
+  - [Recommendations](#recommendations-2)
+- [Wavelength Spectrum Metadata - `wavelength_spectra_metadata.parquet`](#wavelength-spectrum-metadata---wavelength_spectra_metadataparquet)
 
 # Introduction
 
@@ -1144,8 +1147,9 @@ The `entity_type` tells the reader what is _being_ described in this file, in co
 
 There are currently 3 controlled values for `entity_type`
 
-- `spectrum`: The file describes spectra (mass or otherwise), entities defined as occuring at a singular point in time, or as semantically close to this as possible in the face of framed or cycled acquisition.
-- `chromatogram`: The file describes chromatograms or other measurements _over time_ like diagnostic traces.
+- `spectrum`: The file describes mass spectra, entities defined as occuring at a singular point in time, or as semantically close to this as possible in the face of framed or cycled acquisition, with a mass-related unit like m/z or neutral mass as the coordinate of measure.
+- `chromatogram`: The file describes chromatograms or other measurements _over time_ like diagnostic traces. QUESTION: should these be called "traces" instead?
+- `wavelength spectrum`: Similar to `spectrum`, except that the unit of measure is an electromagnetic wavelength measurement. There is substantially more heterogeneity in the types of analzers that measure wavelengths compared to mass analyzers. Additionally, time series may be constructed around wavelengths but stored as `chromatogram` entries.
 - `other`: The file is none of the other listed types. This may describe something not yet covered by the living specification.
 
 Any value outside of these is assumed to be treated as `other`.
@@ -1357,3 +1361,72 @@ When selecting a [Parquet encoding](https://parquet.apache.org/docs/file-format/
       - [`MS_1000744_selected_ion_mz_unit_MS_1000040`](http://purl.obolibrary.org/obo/MS_10004744)
       - [`MS_1000041_charge_state`](http://purl.obolibrary.org/obo/MS_1000041)
       - [`MS_1000042_intensity_unit_MS_1000131`](http://purl.obolibrary.org/obo/MS_1000131)
+
+
+# Wavelength Spectrum Signal Data File - `wavelength_spectra_data.parquet`
+
+**File index entry:**
+
+```json
+{
+  "name": "wavelength_spectra_data.parquet",
+  "entity_type": "wavelength spectrum",
+  "data_kind": "data arrays"
+}
+```
+
+The wavelength spectrum signal data is encoded using either [point layout](#point-layout) or [chunked layout](#chunked-layout). The `entity index` column _MUST_ be named `wavelength_spectrum_index`, and if a time column is written alongside it, it _SHOULD_ be named `wavelength_spectrum_time`. This should only be present if wavelength spectra are included in the mzPeak archive.
+
+When using [null marking](#null-marking), follow the [null semantics for signal data](#null-semantics-for-signal-data) with care for profile data.
+
+## Recommendations
+
+When selecting a [Parquet encoding](https://parquet.apache.org/docs/file-format/data-pages/encodings/) for columns, favor:
+
+- `wavelength_spectrum_index`: [delta encoding](https://parquet.apache.org/docs/file-format/data-pages/encodings/#delta-encoding-delta_binary_packed--5). This encoding is ideal for repetitive or slowly increasing integer series.
+- `wavelength_spectrum_time`: [byte stream split](https://parquet.apache.org/docs/file-format/data-pages/encodings/#byte-stream-split-byte_stream_split--9)
+- `wavelength_array`: [byte stream split](https://parquet.apache.org/docs/file-format/data-pages/encodings/#byte-stream-split-byte_stream_split--9), also called byte shuffling.
+
+
+# Wavelength Spectrum Metadata - `wavelength_spectra_metadata.parquet`
+
+**File index entry:**
+
+```json
+{
+  "name": "wavelength_spectra_metadata.parquet",
+  "entity_type": "wavelength spectrum",
+  "data_kind": "metadata"
+}
+```
+
+This metadata table uses the [packed parallel metadata table](#packed-parallel-metadata-tables) schema. This should only be present if wavelength spectra are included in the mzPeak archive. The parallel schemas are shown below. The general order of columns in unspecified, but `spectrum.index` and `scan.source_index` _MUST_ be the first column of their respective schemas. Wherever these lists say _MAY_, that value may either be stored as a column or as an entry in the [parameter list](#the-parameters-list) but a column tends to make more sense if it is usually present. It mirrors the [spectrum metadata](#spectrum-metadata-file---spectra_metadataparquet) layout, but does not include a `precursor` or `selected_ion` facet because EMR spectra have not been observed with isolation and fragmentation yet.
+
+This metadata is stored separately from the mass spectra, allowing the two different data modalities to have divergent schemas without inflating the number of empty columns, and for ease of searching, so the reader does not need to sort through mass spectra while looking for EMR spectra and vice-versa.
+
+- `spectrum` (group)
+  - `index` (uint64): The ascending 0-based index. This _MUST_ be incrementally increasing by 1 per entry and _SHOULD_ be written in time-sorted ascending order (QUESTION: Should there be a CV to denote this state?). This is the "primary key" for the `spectrum` schema, making it the root unit of addressability.
+  - `id` (string): The "nativeID" string identifier for the spectrum, formatted according to to a [native identifier format](http://purl.obolibrary.org/obo/MS_1000767). The specific nativeID format _SHOULD_ be specified in the [file level metadata](#file-level-metadata) under `.file_description.source_files[0].parameters`, as in mzML.
+  - `time` (float64): The starting time for data acquisition for this spectrum. This value _SHOULD_ be replicated from the parallel `scan` schema for simpler filtering, but when a spectrum has multiple scans, it _SHOULD_ refer to the minimum value if the run is defined in acquisition time order.
+  - `data_processing_ref` (string): The identifier for a `data_processing` that governs this spectrum if it deviates from the default method specified in [file level metadata](#file-level-metadata) under `.run.default_data_processing_id`, `null` otherwise.
+  - `parameters` (list): A list of controlled or uncontrolled parameters that describe this spectrum. See [the parameter list section](#the-parameters-list) for more details.
+  - `number_of_auxiliary_arrays` (integer): The number of auxiliary arrays that are stored with this row's `auxiliary_arrays` column. This is useful for quickly telling if a reader needs to go through the more expensive process of reading these and decoding them.
+  - `auxiliary_arrays` (list): A list of structures that describe a data array that did not fit within the constraints as described in the [arrays and columns](#arrays-and-columns) section. These may be large and care should be used in deciding to eagerly load them (or not). They are described in the [auxiliary data arrays](#auxiliary-data-arrays)
+  - [`MS_1000559_spectrum_type`](http://purl.obolibrary.org/obo/MS_1000559) (CURIE): A child of [MS:1000559](http://purl.obolibrary.org/obo/MS_1000559):
+    - __Examples:__
+      - [MS:1000804](http://purl.obolibrary.org/obo/MS_1000804) "electromagnetic radiation spectrum"
+  - MAY supply a *child* term of [MS:1003058](http://purl.obolibrary.org/obo/MS_1003058) (spectrum property) one or more times
+    - __Examples:__
+      - [`MS_1003060_number_of_data_points`](http://purl.obolibrary.org/obo/MS_1003060)
+      - [`MS_1003812_lambda_max_unit_UO_0000018`](http://purl.obolibrary.org/obo/MS_1003812)
+      - [`MS_1000285_total_ion_current_unit_MS_1000131`](http://purl.obolibrary.org/obo/MS_1000285)
+      - [`MS_1000619_lowest_observed_wavelength_unit_UO_0000018`](http://purl.obolibrary.org/obo/MS_1000619)
+  - MAY supply a *child* term of [MS:1000499](http://purl.obolibrary.org/obo/MS_1000499) (spectrum attribute) one or more times
+    - __Examples:__
+      - [`MS_1000796_spectrum_title`](http://purl.obolibrary.org/obo/MS_1000796)
+- `scan` (group): Scan or acquisition from original raw file used to create a spectrum.
+  - `source_index` (uint64): The `index` of the spectrum this scan belongs to. This is a foreign key.
+  - `instrument_configuration_ref` (integer): The identifier for `instrument_configuration` that governs this scan.
+  - `parameters` (list): A list of controlled or uncontrolled parameters that describe this scan. See [the parameter list section](#the-parameters-list) for more details.
+  - `scan_windows`: See equivalent substructure for [spectra](#spectrum-metadata-file---spectra_metadataparquet)
+  - MAY supply a *child* term of [MS:1000503](http://purl.obolibrary.org/obo/MS_1000503) (scan attribute) one or more times
