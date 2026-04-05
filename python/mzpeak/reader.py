@@ -6,7 +6,7 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Iterable, Sequence
-from typing import IO, Any, Iterator, Optional
+from typing import IO, Any, Iterator, Optional, TYPE_CHECKING
 from enum import Enum, auto
 
 import numpy as np
@@ -20,6 +20,18 @@ from pyarrow import parquet as pq
 from .mz_reader import _BatchIterator, MzPeakArrayDataReader, BufferFormat
 from .file_index import FileIndex, DataKind, EntityType
 from .util import OntologyMapper
+
+try:
+    has_upath = True
+    from upath import UPath
+except ImportError:
+    has_upath = False
+    from pathlib import Path as UPath
+
+if TYPE_CHECKING:
+    from upath import UPath
+
+
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -823,8 +835,9 @@ class MzPeakFile(_SpectrumCollectionMixin):
     An mzPeak reader for mass spectra, chromatograms, and other
     data types.
 
-    This may be initialized from a path to a packed zip archive
-    or an unpacked directory.
+    This may be initialized from a path to a packed zip archive or an unpacked directory.
+    Files may be stored locally. If :mod:`universal_pathlib` (``upath``) is installed,
+    any supported protocol path is also supported.
 
     This type is an :class:`Iterable` over spectra with support
     for point and slicing access.
@@ -875,8 +888,9 @@ class MzPeakFile(_SpectrumCollectionMixin):
         :attr:`chromatogram_metadata` is present.
     """
 
-    _archive: zipfile.ZipFile | Path
+    _archive: zipfile.ZipFile | Path | UPath
     _archive_storage: ArchiveStorage
+    _source: zipfile.ZipFile | Path | UPath
 
     spectrum_metadata: MzPeakSpectrumMetadataReader | None = None
     spectrum_data: MzPeakArrayDataReader | None = None
@@ -895,16 +909,20 @@ class MzPeakFile(_SpectrumCollectionMixin):
     @property
     def filename(self) -> str | None:
         """The name of the data file"""
-        if isinstance(self._archive, Path):
-            return self._archive.name
-        elif isinstance(self._archive, zipfile.ZipFile):
-            return self._archive.filename
+        if isinstance(self._source, (Path, UPath)):
+            return self._source.name
+        elif isinstance(self._source, zipfile.ZipFile):
+            return self._source.filename
 
     def _from_directory(self, path: Path):
         self._archive_storage = ArchiveStorage.Directory
         self._archive = path
         index_path = path / FileIndex.FILE_NAME
         visited = set()
+        if has_upath and isinstance(path, UPath):
+            is_upath = True
+        else:
+            is_upath = False
         if index_path.exists():
             self.file_index = FileIndex.from_json(json.load(index_path.open()))
             for e in self.file_index:
@@ -915,35 +933,37 @@ class MzPeakFile(_SpectrumCollectionMixin):
                 match e.entry_type():
                     case (EntityType.Spectrum, DataKind.DataArrays):
                         self.spectrum_data = MzPeakArrayDataReader(
-                            pa.OSFile(str(f)),
+                            pa.OSFile(str(f)) if not is_upath else pa.PythonFile(f.open('rb')),
                             namespace="spectrum",
                         )
                     case (EntityType.Spectrum, DataKind.Metadata):
                         self.spectrum_metadata = MzPeakSpectrumMetadataReader(
-                            pa.OSFile(str(f)),
+                            pa.OSFile(str(f)) if not is_upath else pa.PythonFile(f.open('rb')),
                         )
                     case (EntityType.Spectrum, DataKind.Peaks):
                         self.spectrum_peak_data = MzPeakArrayDataReader(
-                            pa.OSFile(str(f)),
+                            pa.OSFile(str(f)) if not is_upath else pa.PythonFile(f.open('rb')),
                             namespace="spectrum",
                         )
                     case (EntityType.Chromatogram, DataKind.DataArrays):
                         self.chromatogram_data = MzPeakArrayDataReader(
-                            pa.OSFile(str(f)),
+                            pa.OSFile(str(f)) if not is_upath else pa.PythonFile(f.open('rb')),
                             namespace="chromatogram",
                         )
                     case (EntityType.Chromatogram, DataKind.Metadata):
                         self.chromatogram_metadata = MzPeakChromatogramMetadataReader(
                             pa.OSFile(str(f))
+                            if not is_upath
+                            else pa.PythonFile(f.open("rb")),
                         )
                     case (EntityType.WavelengthSpectrum, DataKind.DataArrays):
                         self._wavelength_spectrum_data = MzPeakArrayDataReader(
-                            pa.PythonFile(f),
+                            pa.OSFile(str(f)) if not is_upath else pa.PythonFile(f.open('rb')),
                             namespace="wavelength_spectrum",
                         )
                     case (EntityType.WavelengthSpectrum, DataKind.Metadata):
                         self._wavelength_spectrum_data = MzPeakSpectrumMetadataReader(
-                            pa.PythonFile(f),
+                            pa.OSFile(str(f)) if not is_upath else pa.PythonFile(f.open('rb')),
                         )
                     case _:
                         pass
@@ -1004,12 +1024,19 @@ class MzPeakFile(_SpectrumCollectionMixin):
                 case _:
                     pass
 
-
     def _from_path(self, path: Path):
         if path.is_dir():
+            if path.is_file():
+                try:
+                    archive = zipfile.ZipFile(path.open('rb'))
+                    archive = zipfile.ZipFile(path.open('rb'))
+                    self._from_zip_archive(archive)
+                    return
+                except (ValueError, IOError):
+                    pass
             self._from_directory(path)
         else:
-            archive = zipfile.ZipFile(path)
+            archive = zipfile.ZipFile(path.open('rb'))
             self._from_zip_archive(archive)
 
     def open_stream(self, name: str) -> IO[bytes]:
@@ -1054,13 +1081,23 @@ class MzPeakFile(_SpectrumCollectionMixin):
                 self.spectrum_metadata._get_mz_delta_model()
             )
 
-    def __init__(self, path: str | Path | zipfile.ZipFile | IO[bytes]):
+    def __init__(self, path: str | Path | UPath | zipfile.ZipFile | IO[bytes]):
         self.file_index = FileIndex()
         if isinstance(path, zipfile.ZipFile):
+            self._source = path
             self._from_zip_archive(path)
-        elif isinstance(path, (str, Path)):
-            self._from_path(Path(path))
+        elif isinstance(path, (str, Path, UPath)):
+            if isinstance(path, str):
+                if has_upath and "://" in path:
+                    path = UPath(path)
+                else:
+                    if "://" in path:
+                        logger.warning("%r resembles a URI but `universal_pathlib` is not installed", path)
+                    path = Path(path)
+            self._source = path
+            self._from_path(path)
         else:
+            self._source = path
             self._from_zip_archive(zipfile.ZipFile(path))
 
         self._init_metadata()
@@ -1085,7 +1122,7 @@ class MzPeakFile(_SpectrumCollectionMixin):
         return chrom
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({self._archive.filename!r})"
+        return f"{self.__class__.__name__}({self.filename!r})"
 
     def extract_tic(self) -> tuple[np.ndarray, np.ndarray]:
         """
