@@ -38,7 +38,7 @@ use crate::{
     archive::{AsyncArchiveReader, AsyncArchiveSource, AsyncZipArchiveSource},
     filter::RegressionDeltaModel,
     reader::{
-        CHUNK_CACHE_BLOCK_SIZE, ReaderMetadata,
+        cache::CHUNK_CACHE_BLOCK_SIZE, ReaderMetadata,
         chunk::{AsyncSpectrumChunkReader, DataChunkCache},
         index::{PageQuery, QueryIndex, SpanDynNumeric},
         metadata::{

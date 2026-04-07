@@ -23,7 +23,6 @@ use mzdata::{
 };
 use mzpeaks::{
     CentroidPeak, DeconvolutedCentroidLike, DeconvolutedPeak, coordinate::SimpleInterval,
-    prelude::Span1D,
 };
 
 use parquet::{
@@ -43,9 +42,8 @@ use crate::{
         ArchiveReader, ArchiveSource, DirectorySource, DispatchArchiveSource, EntityType,
         SplittingZipArchiveSource, ZipArchiveBytesSource,
     },
-    filter::RegressionDeltaModel,
     reader::{
-        chunk::{ChunkDataReader, DataChunkCache},
+        chunk::ChunkDataReader,
         index::{
             BasicQueryIndex, ChromatogramQueryIndex, PageQuery, QueryIndex, SpanDynNumeric,
             SpectrumDataIndex, SpectrumMetadataIndex, SpectrumMetadataIndexLike,
@@ -66,6 +64,10 @@ use crate::{
 mod chunk;
 mod metadata;
 mod point;
+
+pub(crate) mod cache;
+#[allow(unused)]
+pub(crate) use cache::{DataCache, OneCache, CacheBuffer};
 pub(crate) mod utils;
 
 pub mod index;
@@ -75,7 +77,7 @@ pub mod visitor;
 mod object_store_async;
 
 pub use metadata::ReaderMetadata;
-use point::{DataPointCache, PointDataArrayReader};
+use point::PointDataArrayReader;
 
 pub use crate::reader::utils::{BatchIterator, MaskSet};
 
@@ -92,7 +94,7 @@ pub struct MzPeakReaderTypeOfSource<
     pub metadata: ReaderMetadata,
     pub query_indices: QueryIndex,
     spectrum_metadata_cache: Option<Vec<SpectrumDescription>>,
-    spectrum_row_group_cache: Option<DataCache>,
+    spectrum_row_group_cache: CacheBuffer,
     _t: PhantomData<(C, D)>,
 }
 
@@ -271,121 +273,6 @@ impl<
 {
 }
 
-// This value can be made larger for a modest (<10%) improvement in linear reading performance
-// but the trade-off in memory load makes this impractical, especially if spectra are very,
-// very dense.
-const CHUNK_CACHE_BLOCK_SIZE: u64 = 100;
-
-pub(crate) enum DataCache {
-    Point(DataPointCache),
-    Chunk(DataChunkCache),
-}
-
-impl DataCache {
-    pub fn slice_to_arrays_of(
-        &mut self,
-        row_group_index: usize,
-        index: u64,
-        delta_model: Option<&RegressionDeltaModel<f64>>,
-    ) -> io::Result<BinaryArrayMap> {
-        if self.contains(row_group_index, index) {
-            match self {
-                DataCache::Point(spectrum_data_point_cache) => {
-                    spectrum_data_point_cache.slice_to_arrays_of(index, delta_model)
-                }
-                DataCache::Chunk(spectrum_data_chunk_cache) => {
-                    spectrum_data_chunk_cache.slice_to_arrays_of(index, delta_model)
-                }
-            }
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("Entries not found for {row_group_index}:{index}"),
-            ))
-        }
-    }
-
-    pub fn contains(&self, row_group_index: usize, index: u64) -> bool {
-        match self {
-            DataCache::Point(spectrum_data_point_cache) => {
-                spectrum_data_point_cache.row_group_index == row_group_index
-            }
-            DataCache::Chunk(spectrum_data_chunk_cache) => {
-                spectrum_data_chunk_cache.index_range.contains(&index)
-            }
-        }
-    }
-
-    pub fn load_data_for<
-        T: ArchiveSource,
-        C: CentroidLike + BuildFromArrayMap + BuildArrayMapFrom,
-        D: DeconvolutedCentroidLike + BuildFromArrayMap + BuildArrayMapFrom,
-    >(
-        reader: &MzPeakReaderTypeOfSource<T, C, D>,
-        row_group_index: usize,
-        index: u64,
-    ) -> io::Result<Option<Self>> {
-        if let Some(_query_index) = reader.query_indices.spectrum.data_index.as_point() {
-            let rg = reader.load_cache_block(reader.handle.spectrum_data()?, row_group_index)?;
-            let cache = DataPointCache::new(
-                rg,
-                reader.metadata.spectra.array_indices.clone(),
-                row_group_index,
-                None,
-                None,
-                BufferContext::Spectrum,
-            );
-
-            Ok(Some(Self::Point(cache)))
-        } else if let Some(query_index) = reader.query_indices.spectrum.data_index.as_chunked() {
-            let builder = reader.handle.spectrum_data()?;
-            let builder = ChunkDataReader::new(builder, BufferContext::Spectrum);
-            let cache = builder.load_cache_block(
-                SimpleInterval::new(index, index + CHUNK_CACHE_BLOCK_SIZE),
-                reader.metadata.spectra.array_indices.clone(),
-                query_index,
-            )?;
-            Ok(Some(Self::Chunk(cache)))
-        } else {
-            Ok(None)
-        }
-    }
-
-    // TODO: A facet-specific cache builder. Add a facet wrapping layer that allows them to also take advantage of caching
-    #[allow(unused)]
-    pub fn load_data_for_facet<T: MzPeakSpectrumFacet>(
-        reader: &T,
-        row_group_index: usize,
-        index: u64,
-    ) -> io::Result<Option<Self>> {
-        if let Some(_query_index) = reader.metadata_index().data_index().as_point() {
-            let builder = PointDataReader(reader.data_reader()?, reader.buffer_context());
-            let rg = builder.load_cache_block(reader.data_reader()?, row_group_index)?;
-            let cache = DataPointCache::new(
-                rg,
-                reader.metadata().array_indices().clone(),
-                row_group_index,
-                None,
-                None,
-                reader.buffer_context(),
-            );
-
-            Ok(Some(Self::Point(cache)))
-        } else if let Some(query_index) = reader.metadata_index().data_index().as_chunked() {
-            let builder = reader.data_reader()?;
-            let builder = ChunkDataReader::new(builder, reader.buffer_context());
-            let cache = builder.load_cache_block(
-                SimpleInterval::new(index, index + CHUNK_CACHE_BLOCK_SIZE),
-                reader.metadata().array_indices().clone(),
-                query_index,
-            )?;
-            Ok(Some(Self::Chunk(cache)))
-        } else {
-            Ok(None)
-        }
-    }
-}
-
 impl<
     T: ArchiveSource,
     C: CentroidLike + BuildArrayMapFrom + BuildFromArrayMap,
@@ -415,7 +302,7 @@ impl<
             metadata,
             query_indices,
             spectrum_metadata_cache: None,
-            spectrum_row_group_cache: None,
+            spectrum_row_group_cache: Default::default(),
             _t: Default::default(),
         };
 
@@ -504,20 +391,17 @@ impl<
         row_group_index: usize,
         spectrum_index: u64,
     ) -> io::Result<&mut DataCache> {
-        let cache_hit = if let Some(cache) = self.spectrum_row_group_cache.as_ref() {
-            cache.contains(row_group_index, spectrum_index)
-        } else {
-            false
-        };
+        let cache_hit = self.spectrum_row_group_cache.contains(row_group_index, spectrum_index);
 
         if cache_hit {
             log::trace!("Spectrum data cache hit {row_group_index:?}:{spectrum_index}");
-            Ok(self.spectrum_row_group_cache.as_mut().unwrap())
+            Ok(self.spectrum_row_group_cache.get_mut(row_group_index, spectrum_index).unwrap())
         } else {
             log::trace!("Spectrum data cache miss {row_group_index:?}:{spectrum_index}");
             if let Some(cache) = DataCache::load_data_for(self, row_group_index, spectrum_index)? {
-                self.spectrum_row_group_cache = Some(cache);
-                Ok(self.spectrum_row_group_cache.as_mut().unwrap())
+                self.spectrum_row_group_cache.accept(cache);
+                // Ok(self.spectrum_row_group_cache.as_mut().unwrap())
+                Ok(self.spectrum_row_group_cache.get_mut(row_group_index, spectrum_index).unwrap())
             } else {
                 Err(io::Error::other(format!(
                     "Failed to load data cache for {row_group_index:?} {spectrum_index}"

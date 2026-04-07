@@ -959,6 +959,19 @@ impl<T: ArchiveSource + 'static> ArchiveReader<T> {
         Ok(Self { archive, members })
     }
 
+    pub fn make_common_decryption_properties(key: &str) ->HashMap<String, Arc<FileDecryptionProperties>> {
+        let mut dec_props = HashMap::default();
+        let dec = FileDecryptionProperties::builder(key.as_bytes().to_vec()).build().unwrap();
+        dec_props.insert(MzPeakArchiveType::SpectrumDataArrays.tag_file_suffix().to_string(), dec.clone());
+        dec_props.insert(MzPeakArchiveType::SpectrumMetadata.tag_file_suffix().to_string(), dec.clone());
+        dec_props.insert(MzPeakArchiveType::SpectrumPeakDataArrays.tag_file_suffix().to_string(), dec.clone());
+        dec_props.insert(MzPeakArchiveType::ChromatogramDataArrays.tag_file_suffix().to_string(), dec.clone());
+        dec_props.insert(MzPeakArchiveType::ChromatogramMetadata.tag_file_suffix().to_string(), dec.clone());
+        dec_props.insert(MzPeakArchiveType::WavelengthSpectrumMetadata.tag_file_suffix().to_string(), dec.clone());
+        dec_props.insert(MzPeakArchiveType::WavelengthSpectrumDataArrays.tag_file_suffix().to_string(), dec.clone());
+        dec_props
+    }
+
     pub fn file_index(&self) -> &FileIndex {
         self.archive.file_index()
     }
