@@ -67,7 +67,7 @@ mod point;
 
 pub(crate) mod cache;
 #[allow(unused)]
-pub(crate) use cache::{DataCache, OneCache, CacheBuffer};
+pub(crate) use cache::{DataCache, CacheBuffer, DataCacheFrontend};
 pub(crate) mod utils;
 
 pub mod index;
@@ -544,6 +544,7 @@ impl<
     /// - `time_range`: A time interval to select spectra from.
     /// - `mz_range`: An optional m/z range to filter within.
     /// - `ion_mobility_range`: An optional ion mobility range to filter within.
+    /// - `ms_level_range`: An optional MS level to filter within
     ///
     /// # Returns
     /// - An iterator over record batches covering the spectrum data: `BatchIterator<'_>`.
@@ -814,7 +815,7 @@ impl<
         Ok((iter, time_index))
     }
 
-    /// Read load descriptive metadata for the spectrum at `index`
+    /// Read load descriptive metadata for the mass spectrum at `index`
     pub fn get_spectrum_metadata(&mut self, index: u64) -> io::Result<Option<SpectrumDescription>> {
         if let Some(cache) = self.spectrum_metadata_cache.as_ref() {
             return Ok(cache.get(index as usize).cloned());
@@ -845,6 +846,7 @@ impl<
         Ok(descriptions.into_iter().find(|v| v.index as u64 == index))
     }
 
+    /// Read load descriptive metadata for the chromatogram trace at `index`
     pub fn get_chromatogram_metadata(
         &mut self,
         index: u64,
@@ -895,6 +897,7 @@ impl<
         }
     }
 
+    /// Read load descriptive metadata for the wavelength spectrum at `index`
     pub fn get_wavelength_spectrum_metadata(
         &mut self,
         index: u64,
@@ -1012,7 +1015,7 @@ impl<
         load_auxiliary_arrays_for_from(Some(rows), builder, BufferContext::Spectrum, index)
     }
 
-    /// Load median delta coefficient column if it is present.
+    /// Load m/z spacing model parameters column if it is present, as well as peak and point counts.
     pub(crate) fn load_delta_models(&mut self) -> io::Result<()> {
         let builder = self.handle.spectrum_metadata()?;
 
@@ -1151,6 +1154,7 @@ impl<
         ))
     }
 
+    /// Retrieve a complete wavelength spectrum by its unique ID
     pub fn get_wavelength_spectrum_by_id(&mut self, id: &str) -> Option<MultiLayerSpectrum<C, D>> {
         self.metadata
             .wavelength_spectra
@@ -1176,6 +1180,7 @@ impl<
         Some(Chromatogram::new(description, arrays))
     }
 
+    /// Retrieve a complete chromatogram by its unique ID
     pub fn get_chromatogram_by_id(&mut self, id: &str) -> Option<Chromatogram> {
         if let Some(description) = self
             .load_all_chromatgram_metadata_impl()
@@ -1197,7 +1202,8 @@ impl<
         }
     }
 
-    /// Read the total ion chromatogram from the surrogate metadata in the spectrum table
+    /// Read the total ion chromatogram from the surrogate metadata in the spectrum table. This
+    /// is distinct from any equivalent chromatogram explicitly stored separately.
     pub fn encoded_tic(&mut self) -> io::Result<Chromatogram> {
         let builder = self.handle.spectrum_metadata()?;
         let rows = self
@@ -1256,7 +1262,8 @@ impl<
         Ok(chrom)
     }
 
-    /// Read the base peak chromatogram from the surrogate metadata in the spectrum table
+    /// Read the base peak chromatogram from the surrogate metadata in the spectrum table. This
+    /// is distinct from any equivalent chromatogram explicitly stored separately.
     pub fn encoded_bpc(&mut self) -> io::Result<Chromatogram> {
         let builder = self.handle.spectrum_metadata()?;
         let rows = self
@@ -1377,32 +1384,47 @@ fn load_auxiliary_arrays_for_from<T: ChunkReader + 'static>(
     Ok(results)
 }
 
+/// An abstract frontend for a particular [`BufferContext`] or analogous [`EntityType`](crate::archive::EntityType)
 pub trait MzPeakSpectrumFacet {
+    /// The source where actual data loading is done
     type Source: ArchiveSource;
+    /// Where to read query indices and the like to efficiently look things up
     type MetadataIndex: SpectrumMetadataIndexLike;
+    /// The cache of pre-loaded information for building the metadata structures
     type Metadata: SpectrumMetadataLike;
+    /// The in-memory representation of a single observation with metadata and data arrays
     type Spectrum: From<RawSpectrum>;
 
+    /// The modality this facet is for
     fn buffer_context(&self) -> BufferContext;
+
+    /// Whether this facet is present in the `Source`
     fn has_facet(&self) -> bool;
 
+    /// Retrieve the query indices
     fn metadata_index(&self) -> &Self::MetadataIndex;
+
+    /// Retrieve the metadata loading cache
     fn metadata(&self) -> &Self::Metadata;
 
     fn detail_level(&self) -> DetailLevel;
 
+    /// The auxiliary arrays associated with this modality, if any
     fn auxiliary_array_counts(&self) -> &[u32] {
         self.metadata().auxiliary_array_counts()
     }
 
+    /// The number of discrete observations
     fn len(&self) -> usize {
         self.metadata().id_index().len()
     }
 
+    /// Get a raw [`ParquetRecordBatchReaderBuilder`] for the metadata table
     fn metadata_reader(
         &self,
     ) -> io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>;
 
+    /// Get a raw [`ParquetRecordBatchReaderBuilder`] for the signal data table
     fn data_reader(
         &self,
     ) -> io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>;
@@ -1418,6 +1440,7 @@ pub trait MzPeakSpectrumFacet {
         ))
     }
 
+    /// Load a single observation's metadata
     fn get_metadata(&mut self, index: u64) -> io::Result<Option<SpectrumDescription>> {
         let builder = self.metadata_reader();
         let builder = SpectrumMetadataReader(builder?);
@@ -1445,6 +1468,8 @@ pub trait MzPeakSpectrumFacet {
         Ok(descriptions.into_iter().find(|v| v.index as u64 == index))
     }
 
+    /// Load all metadata in one shot. This consumes more memory but is more efficient working in
+    /// batches than [`Self::get_metadata`]
     fn load_all_metadata(&mut self) -> io::Result<Vec<SpectrumDescription>> {
         log::trace!("Loading all {:?} metadata", self.buffer_context());
         let builder = self.metadata_reader()?;
@@ -1472,11 +1497,13 @@ pub trait MzPeakSpectrumFacet {
         Ok(descriptions)
     }
 
+    /// Load the auxiliary arrays for a single observation.
     fn load_auxiliary_arrays_for(&self, index: u64) -> io::Result<Vec<DataArray>> {
         let builder = self.metadata_reader()?;
         load_auxiliary_arrays_for_from(None, builder, self.buffer_context(), index)
     }
 
+    /// Load the signal data arrays  for a single observation.
     fn get_data(&mut self, index: u64) -> io::Result<Option<BinaryArrayMap>> {
         if !matches!(self.detail_level(), DetailLevel::Full) {
             return Ok(None);
@@ -1521,6 +1548,7 @@ pub trait MzPeakSpectrumFacet {
         }
     }
 
+    /// Create a simple iterator over this facet's modality, in index order
     fn iter(&mut self) -> io::Result<impl Iterator<Item = Self::Spectrum>> {
         let descr = self.load_all_metadata()?.to_vec();
         Ok(descr.into_iter().enumerate().map(|(i, desc)| {
@@ -1533,6 +1561,7 @@ pub trait MzPeakSpectrumFacet {
     }
 }
 
+/// A [`MzPeakSpectrumFacet`] for wavelength spectra
 pub struct MzPeakWavelengthSpectrumFacet<
     'a,
     T: ArchiveSource,
@@ -1589,6 +1618,8 @@ impl<
     }
 }
 
+
+/// A [`MzPeakSpectrumFacet`] for mass spectra
 pub struct MzPeakMassSpectrumFacet<
     'a,
     T: ArchiveSource,

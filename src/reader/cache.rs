@@ -17,6 +17,10 @@ use crate::reader::{MzPeakReaderTypeOfSource, MzPeakSpectrumFacet};
 use super::chunk::DataChunkCache;
 use super::point::DataPointCache;
 
+#[cfg(feature = "async")]
+use crate::{archive::AsyncArchiveSource, reader::{AsyncMzPeakReaderType, point::AsyncPointDataReader, chunk::AsyncSpectrumChunkReader}};
+
+
 // This value can be made larger for a modest (<10%) improvement in linear reading performance
 // but the trade-off in memory load makes this impractical, especially if spectra are very,
 // very dense.
@@ -79,7 +83,9 @@ impl DataCache {
         index: u64,
     ) -> io::Result<Option<Self>> {
         if let Some(_query_index) = reader.query_indices.spectrum.data_index.as_point() {
-            let rg = reader.load_cache_block(reader.handle.spectrum_data()?, row_group_index)?;
+            let builder = reader.handle.spectrum_data()?;
+            let builder = PointDataReader::new(builder, BufferContext::Spectrum);
+            let rg = builder.load_cache_block_into(row_group_index)?;
             let cache = DataPointCache::new(
                 rg,
                 reader.metadata.spectra.array_indices.clone(),
@@ -98,6 +104,47 @@ impl DataCache {
                 reader.metadata.spectra.array_indices.clone(),
                 query_index,
             )?;
+            Ok(Some(Self::Chunk(cache)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    #[allow(unused)]
+    #[cfg(feature = "async")]
+    pub async fn load_data_for_async<
+        T: AsyncArchiveSource + Sync + Send,
+        C: CentroidLike + BuildFromArrayMap + BuildArrayMapFrom + Sync + Send,
+        D: DeconvolutedCentroidLike + BuildFromArrayMap + BuildArrayMapFrom + Sync + Send,
+    >(
+        reader: &AsyncMzPeakReaderType<T, C, D>,
+        row_group_index: usize,
+        spectrum_index: u64,
+    ) -> io::Result<Option<Self>> {
+        if reader.query_indices.spectrum.data_index.is_point() {
+            let builder = reader.handle.spectra_data().await?;
+            let builder = AsyncPointDataReader(builder, BufferContext::Spectrum);
+            let rg = builder.load_cache_block_into(row_group_index).await?;
+            let cache = DataPointCache::new(
+                rg,
+                reader.metadata.spectra.array_indices.clone(),
+                row_group_index,
+                None,
+                None,
+                BufferContext::Spectrum,
+            );
+
+            Ok(Some(Self::Point(cache)))
+        } else if let Some(query_index) = reader.query_indices.spectrum.data_index.as_chunked() {
+            let builder = reader.handle.spectra_data().await?;
+            let builder = AsyncSpectrumChunkReader::new(builder);
+            let cache = builder
+                .load_cache_block(
+                    SimpleInterval::new(spectrum_index, spectrum_index + CHUNK_CACHE_BLOCK_SIZE),
+                    &reader.metadata,
+                    query_index,
+                )
+                .await?;
             Ok(Some(Self::Chunk(cache)))
         } else {
             Ok(None)
@@ -208,7 +255,7 @@ pub(crate) struct CacheBuffer {
 
 impl Default for CacheBuffer {
     fn default() -> Self {
-        Self { blocks: Default::default(), max_size: 2 }
+        Self { blocks: Default::default(), max_size: 3 }
     }
 }
 
@@ -293,5 +340,107 @@ impl CacheBuffer {
     pub(crate) fn set_max_size(&mut self, max_size: usize) {
         self.max_size = max_size;
         self.evict();
+    }
+}
+
+
+#[allow(unused)]
+pub trait DataCacheFrontend {
+    fn contains(&self, row_group_index: usize, index: u64) -> bool;
+    fn accept(&mut self, block: DataCache);
+    fn get_mut(&mut self, row_group_index: usize, index: u64) -> Option<&mut DataCache>;
+    fn load_data_for<
+        T: ArchiveSource,
+        C: CentroidLike + BuildFromArrayMap + BuildArrayMapFrom,
+        D: DeconvolutedCentroidLike + BuildFromArrayMap + BuildArrayMapFrom,
+    >(
+        &mut self,
+        reader: &MzPeakReaderTypeOfSource<T, C, D>,
+        row_group_index: usize,
+        index: u64,
+    ) -> io::Result<()>;
+
+    fn slice_to_arrays_of(
+        &mut self,
+        row_group_index: usize,
+        index: u64,
+        delta_model: Option<&RegressionDeltaModel<f64>>,
+    ) -> io::Result<BinaryArrayMap>;
+}
+
+
+impl DataCacheFrontend for OneCache {
+    fn contains(&self, row_group_index: usize, index: u64) -> bool {
+        self.contains(row_group_index, index)
+    }
+
+    fn accept(&mut self, block: DataCache) {
+        self.accept(block);
+    }
+
+    fn get_mut(&mut self, row_group_index: usize, index: u64) -> Option<&mut DataCache> {
+        if self.contains(row_group_index, index) {
+            self.as_mut()
+        } else {
+            None
+        }
+    }
+
+    fn load_data_for<
+        T: ArchiveSource,
+        C: CentroidLike + BuildFromArrayMap + BuildArrayMapFrom,
+        D: DeconvolutedCentroidLike + BuildFromArrayMap + BuildArrayMapFrom,
+    >(
+        &mut self,
+        reader: &MzPeakReaderTypeOfSource<T, C, D>,
+        row_group_index: usize,
+        index: u64,
+    ) -> io::Result<()> {
+        self.load_data_for(reader, row_group_index, index)
+    }
+
+    fn slice_to_arrays_of(
+        &mut self,
+        row_group_index: usize,
+        index: u64,
+        delta_model: Option<&RegressionDeltaModel<f64>>,
+    ) -> io::Result<BinaryArrayMap> {
+        self.slice_to_arrays_of(row_group_index, index, delta_model)
+    }
+}
+
+impl DataCacheFrontend for CacheBuffer {
+    fn contains(&self, row_group_index: usize, index: u64) -> bool {
+        self.contains(row_group_index, index)
+    }
+
+    fn accept(&mut self, block: DataCache) {
+        self.accept(block);
+    }
+
+    fn get_mut(&mut self, row_group_index: usize, index: u64) -> Option<&mut DataCache> {
+        self.get_mut(row_group_index, index)
+    }
+
+    fn load_data_for<
+        T: ArchiveSource,
+        C: CentroidLike + BuildFromArrayMap + BuildArrayMapFrom,
+        D: DeconvolutedCentroidLike + BuildFromArrayMap + BuildArrayMapFrom,
+    >(
+        &mut self,
+        reader: &MzPeakReaderTypeOfSource<T, C, D>,
+        row_group_index: usize,
+        index: u64,
+    ) -> io::Result<()> {
+        self.load_data_for(reader, row_group_index, index)
+    }
+
+    fn slice_to_arrays_of(
+        &mut self,
+        row_group_index: usize,
+        index: u64,
+        delta_model: Option<&RegressionDeltaModel<f64>>,
+    ) -> io::Result<BinaryArrayMap> {
+        self.slice_to_arrays_of(row_group_index, index, delta_model)
     }
 }

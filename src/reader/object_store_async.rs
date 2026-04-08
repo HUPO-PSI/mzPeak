@@ -239,9 +239,9 @@ impl AsyncSpectrumDataCache {
         spectrum_index: u64,
     ) -> io::Result<Option<Self>> {
         if reader.query_indices.spectrum.data_index.is_point() {
-            let rg = reader
-                .load_cache_block_async(reader.handle.spectra_data().await?, row_group_index)
-                .await?;
+            let builder = reader.handle.spectra_data().await?;
+            let builder = AsyncPointDataReader(builder, BufferContext::Spectrum);
+            let rg = builder.load_cache_block_into(row_group_index).await?;
             let cache = DataPointCache::new(
                 rg,
                 reader.metadata.spectra.array_indices.clone(),
@@ -276,7 +276,7 @@ pub struct AsyncMzPeakReaderType<
     D: DeconvolutedCentroidLike + BuildArrayMapFrom + BuildFromArrayMap + Send + Sync = DeconvolutedPeak,
 > {
     url: Option<url::Url>,
-    handle: AsyncArchiveReader<T>,
+    pub(crate) handle: AsyncArchiveReader<T>,
     index: usize,
     detail_level: DetailLevel,
     pub metadata: Arc<ReaderMetadata>,

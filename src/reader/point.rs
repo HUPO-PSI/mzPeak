@@ -180,7 +180,6 @@ pub(crate) trait PointDataArrayReader {
     }
 
     fn configure_cache_block_reader<T>(
-        &self,
         builder: ArrowReaderBuilder<T>,
         row_group: usize,
     ) -> ArrowReaderBuilder<T> {
@@ -204,30 +203,6 @@ pub(crate) trait PointDataArrayReader {
         batch
     }
 
-    #[cfg(feature = "async")]
-    fn load_cache_block_async<T: AsyncFileReader + Unpin + Send + 'static>(
-        &self,
-        builder: ParquetRecordBatchStreamBuilder<T>,
-        row_group: usize,
-    ) -> impl Future<Output = io::Result<RecordBatch>> {
-        let builder = self.configure_cache_block_reader(builder, row_group);
-        async move {
-            let mut stream = match builder.build() {
-                Ok(stream) => stream,
-                Err(e) => return Err(e.into()),
-            };
-            let batch = stream.next().await.transpose()?;
-            if let Some(batch) = batch {
-                Ok(batch)
-            } else {
-                Err(parquet::errors::ParquetError::General(format!(
-                    "Couldn't read row group {row_group}"
-                ))
-                .into())
-            }
-        }
-    }
-
     /// Read a specific Parquet row group into memory as a single [`RecordBatch`]
     ///
     /// This may potentially use a lot of memory if row groups are large.
@@ -236,7 +211,7 @@ pub(crate) trait PointDataArrayReader {
         builder: ParquetRecordBatchReaderBuilder<T>,
         row_group: usize,
     ) -> io::Result<RecordBatch> {
-        let builder = self.configure_cache_block_reader(builder, row_group);
+        let builder = Self::configure_cache_block_reader(builder, row_group);
 
         let batch = builder.build()?.flatten().next();
         if let Some(batch) = batch {
@@ -783,6 +758,20 @@ mod async_impl {
                 Ok(futures::stream::empty().boxed())
             }
         }
+
+        pub(crate) async fn load_cache_block_into(self, row_group: usize) -> io::Result<RecordBatch> {
+            let builder = Self::configure_cache_block_reader(self.0, row_group);
+            let mut builder = builder.build()?;
+            let batch = builder.next().await.transpose()?;
+            if let Some(batch) = batch {
+                Ok(batch)
+            } else {
+                Err(parquet::errors::ParquetError::General(format!(
+                    "Couldn't read row group {row_group}"
+                ))
+                .into())
+            }
+        }
     }
 }
 
@@ -1020,6 +1009,10 @@ mod sync_impl {
     impl<T: ChunkReader + 'static> PointDataArrayReader for PointDataReader<T> {}
 
     impl<T: ChunkReader + 'static> PointDataReader<T> {
+        pub(crate) fn new(arrow_reader_builder: ParquetRecordBatchReaderBuilder<T>, buffer_context: BufferContext) -> Self {
+            Self(arrow_reader_builder, buffer_context)
+        }
+
         /// Read the arrays associated with the points of `index`
         pub(crate) fn read_points_of<'a, I: SpectrumQueryIndex + 'a>(
             self,
@@ -1155,6 +1148,20 @@ mod sync_impl {
                 )))
             } else {
                 Ok(Box::new(std::iter::empty()))
+            }
+        }
+
+        pub(crate) fn load_cache_block_into(self, row_group: usize) -> io::Result<RecordBatch> {
+            let builder = Self::configure_cache_block_reader(self.0, row_group);
+
+            let batch = builder.build()?.flatten().next();
+            if let Some(batch) = batch {
+                Ok(batch)
+            } else {
+                Err(parquet::errors::ParquetError::General(format!(
+                    "Couldn't read row group {row_group}"
+                ))
+                .into())
             }
         }
     }
