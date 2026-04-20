@@ -2,8 +2,7 @@ use std::{collections::HashMap, io, sync::Arc};
 
 use arrow::{
     array::{
-        Array, ArrayRef, AsArray, Float32Array, Float64Array, Int32Array, Int64Array,
-        PrimitiveArray, RecordBatch, StructArray, UInt8Array, UInt64Array,
+        Array, ArrayRef, AsArray, Float32Array, Float64Array, GenericListArray, Int32Array, Int64Array, PrimitiveArray, RecordBatch, StructArray, UInt8Array, UInt64Array
     },
     datatypes::{
         DataType, Field, Fields, Float32Type, Float64Type, Int8Type, Int32Type, Int64Type, Schema,
@@ -47,7 +46,7 @@ use crate::{
 
 use super::utils::OneCache;
 
-pub(crate) struct DataChunkCache {
+pub struct ChunkDataCacheBlock {
     pub(crate) row_group: RecordBatch,
     pub(crate) index_range: SimpleInterval<u64>,
     pub(crate) array_indices: Arc<ArrayIndex>,
@@ -56,7 +55,7 @@ pub(crate) struct DataChunkCache {
     pub(crate) buffer_context: BufferContext,
 }
 
-impl DataChunkCache {
+impl ChunkDataCacheBlock {
     pub(crate) fn new(
         row_group: RecordBatch,
         index_range: SimpleInterval<u64>,
@@ -600,84 +599,98 @@ impl<'a> ChunkDecoder<'a> {
                 name.dtype.size_of() * n,
             );
             let decoder: Option<BufferTransformDecoder> = name.transform.try_into().ok();
-
-            macro_rules! extend_array {
-                ($buf:ident, $tp:ty) => {
-                    if $buf.null_count() > 0 {
-                        let buf: &$tp = $buf.as_primitive();
-                        for val in buf.iter() {
-                            store.push(val.unwrap_or_default()).unwrap();
-                        }
-                    } else {
-                        let buf: &$tp = $buf.as_primitive();
-                        store.extend(buf.values()).unwrap();
-                    }
-                };
-            }
+            let n_chunks_of = chunks.len();
+            let total_n_of: usize = chunks.iter().map(|c| c.len()).sum();
 
             for arr in chunks {
                 if let Some(arr) = arr.as_list_opt::<i64>() {
-                    if arr.is_empty() {
-                        continue;
-                    }
-
-                    // Decode the list if a decoding transform is required, lazily
-                    let mut arr_iter = arr
-                        .iter()
-                        .flatten()
-                        .map(|arr| {
-                            decoder
-                                .as_ref()
-                                .map(|decoder| decoder.decode(&name, &arr))
-                                .unwrap_or(arr)
-                        })
-                        .peekable();
-
-                    // Use the first array post-decode here to infer the "real" data type
-                    if let Some(first) = arr_iter.peek() {
-                        match first.data_type() {
-                            DataType::Float32 => {
-                                for arr in arr_iter {
-                                    extend_array!(arr, Float32Array);
-                                }
-                            }
-                            DataType::Float64 => {
-                                for arr in arr_iter {
-                                    extend_array!(arr, Float64Array);
-                                }
-                            }
-                            DataType::Int32 => {
-                                for arr in arr_iter {
-                                    extend_array!(arr, Int32Array);
-                                }
-                            }
-                            DataType::Int64 => {
-                                for arr in arr_iter {
-                                    extend_array!(arr, Int64Array);
-                                }
-                            }
-                            DataType::UInt8 => {
-                                for arr in arr_iter {
-                                    extend_array!(arr, UInt8Array);
-                                }
-                            }
-                            DataType::LargeUtf8 => {
-                                todo!("String arrays not supported yet")
-                            }
-                            DataType::Utf8 => {}
-                            dt => {
-                                panic!("Unsupported array type: {dt:?}");
-                            }
-                        }
-                    }
+                    Self::unpack_secondary_arrays(arr, &name, &mut store, &decoder);
+                }
+                else if let Some(arr) = arr.as_list_opt::<i32>() {
+                    Self::unpack_secondary_arrays(arr, &name, &mut store, &decoder);
+                } else {
+                    panic!("Unsupported data type {:?} for secondary chunk collection for name {name:?}", arr.data_type());
                 }
             }
+            log::trace!(
+                "Storage for {name:?} had {:?} items from {} bytes from {n_chunks_of} chunks of a total size of {total_n_of}",
+                store.data_len(),
+                store.raw_len()
+            );
             if store.raw_len() == 0 {
                 continue;
             }
             self.bin_map.add(store);
         }
         Ok(self.bin_map)
+    }
+
+    fn unpack_secondary_arrays<T: arrow::array::OffsetSizeTrait>(arr: &GenericListArray<T>, name: &BufferName, store: &mut DataArray, decoder: &Option<BufferTransformDecoder>) {
+        if arr.is_empty() {
+            return;
+        }
+        macro_rules! extend_array {
+            ($buf:ident, $tp:ty) => {
+                if $buf.null_count() > 0 {
+                    let buf: &$tp = $buf.as_primitive();
+                    for val in buf.iter() {
+                        store.push(val.unwrap_or_default()).unwrap();
+                    }
+                } else {
+                    let buf: &$tp = $buf.as_primitive();
+                    store.extend(buf.values()).unwrap();
+                }
+            };
+        }
+        // Decode the list if a decoding transform is required, lazily
+        let mut arr_iter = arr
+            .iter()
+            .flatten()
+            .map(|arr| {
+                decoder
+                    .as_ref()
+                    .map(|decoder| decoder.decode(&name, &arr))
+                    .unwrap_or(arr)
+            })
+            .peekable();
+
+        // Use the first array post-decode here to infer the "real" data type
+        if let Some(first) = arr_iter.peek() {
+            match first.data_type() {
+                DataType::Float32 => {
+                    for arr in arr_iter {
+                        extend_array!(arr, Float32Array);
+                    }
+                }
+                DataType::Float64 => {
+                    for arr in arr_iter {
+                        extend_array!(arr, Float64Array);
+                    }
+                }
+                DataType::Int32 => {
+                    for arr in arr_iter {
+                        extend_array!(arr, Int32Array);
+                    }
+                }
+                DataType::Int64 => {
+                    for arr in arr_iter {
+                        extend_array!(arr, Int64Array);
+                    }
+                }
+                DataType::UInt8 => {
+                    for arr in arr_iter {
+                        extend_array!(arr, UInt8Array);
+                    }
+                }
+                DataType::LargeUtf8 => {
+                    todo!("String arrays not supported yet")
+                }
+                DataType::Utf8 => {}
+                dt => {
+                    panic!("Unsupported array type: {dt:?}");
+                }
+            }
+        }
     }
 
     fn make_axis_sequence(&mut self) -> Vec<Vec<(Arc<BufferName>, Option<Arc<dyn Array>>)>> {
@@ -689,9 +702,17 @@ impl<'a> ChunkDecoder<'a> {
         };
         rows.resize(n_rows, Vec::new());
         for (name, view) in self.main_axis_buffers.drain(..) {
-            let view_rows = view.as_list::<i64>();
-            for (i, row) in view_rows.iter().enumerate() {
-                rows[i].push((name.clone(), row));
+            if let Some(view_rows) = view.as_list_opt::<i64>() {
+                for (i, row) in view_rows.iter().enumerate() {
+                    rows[i].push((name.clone(), row));
+                }
+            }
+            else if let Some(view_rows) = view.as_list_opt::<i32>() {
+                for (i, row) in view_rows.iter().enumerate() {
+                    rows[i].push((name.clone(), row));
+                }
+            } else {
+                panic!("Unsupported data type {:?} for main sequence array {name}", view.data_type());
             }
         }
         return rows;
@@ -1212,7 +1233,7 @@ impl<T: ChunkReader + 'static> ChunkDataReader<T> {
         index_range: SimpleInterval<u64>,
         array_indices: Arc<ArrayIndex>,
         query_indices: &impl BasicChunkQueryIndex,
-    ) -> io::Result<DataChunkCache> {
+    ) -> io::Result<ChunkDataCacheBlock> {
         let (rows, predicate) = self.prepare_cache_block_query(index_range, query_indices);
 
         let schema = self.builder.schema().clone();
@@ -1230,7 +1251,7 @@ impl<T: ChunkReader + 'static> ChunkDataReader<T> {
         let batch =
             arrow::compute::concat_batches(&schema, batches.iter()).map_err(io::Error::other)?;
 
-        Ok(DataChunkCache::new(
+        Ok(ChunkDataCacheBlock::new(
             batch,
             index_range,
             array_indices,
@@ -1403,7 +1424,7 @@ mod async_impl {
             index_range: SimpleInterval<u64>,
             metadata: &ReaderMetadata,
             query_indices: &impl BasicChunkQueryIndex,
-        ) -> io::Result<DataChunkCache> {
+        ) -> io::Result<ChunkDataCacheBlock> {
             let (rows, predicate) = self.prepare_cache_block_query(index_range, query_indices);
             let context = self.buffer_context();
             let schema = self.builder.schema().clone();
@@ -1422,7 +1443,7 @@ mod async_impl {
             let batch = arrow::compute::concat_batches(&schema, batches.iter())
                 .map_err(io::Error::other)?;
 
-            Ok(DataChunkCache::new(
+            Ok(ChunkDataCacheBlock::new(
                 batch,
                 index_range,
                 metadata.spectra.array_indices.clone(),
