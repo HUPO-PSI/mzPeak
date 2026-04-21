@@ -10,12 +10,12 @@ use crate::archive::ArchiveSource;
 use crate::filter::RegressionDeltaModel;
 use crate::reader::chunk::ChunkDataReader;
 use crate::reader::index::SpectrumMetadataIndexLike;
-use crate::reader::metadata::SpectrumMetadataLike;
+use crate::reader::metadata::ReaderFacetMetadataLike;
 use crate::reader::point::{PointDataArrayReader, PointDataReader};
 use crate::reader::{MzPeakReaderTypeOfSource, MzPeakSpectrumFacet};
 
-use super::chunk::DataChunkCache;
-use super::point::DataPointCache;
+use super::chunk::ChunkDataCacheBlock;
+use super::point::PointDataCacheBlock;
 
 #[cfg(feature = "async")]
 use crate::{archive::AsyncArchiveSource, reader::{AsyncMzPeakReaderType, point::AsyncPointDataReader, chunk::AsyncSpectrumChunkReader}};
@@ -26,19 +26,38 @@ use crate::{archive::AsyncArchiveSource, reader::{AsyncMzPeakReaderType, point::
 // very dense.
 pub(crate) const CHUNK_CACHE_BLOCK_SIZE: u64 = 100;
 
-pub(crate) enum DataCache {
-    Point(DataPointCache),
-    Chunk(DataChunkCache),
+/// A cache block for (part of) a row group. It represents a completely decoded block of data that can be used
+/// to fulfill multiple read requests without repeatedly going back to the disk and re-reading, decompressing
+/// and decoding the same data repeatedly for the `n+1`th item.
+pub enum DataCacheBlock {
+    /// A point layout cache block
+    Point(PointDataCacheBlock),
+    /// A chunked layout cache block
+    Chunk(ChunkDataCacheBlock),
 }
 
-impl DataCache {
+impl DataCacheBlock {
+
+    /// Get the last index that was queried in this block which might hint to which half to search for
+    /// another index.
     pub fn last_query_index(&self) -> Option<u64> {
         match self {
-            DataCache::Point(data_point_cache) => data_point_cache.last_query_index,
-            DataCache::Chunk(data_chunk_cache) => data_chunk_cache.last_query_index,
+            DataCacheBlock::Point(data_point_cache) => data_point_cache.last_query_index,
+            DataCacheBlock::Chunk(data_chunk_cache) => data_chunk_cache.last_query_index,
         }
     }
 
+    /// Get the range of entry indices that are covered by this cache block.
+    ///
+    /// If the cache block is empty, this may not exist.
+    pub fn index_range(&self) -> Option<SimpleInterval<u64>> {
+        match self {
+            DataCacheBlock::Point(data_point_cache) => data_point_cache.index_range(),
+            DataCacheBlock::Chunk(data_chunk_cache) => Some(data_chunk_cache.index_range),
+        }
+    }
+
+    /// Get the segment of this cache block corresponding to `index` and decode it into a [`BinaryArrayMap`]
     pub fn slice_to_arrays_of(
         &mut self,
         row_group_index: usize,
@@ -47,10 +66,10 @@ impl DataCache {
     ) -> io::Result<BinaryArrayMap> {
         if self.contains(row_group_index, index) {
             match self {
-                DataCache::Point(spectrum_data_point_cache) => {
+                DataCacheBlock::Point(spectrum_data_point_cache) => {
                     spectrum_data_point_cache.slice_to_arrays_of(index, delta_model)
                 }
-                DataCache::Chunk(spectrum_data_chunk_cache) => {
+                DataCacheBlock::Chunk(spectrum_data_chunk_cache) => {
                     spectrum_data_chunk_cache.slice_to_arrays_of(index, delta_model)
                 }
             }
@@ -62,17 +81,19 @@ impl DataCache {
         }
     }
 
+    /// Test if the cache block covers the requested row group and entry index
     pub fn contains(&self, row_group_index: usize, index: u64) -> bool {
         match self {
-            DataCache::Point(spectrum_data_point_cache) => {
+            DataCacheBlock::Point(spectrum_data_point_cache) => {
                 spectrum_data_point_cache.row_group_index == row_group_index
             }
-            DataCache::Chunk(spectrum_data_chunk_cache) => {
+            DataCacheBlock::Chunk(spectrum_data_chunk_cache) => {
                 spectrum_data_chunk_cache.index_range.contains(&index)
             }
         }
     }
 
+    /// Load a cache block for the mass spectrum data facet
     pub fn load_data_for<
         T: ArchiveSource,
         C: CentroidLike + BuildFromArrayMap + BuildArrayMapFrom,
@@ -86,7 +107,7 @@ impl DataCache {
             let builder = reader.handle.spectrum_data()?;
             let builder = PointDataReader::new(builder, BufferContext::Spectrum);
             let rg = builder.load_cache_block_into(row_group_index)?;
-            let cache = DataPointCache::new(
+            let cache = PointDataCacheBlock::new(
                 rg,
                 reader.metadata.spectra.array_indices.clone(),
                 row_group_index,
@@ -110,8 +131,8 @@ impl DataCache {
         }
     }
 
-    #[allow(unused)]
     #[cfg(feature = "async")]
+    /// Load a cache block for the mass spectrum data facet asynchronously
     pub async fn load_data_for_async<
         T: AsyncArchiveSource + Sync + Send,
         C: CentroidLike + BuildFromArrayMap + BuildArrayMapFrom + Sync + Send,
@@ -125,7 +146,7 @@ impl DataCache {
             let builder = reader.handle.spectra_data().await?;
             let builder = AsyncPointDataReader(builder, BufferContext::Spectrum);
             let rg = builder.load_cache_block_into(row_group_index).await?;
-            let cache = DataPointCache::new(
+            let cache = PointDataCacheBlock::new(
                 rg,
                 reader.metadata.spectra.array_indices.clone(),
                 row_group_index,
@@ -151,8 +172,7 @@ impl DataCache {
         }
     }
 
-    // TODO: A facet-specific cache builder. Add a facet wrapping layer that allows them to also take advantage of caching
-    #[allow(unused)]
+    /// Load a cache block for a [`MzPeakSpectrumFacet`]
     pub fn load_data_for_facet<T: MzPeakSpectrumFacet>(
         reader: &T,
         row_group_index: usize,
@@ -161,7 +181,7 @@ impl DataCache {
         if let Some(_query_index) = reader.metadata_index().data_index().as_point() {
             let builder = PointDataReader(reader.data_reader()?, reader.buffer_context());
             let rg = builder.load_cache_block(reader.data_reader()?, row_group_index)?;
-            let cache = DataPointCache::new(
+            let cache = PointDataCacheBlock::new(
                 rg,
                 reader.metadata().array_indices().clone(),
                 row_group_index,
@@ -186,16 +206,17 @@ impl DataCache {
     }
 }
 
+/// A basic cache frontend that holds at most one cache block and is backed by an [`Option<DataCacheBlock>`]
 #[derive(Default)]
-pub(crate) struct OneCache(Option<DataCache>);
+pub(crate) struct OneCache(Option<DataCacheBlock>);
 
 #[allow(unused)]
 impl OneCache {
-    pub(crate) fn new(data_cache: Option<DataCache>) -> Self {
+    pub(crate) fn new(data_cache: Option<DataCacheBlock>) -> Self {
         Self(data_cache)
     }
 
-    pub(crate) fn as_mut(&mut self) -> Option<&mut DataCache> {
+    pub(crate) fn as_mut(&mut self) -> Option<&mut DataCacheBlock> {
         self.0.as_mut()
     }
 
@@ -232,7 +253,7 @@ impl OneCache {
         row_group_index: usize,
         index: u64,
     ) -> io::Result<()> {
-        if let Some(block) = DataCache::load_data_for(reader, row_group_index, index)? {
+        if let Some(block) = DataCacheBlock::load_data_for(reader, row_group_index, index)? {
             self.0.replace(block);
             Ok(())
         } else {
@@ -240,43 +261,64 @@ impl OneCache {
         }
     }
 
-    pub(crate) fn accept(&mut self, block: DataCache) {
+    pub(crate) fn accept(&mut self, block: DataCacheBlock) {
         if let Some(evicted) = self.0.replace(block) {
             log::debug!("Evicting {:?}", evicted.last_query_index());
         }
     }
 }
 
-#[allow(unused)]
-pub(crate) struct CacheBuffer {
-    blocks: VecDeque<DataCache>,
+/// An LRU container for multiple [`DataCacheBlock`]
+pub struct CacheBuffer {
+    blocks: VecDeque<DataCacheBlock>,
     max_size: usize,
 }
 
+/// The default constructor uses a
 impl Default for CacheBuffer {
     fn default() -> Self {
-        Self { blocks: Default::default(), max_size: 3 }
+        Self::with_max_size(3)
     }
 }
 
 #[allow(unused)]
 impl CacheBuffer {
-    pub(crate) fn new(blocks: VecDeque<DataCache>, max_size: usize) -> Self {
+    /// Construct a [`CacheBuffer`] from parts
+    pub(crate) const fn new(blocks: VecDeque<DataCacheBlock>, max_size: usize) -> Self {
         Self { blocks, max_size }
     }
 
-    pub(crate) fn contains(&self, row_group_index: usize, index: u64) -> bool {
+    /// Construct a new, empty [`CacheBuffer`] with the requested capacity. It will not hold
+    /// more than `max_size` cache blocks unless overridden with [`CacheBuffer::set_max_size`].
+    pub fn with_max_size(max_size: usize) -> Self {
+        Self::new(VecDeque::with_capacity(max_size), max_size)
+    }
+
+    /// Test if the cache contains a [`DataCacheBlock`] covering a specific row group and entry index
+    pub fn contains(&self, row_group_index: usize, index: u64) -> bool {
         self.blocks
             .iter()
             .any(|b| b.contains(row_group_index, index))
     }
 
+    /// Apply the LRU ordering update on a cache block at the specified internal index.
+    ///
+    /// ## Note
+    /// After calling this method, `i` no longer points to this block, it will be located
+    /// at index `0`, the front of the queue.
     fn move_to_front(&mut self, i: usize) {
-        let block = self.blocks.remove(i).unwrap();
-        self.blocks.push_front(block);
+        // if this is the first block, no-op
+        if (i != 0) {
+            let block = self.blocks.remove(i).unwrap();
+            self.blocks.push_front(block);
+        }
     }
 
-    pub(crate) fn get_mut(&mut self, row_group_index: usize, index: u64) -> Option<&mut DataCache> {
+    /// Get a mutable reference to the [`DataCacheBlock`] coveriung the specified row group and entry index
+    /// if the cache has one.
+    ///
+    /// This will count as "using" the cache block, moving it to the front of the LRU queue
+    pub fn get_mut(&mut self, row_group_index: usize, index: u64) -> Option<&mut DataCacheBlock> {
         if let Some(i) = self.blocks.iter().position(|b| b.contains(row_group_index, index)) {
             self.move_to_front(i);
             self.blocks.front_mut()
@@ -285,7 +327,10 @@ impl CacheBuffer {
         }
     }
 
-    pub(crate) fn slice_to_arrays_of(
+    /// Get the segment of this cache block corresponding to `index` and decode it into a [`BinaryArrayMap`].
+    ///
+    /// A wrapper around [`DataCacheBlock::slice_to_arrays_of`]
+    pub fn slice_to_arrays_of(
         &mut self,
         row_group_index: usize,
         index: u64,
@@ -306,7 +351,8 @@ impl CacheBuffer {
         )))
     }
 
-    pub(crate) fn load_data_for<
+    /// Load a cache block for the mass spectrum data facet. A wrapper around [`DataCacheBlock::load_data_for`]
+    pub fn load_data_for<
         T: ArchiveSource,
         C: CentroidLike + BuildFromArrayMap + BuildArrayMapFrom,
         D: DeconvolutedCentroidLike + BuildFromArrayMap + BuildArrayMapFrom,
@@ -316,7 +362,7 @@ impl CacheBuffer {
         row_group_index: usize,
         index: u64,
     ) -> io::Result<()> {
-        if let Some(block) = DataCache::load_data_for(reader, row_group_index, index)? {
+        if let Some(block) = DataCacheBlock::load_data_for(reader, row_group_index, index)? {
             self.accept(block);
             Ok(())
         } else {
@@ -324,6 +370,7 @@ impl CacheBuffer {
         }
     }
 
+    /// Apply the LRU capacity restriction
     fn evict(&mut self) {
         while self.blocks.len() >= self.max_size {
             if let Some(evicted) = self.blocks.pop_back() {
@@ -332,12 +379,15 @@ impl CacheBuffer {
         }
     }
 
-    pub(crate) fn accept(&mut self, block: DataCache) {
+    /// Receive a new cache block and apply LRU capacity restriction before adding it
+    /// to the cache.
+    pub fn accept(&mut self, block: DataCacheBlock) {
         self.evict();
-        self.blocks.push_back(block);
+        self.blocks.push_front(block);
     }
 
-    pub(crate) fn set_max_size(&mut self, max_size: usize) {
+    /// Update the maximum size of the cache and apply LRU capacity restriction
+    pub fn set_max_size(&mut self, max_size: usize) {
         self.max_size = max_size;
         self.evict();
     }
@@ -347,8 +397,8 @@ impl CacheBuffer {
 #[allow(unused)]
 pub trait DataCacheFrontend {
     fn contains(&self, row_group_index: usize, index: u64) -> bool;
-    fn accept(&mut self, block: DataCache);
-    fn get_mut(&mut self, row_group_index: usize, index: u64) -> Option<&mut DataCache>;
+    fn accept(&mut self, block: DataCacheBlock);
+    fn get_mut(&mut self, row_group_index: usize, index: u64) -> Option<&mut DataCacheBlock>;
     fn load_data_for<
         T: ArchiveSource,
         C: CentroidLike + BuildFromArrayMap + BuildArrayMapFrom,
@@ -374,11 +424,11 @@ impl DataCacheFrontend for OneCache {
         self.contains(row_group_index, index)
     }
 
-    fn accept(&mut self, block: DataCache) {
+    fn accept(&mut self, block: DataCacheBlock) {
         self.accept(block);
     }
 
-    fn get_mut(&mut self, row_group_index: usize, index: u64) -> Option<&mut DataCache> {
+    fn get_mut(&mut self, row_group_index: usize, index: u64) -> Option<&mut DataCacheBlock> {
         if self.contains(row_group_index, index) {
             self.as_mut()
         } else {
@@ -414,11 +464,11 @@ impl DataCacheFrontend for CacheBuffer {
         self.contains(row_group_index, index)
     }
 
-    fn accept(&mut self, block: DataCache) {
+    fn accept(&mut self, block: DataCacheBlock) {
         self.accept(block);
     }
 
-    fn get_mut(&mut self, row_group_index: usize, index: u64) -> Option<&mut DataCache> {
+    fn get_mut(&mut self, row_group_index: usize, index: u64) -> Option<&mut DataCacheBlock> {
         self.get_mut(row_group_index, index)
     }
 

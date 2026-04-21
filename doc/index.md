@@ -9,6 +9,7 @@
     - [The schema](#the-schema)
     - [The metadata key-value pairs](#the-metadata-key-value-pairs)
     - [The columnar data](#the-columnar-data)
+      - [Row Groups and Pages](#row-groups-and-pages)
       - [Index levels](#index-levels)
   - [Container](#container)
     - [ZIP archives](#zip-archives)
@@ -47,7 +48,9 @@
   - [Why all these root nodes?](#why-all-these-root-nodes)
 - [Index File - `mzpeak_index.json`](#index-file---mzpeak_indexjson)
   - [Data Kind](#data-kind)
+    - [Adding a new `Data Kind`](#adding-a-new-data-kind)
   - [Entity Type](#entity-type)
+    - [Adding a new `Entity Type`](#adding-a-new-entity-type)
 - [Spectrum Signal Data File - `spectra_data.parquet`](#spectrum-signal-data-file---spectra_dataparquet)
   - [Recommendations](#recommendations)
 - [Spectrum Metadata File - `spectra_metadata.parquet`](#spectrum-metadata-file---spectra_metadataparquet)
@@ -79,6 +82,8 @@ Components of an mzPeak archive:
 - `chromatograms_metadata.parquet`: Chromatogram-level metadata and file-level metadata. Includes chromatogram descriptions, as well as precursors and selected ions using packed parallel tables.
 - `chromatograms_data.parquet`: Chromatogram signal data. May be in point layout or chunked layout which have different size and random access characteristics. Intensity measures with different units may be stored in parallel.
 
+and other Parquet files may be added to cover additional modalities as needed like the wavelength spectra.
+
 ### A brief note about code snippets found in this document.
 
 This document describes both a file format and a set of suggested algorithms for preparing data to be stored in that format. The original author (Joshua Klein), includes snippets of Python code to do these operations under the assumption that at this time most technical programmers will know Python, that Python is effectively executable pseudocode, save that the code snippets use three components, abstract base classes from the standard library for type annotations, [NumPy](https://numpy.org/) v2.1 for certain array operations which are assumed to be understandable, and [PyArrow](https://arrow.apache.org/docs/python/index.html) v20.0 for operations on Apache Arrow arrays which are conceptually equivalent for in-memory representations of the data stored in Parquet files.
@@ -104,6 +109,10 @@ At the end of a Parquet file is a footer containing user-defined metadata along 
 Parquet is a strongly typed binary columnar data format with layered blocked compression that permits a degree of random access.
 
 As some languages do not have a concept of 64-bit addresses, all implementations _MUST_ handle both `large_*` and not `large_*` variants of collection arrays, `list`, `string`, and `binary` types.
+
+#### Row Groups and Pages
+
+TODO: write more here regarding compression vs. random access granularity. Lots of knobs to twist
 
 #### Index levels
 
@@ -1141,6 +1150,14 @@ There are currently 5 controlled values for `data_kind`:
 
 Any value outside of these is assumed to be treated as `other`. Files labeled as `other`. Any files treated as `other` data kinds are implementation defined, as are `proprietary` files, but `other` files may be still be of interest to non-vendor readers.
 
+### Adding a new `Data Kind`
+
+This list is necessarily incomplete as new use cases are likely to emerge. For instance, it might be desirable to store extracted LC-(IM)-MS feature bounding boxes as a separate file.
+
+1. Pick a name that will fit within the index JSON file. Prefer lower case names. i.e. `feature map` for extracted features
+2. Pick a layout or layouts associated with this data kind. i.e. [packed parallel table](#packed-parallel-metadata-tables) for lists of bounding boxes with associated metadata.
+3. Describe the relationships with valid [Entity Types](#entity-type) (see below). Prefer simple relationships like one-to-one or one-to-many. If no existing entity type is reasonable, create a new entity type. i.e. an LC-MS feature might associate with `spectrum`, but there isn't a one-to-one or one-to-many relationship between spectra and LC-MS, so a new entity type might be needed.
+
 ## Entity Type
 
 The `entity_type` tells the reader what is _being_ described in this file, in concert with the `data_kind`. This makes helps the reader connect the right file to the right API.
@@ -1149,10 +1166,14 @@ There are currently 3 controlled values for `entity_type`
 
 - `spectrum`: The file describes mass spectra, entities defined as occuring at a singular point in time, or as semantically close to this as possible in the face of framed or cycled acquisition, with a mass-related unit like m/z or neutral mass as the coordinate of measure.
 - `chromatogram`: The file describes chromatograms or other measurements _over time_ like diagnostic traces. QUESTION: should these be called "traces" instead?
-- `wavelength spectrum`: Similar to `spectrum`, except that the unit of measure is an electromagnetic wavelength measurement. There is substantially more heterogeneity in the types of analzers that measure wavelengths compared to mass analyzers. Additionally, time series may be constructed around wavelengths but stored as `chromatogram` entries.
+- `wavelength spectrum`: Similar to `spectrum`, except that the unit of measure is an electromagnetic wavelength measurement. There is substantially more heterogeneity in the types of analyzers that measure wavelengths compared to mass analyzers. Additionally, time series may be constructed around wavelengths but stored as `chromatogram` entries.
 - `other`: The file is none of the other listed types. This may describe something not yet covered by the living specification.
 
 Any value outside of these is assumed to be treated as `other`.
+
+### Adding a new `Entity Type`
+
+TODO: Expand this
 
 # Spectrum Signal Data File - `spectra_data.parquet`
 
@@ -1375,7 +1396,7 @@ When selecting a [Parquet encoding](https://parquet.apache.org/docs/file-format/
 }
 ```
 
-The wavelength spectrum signal data is encoded using either [point layout](#point-layout) or [chunked layout](#chunked-layout). The `entity index` column _MUST_ be named `wavelength_spectrum_index`, and if a time column is written alongside it, it _SHOULD_ be named `wavelength_spectrum_time`. This should only be present if wavelength spectra are included in the mzPeak archive.
+The wavelength spectrum signal data is encoded using either [point layout](#point-layout) or [chunked layout](#chunked-layout). The `entity index` column _MUST_ be named `wavelength_spectrum_index`, and if a time column is written alongside it, it _SHOULD_ be named `wavelength_spectrum_time`. This _SHOULD_ only be present if wavelength spectra are included in the mzPeak archive.
 
 When using [null marking](#null-marking), follow the [null semantics for signal data](#null-semantics-for-signal-data) with care for profile data.
 

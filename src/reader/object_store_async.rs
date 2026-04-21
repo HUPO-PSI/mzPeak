@@ -36,17 +36,20 @@ use url::Url;
 use crate::{
     BufferContext,
     archive::{AsyncArchiveReader, AsyncArchiveSource, AsyncZipArchiveSource},
+    constants::{CHROMATOGRAM, SPECTRUM},
     filter::RegressionDeltaModel,
     reader::{
-        cache::CHUNK_CACHE_BLOCK_SIZE, ReaderMetadata,
-        chunk::{AsyncSpectrumChunkReader, DataChunkCache},
+        ReaderMetadata,
+        cache::CHUNK_CACHE_BLOCK_SIZE,
+        chunk::{AsyncSpectrumChunkReader, ChunkDataCacheBlock},
         index::{PageQuery, QueryIndex, SpanDynNumeric},
         metadata::{
             AuxiliaryArrayCountDecoder, BaseMetadataQuerySource, ChromatogramMetadataDecoder,
             ChromatogramMetadataQuerySource, ParquetIndexExtractor, PeakInfoDecoder,
-            SpectrumMetadataDecoder, SpectrumMetadataQuerySource, TimeIndexDecoder,
+            ReaderFacetMetadataLike, SpectrumMetadataDecoder, SpectrumMetadataQuerySource,
+            TimeIndexDecoder,
         },
-        point::{AsyncPointDataReader, DataPointCache, PointDataArrayReader},
+        point::{AsyncPointDataReader, PointDataArrayReader, PointDataCacheBlock},
         utils::MaskSet,
         visitor::AuxiliaryArrayVisitor,
     },
@@ -140,7 +143,7 @@ pub(crate) async fn load_indices_from<T: AsyncArchiveSource>(
     let spectrum_data_reader = handle.spectra_data().await?;
 
     let spectrum_id_index =
-        build_id_index::<T>(handle.spectrum_metadata().await?, "spectrum", "spectrum").await?;
+        build_id_index::<T>(handle.spectrum_metadata().await?, SPECTRUM, SPECTRUM).await?;
 
     let mut this = ParquetIndexExtractor::default();
     this.visit_spectrum_metadata_reader(spectrum_metadata_reader)?;
@@ -148,6 +151,12 @@ pub(crate) async fn load_indices_from<T: AsyncArchiveSource>(
 
     if let Ok(chromatogram_metadata_reader) = handle.chromatograms_metadata().await {
         this.visit_chromatogram_metadata_reader(chromatogram_metadata_reader)?;
+        this.chromatograms.id_index = build_id_index::<T>(
+            handle.chromatograms_metadata().await?,
+            CHROMATOGRAM,
+            CHROMATOGRAM,
+        )
+        .await?;
     }
     if let Ok(chromatogram_data_reader) = handle.chromatograms_data().await {
         this.visit_chromatogram_data_reader(chromatogram_data_reader)?;
@@ -172,7 +181,7 @@ pub(crate) async fn load_indices_from<T: AsyncArchiveSource>(
     this.spectra.id_index = spectrum_id_index;
 
     if let Some(Ok(dat)) = handle.wavelength_spectrum_metadata().await {
-        let id_index = build_id_index::<T>(dat, "wavelength_spectrum", "spectrum").await?;
+        let id_index = build_id_index::<T>(dat, "wavelength_spectrum", SPECTRUM).await?;
         let mut meta = this.wavelength_spectra.take().unwrap_or_default();
         meta.id_index = id_index;
         this.wavelength_spectra = Some(meta);
@@ -181,8 +190,7 @@ pub(crate) async fn load_indices_from<T: AsyncArchiveSource>(
     let bundle = ReaderMetadata::new(
         this.mz_metadata,
         this.spectra,
-        Arc::new(this.chromatogram_array_indices),
-        this.chromatogram_metadata_mapping,
+        this.chromatograms,
         this.wavelength_spectra,
     );
 
@@ -190,8 +198,8 @@ pub(crate) async fn load_indices_from<T: AsyncArchiveSource>(
 }
 
 pub(crate) enum AsyncSpectrumDataCache {
-    Point(DataPointCache),
-    Chunk(DataChunkCache),
+    Point(PointDataCacheBlock),
+    Chunk(ChunkDataCacheBlock),
 }
 
 impl AsyncSpectrumDataCache {
@@ -242,7 +250,7 @@ impl AsyncSpectrumDataCache {
             let builder = reader.handle.spectra_data().await?;
             let builder = AsyncPointDataReader(builder, BufferContext::Spectrum);
             let rg = builder.load_cache_block_into(row_group_index).await?;
-            let cache = DataPointCache::new(
+            let cache = PointDataCacheBlock::new(
                 rg,
                 reader.metadata.spectra.array_indices.clone(),
                 row_group_index,
@@ -413,7 +421,7 @@ impl<
 
         let meta = Arc::get_mut(&mut this.metadata).unwrap();
         meta.spectra.auxiliary_array_counts = spectrum_auxiliary_array_counts;
-        meta.chromatogram_auxiliary_array_counts = chromatogram_auxiliary_array_counts;
+        meta.chromatograms.auxiliary_array_counts = chromatogram_auxiliary_array_counts;
 
         Ok(this)
     }
@@ -1126,7 +1134,7 @@ impl<
                     .chromatogram_data_index
                     .as_point()
                     .unwrap(),
-                &self.metadata.chromatogram_array_indices,
+                &self.metadata.chromatograms.array_indices(),
                 None,
             )
             .await?;

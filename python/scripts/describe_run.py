@@ -21,6 +21,10 @@ def main(path):
         for key, value in handle.chromatogram_data.array_index.items():
             click.echo(f"Found chromatogram array: {value['array_name']} with key {key}")
 
+    click.echo(f"Has wavelength spectrum data? {bool(handle.wavelength_data)}")
+    if handle.wavelength_data:
+        for key, value in handle._wavelength_spectrum_data.array_index.items():
+            click.echo(f"Found wavelength spectrum array: {value['array_name']} with key {key}")
 
 
 if __name__ == '__main__':

@@ -15,8 +15,8 @@ struct App {
     #[arg(short, long, default_value = "623.0-625.0")]
     mz_range: CoordinateRange<f64>,
 
-    #[arg(short, long, default_value = "0.8-1.2")]
-    im_range: CoordinateRange<f64>,
+    #[arg(short, long)]
+    im_range: Option<CoordinateRange<f64>>,
 
     #[arg(short = 'l', long)]
     ms_level_range: Option<CoordinateRange<u8>>,
@@ -31,7 +31,12 @@ fn main() -> io::Result<()> {
     let time_range =
         SimpleInterval::new(args.time_range.start.unwrap(), args.time_range.end.unwrap());
     let mz_range = SimpleInterval::new(args.mz_range.start.unwrap(), args.mz_range.end.unwrap());
-    let im_range = SimpleInterval::new(args.im_range.start.unwrap(), args.im_range.end.unwrap());
+    let im_range = args.im_range.map(|im_range| {
+        SimpleInterval::new(
+            im_range.start.unwrap_or(0.0),
+            im_range.end.unwrap_or(f64::INFINITY),
+        )
+    });
 
     let ms_level_range = args
         .ms_level_range
@@ -59,9 +64,17 @@ fn main() -> io::Result<()> {
             let time = spec.start_time();
             let index = spec.index();
             if let Ok((ims, _)) = arrays.ion_mobility() {
-                for (mz, (int, im)) in mzs.iter().zip(ints.iter().zip(ims.iter())) {
-                    if mz_range.contains(mz) && im_range.contains(im) {
-                        println!("{index}\t{time}\t{mz}\t{int}\t{im}");
+                if let Some(im_range) = im_range.as_ref() {
+                    for (mz, (int, im)) in mzs.iter().zip(ints.iter().zip(ims.iter())) {
+                        if mz_range.contains(mz) && im_range.contains(im) {
+                            println!("{index}\t{time}\t{mz}\t{int}\t{im}");
+                        }
+                    }
+                } else {
+                    for (mz, (int, im)) in mzs.iter().zip(ints.iter().zip(ims.iter())) {
+                        if mz_range.contains(mz) {
+                            println!("{index}\t{time}\t{mz}\t{int}\t{im}");
+                        }
                     }
                 }
             } else {

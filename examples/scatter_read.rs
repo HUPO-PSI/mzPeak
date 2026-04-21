@@ -2,7 +2,7 @@ use std::{collections::HashMap, fs, io, path, time};
 
 use clap::Parser;
 use env_logger;
-use mzdata::{io::SpectrumSource, prelude::SpectrumLike};
+use mzdata::{io::SpectrumSource, prelude::*};
 use mzpeak_prototyping::{
     MzPeakReader,
     archive::{ArchiveReader, DispatchArchiveSource},
@@ -21,6 +21,10 @@ struct App {
     /// Use a memory mapped file to make reads more efficient
     #[arg(short, long)]
     pub use_memmap: bool,
+
+    /// Read in descending mass order
+    #[arg(short, long)]
+    pub by_mass: bool,
 }
 
 fn scattered_read_from_archive(
@@ -44,6 +48,36 @@ fn scattered_read_from_archive(
     Ok(())
 }
 
+fn load_by_neutral_mass(
+    archive: ArchiveReader<DispatchArchiveSource>,
+    filename: path::PathBuf,
+) -> io::Result<()> {
+    let mut reader = MzPeakReader::from_archive_reader(archive, filename)?;
+    let records = reader.load_all_spectrum_metadata()?.unwrap();
+    let mut ions: Vec<_> = records
+        .iter()
+        .filter_map(|r| {
+            if r.ms_level > 1 {
+                let ion = r.precursor.first().unwrap().ion().unwrap();
+                Some((r.index, ion.neutral_mass(), ion.charge))
+            } else {
+                None
+            }
+        })
+        .collect();
+    ions.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.2.cmp(&a.2)).then(b.0.cmp(&a.0)));
+    reader.set_spectrum_row_group_cache_size(10);
+    for (j, chunk) in ions.chunks(10000).enumerate() {
+        log::info!("Reading {j} {:?}", chunk[0]);
+        let indices = chunk.iter().map(|i| i.0);
+        let spectra = reader.get_spectra_batch(indices).unwrap();
+        for (i, s) in chunk.iter().zip(spectra) {
+            assert_eq!(s.index(), i.0);
+        }
+    }
+    Ok(())
+}
+
 fn main() -> io::Result<()> {
     env_logger::init();
     let args = App::parse();
@@ -62,13 +96,21 @@ fn main() -> io::Result<()> {
                 dec_props,
             )?
         };
-        scattered_read_from_archive(archive, args.filename)?;
+        if args.by_mass {
+            load_by_neutral_mass(archive, args.filename)?;
+        } else {
+            scattered_read_from_archive(archive, args.filename)?;
+        }
     } else {
         let archive = ArchiveReader::<DispatchArchiveSource>::from_path_with_decryption(
             args.filename.clone(),
             dec_props,
         )?;
-        scattered_read_from_archive(archive, args.filename)?;
+        if args.by_mass {
+            load_by_neutral_mass(archive, args.filename)?;
+        } else {
+            scattered_read_from_archive(archive, args.filename)?;
+        }
     }
 
     let elapsed = start.elapsed();

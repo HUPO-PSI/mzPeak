@@ -102,7 +102,12 @@ impl FileEntry {
             }
             (EntityType::Other(_), _) => super::MzPeakArchiveType::Other,
             (_, _) => {
-                log::warn!("Could not map {self:?} to an archive type");
+                if matches!(self.data_kind, DataKind::Proprietary) {
+                    log::debug!("Could not map {self:?} to an archive type");
+                }
+                else {
+                    log::warn!("Could not map {self:?} to an archive type");
+                }
                 super::MzPeakArchiveType::Other
             }
         }

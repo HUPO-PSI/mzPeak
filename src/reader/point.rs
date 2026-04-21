@@ -10,7 +10,7 @@ use arrow::{
         Array, ArrayRef, AsArray, Float32Array, Float64Array, Int32Array, Int64Array, RecordBatch,
         RecordBatchReader, StructArray, UInt8Array, UInt64Array,
     },
-    datatypes::{DataType, Float32Type, Float64Type, SchemaRef},
+    datatypes::{DataType, Float32Type, Float64Type, SchemaRef, UInt64Type},
     error::ArrowError,
 };
 use mzdata::{
@@ -228,7 +228,7 @@ pub(crate) trait PointDataArrayReader {
 /// An internal data structure for caching a [`RecordBatch`] corresponding to a complete
 /// row group in memory, and reading out slices of the batch. This helps avoid repeated re-parsing
 /// of the Parquet file.
-pub(crate) struct DataPointCache {
+pub struct PointDataCacheBlock {
     pub(crate) row_group: RecordBatch,
     pub(crate) row_group_index: usize,
     pub(crate) spectrum_array_indices: Arc<ArrayIndex>,
@@ -237,9 +237,9 @@ pub(crate) struct DataPointCache {
     pub(crate) buffer_context: BufferContext,
 }
 
-impl PointDataArrayReader for DataPointCache {}
+impl PointDataArrayReader for PointDataCacheBlock {}
 
-impl DataPointCache {
+impl PointDataCacheBlock {
     pub(crate) fn new(
         row_group: RecordBatch,
         spectrum_array_indices: Arc<ArrayIndex>,
@@ -256,6 +256,17 @@ impl DataPointCache {
             last_query_span,
             buffer_context,
         }
+    }
+
+    pub(crate) fn index_range(&self) -> Option<SimpleInterval<u64>> {
+        let points = self.row_group.column(0).as_struct();
+        let indices: &UInt64Array = points
+            .column_by_name(self.buffer_context.index_name())
+            .unwrap()
+            .as_primitive::<UInt64Type>();
+        let first = indices.iter().flatten().next()?;
+        let last = indices.iter().rev().flatten().next()?;
+        Some(SimpleInterval::new(first, last))
     }
 
     pub(crate) fn find_span_for_query(&self, index: u64) -> (Option<usize>, Option<usize>) {
@@ -277,9 +288,7 @@ impl DataPointCache {
         let indices: &UInt64Array = points
             .column_by_name(self.buffer_context.index_name())
             .unwrap()
-            .as_any()
-            .downcast_ref()
-            .unwrap();
+            .as_primitive::<UInt64Type>();
         let bounds = binary_search_arrow_index(indices, index, begin_hint, end_hint);
 
         let mut start = None;

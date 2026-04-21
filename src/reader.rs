@@ -10,7 +10,6 @@ use arrow::array::{AsArray, UInt64Array};
 
 use identity_hash::BuildIdentityHasher;
 use mzdata::{
-    RawSpectrum,
     io::{DetailLevel, OffsetIndex},
     meta::MSDataFileMetadata,
     params::Unit,
@@ -52,9 +51,9 @@ use crate::{
         metadata::{
             AuxiliaryArrayCountDecoder, ChromatogramMetadataDecoder,
             ChromatogramMetadataQuerySource, ChromatogramMetadataReader, PeakInfoDecoder,
-            SpectrumMetadata, SpectrumMetadataDecoder, SpectrumMetadataLike,
+            SpectrumMetadataFacet, SpectrumMetadataDecoder, ReaderFacetMetadataLike,
             SpectrumMetadataQuerySource, SpectrumMetadataReader, TimeEncodedSeriesDecoder,
-            TimeIndexDecoder, WavelengthSpectrumMetadata,
+            TimeIndexDecoder, WavelengthSpectrumMetadataFacet,
         },
         point::PointDataReader,
         visitor::AuxiliaryArrayVisitor,
@@ -67,7 +66,7 @@ mod point;
 
 pub(crate) mod cache;
 #[allow(unused)]
-pub(crate) use cache::{DataCache, CacheBuffer, DataCacheFrontend};
+pub(crate) use cache::{CacheBuffer, DataCacheBlock, DataCacheFrontend};
 pub(crate) mod utils;
 
 pub mod index;
@@ -288,10 +287,11 @@ impl<
         Ok(this)
     }
 
-    pub fn from_archive_reader(
-        mut handle: ArchiveReader<T>,
-        path: PathBuf,
-    ) -> io::Result<Self> {
+    pub fn set_spectrum_row_group_cache_size(&mut self, max_size: usize) {
+        self.spectrum_row_group_cache = CacheBuffer::with_max_size(max_size);
+    }
+
+    pub fn from_archive_reader(mut handle: ArchiveReader<T>, path: PathBuf) -> io::Result<Self> {
         let (metadata, query_indices) = Self::load_indices_from(&mut handle)?;
 
         let mut this = Self {
@@ -309,7 +309,7 @@ impl<
         this.load_delta_models()?;
         this.metadata.spectra.auxiliary_array_counts =
             this.load_spectrum_auxiliary_array_count()?;
-        this.metadata.chromatogram_auxiliary_array_counts =
+        this.metadata.chromatograms.auxiliary_array_counts =
             this.load_chromatogram_auxiliary_array_count()?;
 
         if let Ok(c) = this.load_wavelength_spectrum_auxiliary_array_count() {
@@ -390,18 +390,26 @@ impl<
         &mut self,
         row_group_index: usize,
         spectrum_index: u64,
-    ) -> io::Result<&mut DataCache> {
-        let cache_hit = self.spectrum_row_group_cache.contains(row_group_index, spectrum_index);
+    ) -> io::Result<&mut DataCacheBlock> {
+        let cache_hit = self
+            .spectrum_row_group_cache
+            .contains(row_group_index, spectrum_index);
 
         if cache_hit {
             log::trace!("Spectrum data cache hit {row_group_index:?}:{spectrum_index}");
-            Ok(self.spectrum_row_group_cache.get_mut(row_group_index, spectrum_index).unwrap())
+            Ok(self
+                .spectrum_row_group_cache
+                .get_mut(row_group_index, spectrum_index)
+                .unwrap())
         } else {
             log::trace!("Spectrum data cache miss {row_group_index:?}:{spectrum_index}");
-            if let Some(cache) = DataCache::load_data_for(self, row_group_index, spectrum_index)? {
+            if let Some(cache) = DataCacheBlock::load_data_for(self, row_group_index, spectrum_index)? {
                 self.spectrum_row_group_cache.accept(cache);
                 // Ok(self.spectrum_row_group_cache.as_mut().unwrap())
-                Ok(self.spectrum_row_group_cache.get_mut(row_group_index, spectrum_index).unwrap())
+                Ok(self
+                    .spectrum_row_group_cache
+                    .get_mut(row_group_index, spectrum_index)
+                    .unwrap())
             } else {
                 Err(io::Error::other(format!(
                     "Failed to load data cache for {row_group_index:?} {spectrum_index}"
@@ -735,6 +743,11 @@ impl<
         }))
     }
 
+    pub fn wavelength_facet(&self, cache_capacity: usize) -> Option<MzPeakWavelengthSpectrumFacet<'_, T, C, D>> {
+        let facet = MzPeakWavelengthSpectrumFacet(self, CacheBuffer::with_max_size(cache_capacity));
+        facet.has_facet().then(|| facet)
+    }
+
     /// Read peak data for a spectrum.
     ///
     /// # Returns
@@ -869,7 +882,7 @@ impl<
                 .read_chunks_for(
                     index,
                     query_index,
-                    &self.metadata.chromatogram_array_indices,
+                    &self.metadata.chromatograms.array_indices(),
                     None,
                     Some(PageQuery::new(row_group_indices, pages)),
                 )
@@ -883,7 +896,7 @@ impl<
                 .chromatogram_data_index
                 .as_point()
                 .unwrap(),
-            &self.metadata.chromatogram_array_indices,
+            &self.metadata.chromatograms.array_indices(),
             None,
         )?;
 
@@ -902,7 +915,7 @@ impl<
         &mut self,
         index: u64,
     ) -> io::Result<Option<SpectrumDescription>> {
-        let mut facet = MzPeakWavelengthSpectrumFacet(self);
+        let mut facet = MzPeakWavelengthSpectrumFacet(self, CacheBuffer::with_max_size(0));
         if facet.has_facet() {
             facet.get_metadata(index)
         } else {
@@ -914,7 +927,7 @@ impl<
         &mut self,
         index: u64,
     ) -> io::Result<Option<BinaryArrayMap>> {
-        let mut facet = MzPeakWavelengthSpectrumFacet(self);
+        let mut facet = MzPeakWavelengthSpectrumFacet(self, CacheBuffer::with_max_size(0));
         if facet.has_facet() {
             facet.get_data(index)
         } else {
@@ -1071,7 +1084,7 @@ impl<
     pub(crate) fn load_all_wavelength_spectrum_metadata_impl(
         &self,
     ) -> io::Result<Vec<SpectrumDescription>> {
-        let mut facet = MzPeakWavelengthSpectrumFacet(self);
+        let mut facet = MzPeakWavelengthSpectrumFacet(self, CacheBuffer::with_max_size(0));
         if facet.has_facet() {
             facet.load_all_metadata()
         } else {
@@ -1132,6 +1145,26 @@ impl<
             arrays,
             description,
         ))
+    }
+
+    /// Retrieve multiple spectra by index, internally scheduling the reads more efficiently.
+    ///
+    /// This method can be faster than a series of calls to [`Self::get_spectrum`] in a random order, but
+    /// it has some overhead involved.
+    pub fn get_spectra_batch(
+        &mut self,
+        indices: impl IntoIterator<Item = usize>,
+    ) -> Option<Vec<MultiLayerSpectrum<C, D>>> {
+        let mut ii: Vec<(usize, usize)> = indices.into_iter().enumerate().collect();
+        let n = ii.len();
+        ii.sort_by(|a, b| a.1.cmp(&b.1));
+        let mut spectra: Vec<_> = Vec::with_capacity(n);
+        let cap = spectra.spare_capacity_mut();
+        for (origin_idx, spec_idx) in ii {
+            cap[origin_idx].write(self.get_spectrum(spec_idx)?);
+        }
+        unsafe { spectra.set_len(n) };
+        Some(spectra)
     }
 
     /// Retrieve a complete wavelength spectrum by its index
@@ -1385,15 +1418,15 @@ fn load_auxiliary_arrays_for_from<T: ChunkReader + 'static>(
 }
 
 /// An abstract frontend for a particular [`BufferContext`] or analogous [`EntityType`](crate::archive::EntityType)
-pub trait MzPeakSpectrumFacet {
+pub trait MzPeakSpectrumFacet: Sized {
     /// The source where actual data loading is done
     type Source: ArchiveSource;
     /// Where to read query indices and the like to efficiently look things up
     type MetadataIndex: SpectrumMetadataIndexLike;
     /// The cache of pre-loaded information for building the metadata structures
-    type Metadata: SpectrumMetadataLike;
+    type Metadata: ReaderFacetMetadataLike;
     /// The in-memory representation of a single observation with metadata and data arrays
-    type Spectrum: From<RawSpectrum>;
+    type Item;
 
     /// The modality this facet is for
     fn buffer_context(&self) -> BufferContext;
@@ -1549,15 +1582,78 @@ pub trait MzPeakSpectrumFacet {
     }
 
     /// Create a simple iterator over this facet's modality, in index order
-    fn iter(&mut self) -> io::Result<impl Iterator<Item = Self::Spectrum>> {
+    fn iter(&mut self) -> io::Result<impl Iterator<Item = Self::Item>> {
         let descr = self.load_all_metadata()?.to_vec();
         Ok(descr.into_iter().enumerate().map(|(i, desc)| {
             if let Ok(arrays) = self.get_data(i as u64) {
-                RawSpectrum::new(desc, arrays.unwrap_or_default()).into()
+                self.make_spectrum(desc, arrays.unwrap_or_default())
             } else {
-                RawSpectrum::new(desc, Default::default()).into()
+                self.make_spectrum(desc, Default::default())
             }
         }))
+    }
+
+    /// Get the a complete entry at the specified `index`
+    fn get(&mut self, index: usize) -> Option<Self::Item> {
+        let meta = self.get_metadata(index as u64).ok()??;
+        let data = self.get_data(index as u64).ok()?.unwrap_or_default();
+        Some(self.make_spectrum(meta, data))
+    }
+
+    /// Construct an entry
+    fn make_spectrum(&self, description: SpectrumDescription, arrays: BinaryArrayMap) -> Self::Item;
+
+    /// Retrieve multiple spectra by index, internally scheduling the reads more efficiently.
+    ///
+    /// This method can be faster than a series of calls to [`Self::get`] in a random order, but
+    /// it has some overhead involved.
+    fn get_batch(
+        &mut self,
+        indices: impl IntoIterator<Item = usize>,
+    ) -> Option<Vec<Self::Item>> {
+        let mut ii: Vec<(usize, usize)> = indices.into_iter().enumerate().collect();
+        let n = ii.len();
+        ii.sort_by(|a, b| a.1.cmp(&b.1));
+        let mut spectra: Vec<_> = Vec::with_capacity(n);
+        let cap = spectra.spare_capacity_mut();
+        for (origin_idx, spec_idx) in ii {
+            cap[origin_idx].write(self.get(spec_idx)?);
+        }
+        unsafe { spectra.set_len(n) };
+        Some(spectra)
+    }
+
+    fn data_cache_mut(&mut self) -> &mut CacheBuffer;
+
+    fn read_data_cache(
+        &mut self,
+        row_group_index: usize,
+        spectrum_index: u64,
+    ) -> io::Result<&mut DataCacheBlock> {
+        let cache_hit = self
+            .data_cache_mut()
+            .contains(row_group_index, spectrum_index);
+
+        if cache_hit {
+            log::trace!("Spectrum data cache hit {row_group_index:?}:{spectrum_index}");
+            Ok(self
+                .data_cache_mut()
+                .get_mut(row_group_index, spectrum_index)
+                .unwrap())
+        } else {
+            log::trace!("Spectrum data cache miss {row_group_index:?}:{spectrum_index}");
+            if let Some(cache) = DataCacheBlock::load_data_for_facet(self, row_group_index, spectrum_index)? {
+                let data_cache = self.data_cache_mut();
+                data_cache.accept(cache);
+                Ok(data_cache
+                    .get_mut(row_group_index, spectrum_index)
+                    .unwrap())
+            } else {
+                Err(io::Error::other(format!(
+                    "Failed to load data cache for {row_group_index:?} {spectrum_index}"
+                )))
+            }
+        }
     }
 }
 
@@ -1567,7 +1663,7 @@ pub struct MzPeakWavelengthSpectrumFacet<
     T: ArchiveSource,
     C: CentroidLike + BuildArrayMapFrom + BuildFromArrayMap,
     D: DeconvolutedCentroidLike + BuildArrayMapFrom + BuildFromArrayMap,
->(&'a MzPeakReaderTypeOfSource<T, C, D>);
+>(&'a MzPeakReaderTypeOfSource<T, C, D>, CacheBuffer);
 
 impl<
     'a,
@@ -1578,8 +1674,8 @@ impl<
 {
     type Source = T;
     type MetadataIndex = WavelengthSpectrumIndex;
-    type Metadata = WavelengthSpectrumMetadata;
-    type Spectrum = MultiLayerSpectrum;
+    type Metadata = WavelengthSpectrumMetadataFacet;
+    type Item = MultiLayerSpectrum;
 
     fn buffer_context(&self) -> BufferContext {
         BufferContext::WavelengthSpectrum
@@ -1616,8 +1712,15 @@ impl<
     fn detail_level(&self) -> DetailLevel {
         *self.0.detail_level()
     }
-}
 
+    fn data_cache_mut(&mut self) -> &mut CacheBuffer {
+        &mut self.1
+    }
+
+    fn make_spectrum(&self, description: SpectrumDescription, arrays: BinaryArrayMap) -> Self::Item {
+        MultiLayerSpectrum::new(description, Some(arrays), None, None)
+    }
+}
 
 /// A [`MzPeakSpectrumFacet`] for mass spectra
 pub struct MzPeakMassSpectrumFacet<
@@ -1625,7 +1728,7 @@ pub struct MzPeakMassSpectrumFacet<
     T: ArchiveSource,
     C: CentroidLike + BuildArrayMapFrom + BuildFromArrayMap,
     D: DeconvolutedCentroidLike + BuildArrayMapFrom + BuildFromArrayMap,
->(&'a MzPeakReaderTypeOfSource<T, C, D>);
+>(&'a MzPeakReaderTypeOfSource<T, C, D>, CacheBuffer);
 
 impl<
     'a,
@@ -1636,8 +1739,8 @@ impl<
 {
     type Source = T;
     type MetadataIndex = SpectrumMetadataIndex;
-    type Metadata = SpectrumMetadata;
-    type Spectrum = MultiLayerSpectrum<C, D>;
+    type Metadata = SpectrumMetadataFacet;
+    type Item = MultiLayerSpectrum<C, D>;
 
     fn buffer_context(&self) -> BufferContext {
         BufferContext::Spectrum
@@ -1673,6 +1776,14 @@ impl<
 
     fn detail_level(&self) -> DetailLevel {
         *self.0.detail_level()
+    }
+
+    fn data_cache_mut(&mut self) -> &mut CacheBuffer {
+        &mut self.1
+    }
+
+    fn make_spectrum(&self, description: SpectrumDescription, arrays: BinaryArrayMap) -> Self::Item {
+        MultiLayerSpectrum::new(description, Some(arrays), None, None)
     }
 }
 

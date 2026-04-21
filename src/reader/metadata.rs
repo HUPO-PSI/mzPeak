@@ -56,20 +56,17 @@ use parquet::{
     schema::types::SchemaDescPtr,
 };
 
-pub trait SpectrumMetadataLike {
-    #[allow(unused)]
+pub trait ReaderFacetMetadataLike {
     fn array_indices(&self) -> &Arc<ArrayIndex>;
-    #[allow(unused)]
     fn id_index(&self) -> &OffsetIndex;
-    fn spectrum_metadata_map(&self) -> Option<&[MetadataColumn]>;
+    fn primary_metadata_map(&self) -> Option<&[MetadataColumn]>;
     fn scan_metadata_map(&self) -> Option<&[MetadataColumn]>;
     fn selected_ion_metadata_map(&self) -> Option<&[MetadataColumn]>;
-    #[allow(unused)]
     fn auxiliary_array_counts(&self) -> &[u32];
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct SpectrumMetadata {
+pub struct SpectrumMetadataFacet {
     pub(crate) array_indices: Arc<ArrayIndex>,
     pub(crate) id_index: OffsetIndex,
     pub(crate) mz_model_deltas: Vec<Option<Vec<f64>>>,
@@ -82,7 +79,7 @@ pub struct SpectrumMetadata {
     pub(crate) peak_counts: Vec<u64>,
 }
 
-impl SpectrumMetadataLike for SpectrumMetadata {
+impl ReaderFacetMetadataLike for SpectrumMetadataFacet {
     fn array_indices(&self) -> &Arc<ArrayIndex> {
         &self.array_indices
     }
@@ -91,7 +88,7 @@ impl SpectrumMetadataLike for SpectrumMetadata {
         &self.id_index
     }
 
-    fn spectrum_metadata_map(&self) -> Option<&[MetadataColumn]> {
+    fn primary_metadata_map(&self) -> Option<&[MetadataColumn]> {
         self.spectrum_metadata_map.as_deref()
     }
 
@@ -108,7 +105,7 @@ impl SpectrumMetadataLike for SpectrumMetadata {
     }
 }
 
-impl SpectrumMetadata {
+impl SpectrumMetadataFacet {
     pub fn new(
         spectrum_array_indices: Arc<ArrayIndex>,
         spectrum_id_index: OffsetIndex,
@@ -145,7 +142,7 @@ impl SpectrumMetadata {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct WavelengthSpectrumMetadata {
+pub struct WavelengthSpectrumMetadataFacet {
     pub(crate) array_indices: Arc<ArrayIndex>,
     pub(crate) id_index: OffsetIndex,
     pub(crate) auxiliary_array_counts: Vec<u32>,
@@ -153,7 +150,7 @@ pub struct WavelengthSpectrumMetadata {
     pub(crate) scan_metadata_map: Option<MetadataColumnCollection>,
 }
 
-impl SpectrumMetadataLike for WavelengthSpectrumMetadata {
+impl ReaderFacetMetadataLike for WavelengthSpectrumMetadataFacet {
     fn array_indices(&self) -> &Arc<ArrayIndex> {
         &self.array_indices
     }
@@ -162,7 +159,7 @@ impl SpectrumMetadataLike for WavelengthSpectrumMetadata {
         &self.id_index
     }
 
-    fn spectrum_metadata_map(&self) -> Option<&[MetadataColumn]> {
+    fn primary_metadata_map(&self) -> Option<&[MetadataColumn]> {
         self.spectrum_metadata_map.as_deref()
     }
 
@@ -179,14 +176,62 @@ impl SpectrumMetadataLike for WavelengthSpectrumMetadata {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ChromatogramMetadataFacet {
+    pub(crate) array_indices: Arc<ArrayIndex>,
+    pub(crate) id_index: OffsetIndex,
+    pub(crate) auxiliary_array_counts: Vec<u32>,
+    pub(crate) chromatogram_metadata_map: Option<MetadataColumnCollection>,
+}
+
+impl ChromatogramMetadataFacet {
+    pub fn new(
+        array_indices: Arc<ArrayIndex>,
+        id_index: OffsetIndex,
+        auxiliary_array_counts: Vec<u32>,
+        chromatogram_metadata_map: Option<MetadataColumnCollection>,
+    ) -> Self {
+        Self {
+            array_indices,
+            id_index,
+            auxiliary_array_counts,
+            chromatogram_metadata_map,
+        }
+    }
+}
+
+impl ReaderFacetMetadataLike for ChromatogramMetadataFacet {
+    fn array_indices(&self) -> &Arc<ArrayIndex> {
+        &self.array_indices
+    }
+
+    fn id_index(&self) -> &OffsetIndex {
+        &self.id_index
+    }
+
+    fn primary_metadata_map(&self) -> Option<&[MetadataColumn]> {
+        self.chromatogram_metadata_map.as_deref()
+    }
+
+    fn scan_metadata_map(&self) -> Option<&[MetadataColumn]> {
+        None
+    }
+
+    fn selected_ion_metadata_map(&self) -> Option<&[MetadataColumn]> {
+        None
+    }
+
+    fn auxiliary_array_counts(&self) -> &[u32] {
+        &self.auxiliary_array_counts
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ReaderMetadata {
     pub(crate) mz_metadata: mzdata::meta::FileMetadataConfig,
-    pub(crate) spectra: SpectrumMetadata,
-    pub(crate) chromatogram_array_indices: Arc<ArrayIndex>,
-    pub(crate) chromatogram_auxiliary_array_counts: Vec<u32>,
-    pub(crate) chromatogram_metadata_map: Option<MetadataColumnCollection>,
-    pub(crate) wavelength_spectra: Option<Box<WavelengthSpectrumMetadata>>,
+    pub(crate) spectra: SpectrumMetadataFacet,
+    pub(crate) chromatograms: ChromatogramMetadataFacet,
+    pub(crate) wavelength_spectra: Option<Box<WavelengthSpectrumMetadataFacet>>,
 }
 
 const EMPTY_U32_SLC: &'static [u32] = &[];
@@ -194,17 +239,14 @@ const EMPTY_U32_SLC: &'static [u32] = &[];
 impl ReaderMetadata {
     pub fn new(
         mz_metadata: mzdata::meta::FileMetadataConfig,
-        spectra: SpectrumMetadata,
-        chromatogram_array_indices: Arc<ArrayIndex>,
-        chromatogram_metadata_map: Option<MetadataColumnCollection>,
-        wavelength_spectra: Option<Box<WavelengthSpectrumMetadata>>,
+        spectra: SpectrumMetadataFacet,
+        chromatograms: ChromatogramMetadataFacet,
+        wavelength_spectra: Option<Box<WavelengthSpectrumMetadataFacet>>,
     ) -> Self {
         Self {
             mz_metadata,
             spectra,
-            chromatogram_array_indices,
-            chromatogram_metadata_map,
-            chromatogram_auxiliary_array_counts: Vec::new(),
+            chromatograms,
             wavelength_spectra,
         }
     }
@@ -223,7 +265,7 @@ impl ReaderMetadata {
     }
 
     pub fn chromatogram_auxiliary_array_counts(&self) -> &[u32] {
-        &self.chromatogram_auxiliary_array_counts
+        &self.chromatograms.auxiliary_array_counts
     }
 
     pub fn wavelength_auxiliary_array_counts(&self) -> &[u32] {
@@ -243,7 +285,7 @@ impl ReaderMetadata {
     }
 
     pub fn chromatogram_array_indices(&self) -> &ArrayIndex {
-        &self.chromatogram_array_indices
+        &self.chromatograms.array_indices()
     }
 
     pub fn wavelength_spectrum_array_index(&self) -> Option<&ArrayIndex> {
@@ -351,12 +393,9 @@ impl PeakMetadata {
 pub(crate) struct ParquetIndexExtractor {
     pub mz_metadata: meta::FileMetadataConfig,
 
-    pub spectra: SpectrumMetadata,
-
-    pub chromatogram_array_indices: ArrayIndex,
-    pub chromatogram_metadata_mapping: Option<MetadataColumnCollection>,
-
-    pub wavelength_spectra: Option<Box<WavelengthSpectrumMetadata>>,
+    pub spectra: SpectrumMetadataFacet,
+    pub chromatograms: ChromatogramMetadataFacet,
+    pub wavelength_spectra: Option<Box<WavelengthSpectrumMetadataFacet>>,
 
     pub query_index: QueryIndex,
 }
@@ -597,13 +636,15 @@ impl ParquetIndexExtractor {
             if let DataType::Struct(fields) = root.data_type() {
                 let defaults = crate::spectrum::ChromatogramEntry::metadata_columns();
                 let defined_columns = metadata_columns_to_definition_map(defaults);
-                self.chromatogram_metadata_mapping = Some(schema_to_metadata_cols(
+                self.chromatograms.chromatogram_metadata_map = Some(schema_to_metadata_cols(
                     fields,
                     CHROMATOGRAM.into(),
                     Some(&defined_columns),
                 ));
             }
         }
+
+
 
         for kv in chromatogram_metadata_reader
             .metadata()
@@ -637,7 +678,7 @@ impl ParquetIndexExtractor {
                 CHROMATOGRAM_ARRAY_INDEX => {
                     if let Some(val) = kv.value.as_ref() {
                         let array_index: SerializedArrayIndex = serde_json::from_str(&val)?;
-                        self.chromatogram_array_indices = array_index.into();
+                        self.chromatograms.array_indices = Arc::new(array_index.into());
                     } else {
                         log::warn!("chromatogram array index was empty");
                     }
@@ -647,7 +688,7 @@ impl ParquetIndexExtractor {
         }
         self.query_index.populate_chromatogram_data_indices(
             &chromatogram_data_reader,
-            &self.chromatogram_array_indices,
+            &self.chromatograms.array_indices(),
         );
         Ok(())
     }
@@ -681,6 +722,7 @@ pub(crate) fn load_indices_from<T: ArchiveSource>(
     if let Ok(chromatogram_metadata_reader) = handle.chromatograms_metadata() {
         log::trace!("Loading chromatogram metadata indices");
         this.visit_chromatogram_metadata_reader(chromatogram_metadata_reader)?;
+        this.chromatograms.id_index = build_id_index::<T>(handle.chromatograms_metadata()?, CHROMATOGRAM, CHROMATOGRAM)?;
     }
     if let Ok(chromatogram_data_reader) = handle.chromatograms_data() {
         log::trace!("Loading chromatogram indices");
@@ -717,8 +759,7 @@ pub(crate) fn load_indices_from<T: ArchiveSource>(
     let bundle = ReaderMetadata::new(
         this.mz_metadata,
         this.spectra,
-        Arc::new(this.chromatogram_array_indices),
-        this.chromatogram_metadata_mapping,
+        this.chromatograms,
         this.wavelength_spectra,
     );
 
@@ -934,7 +975,7 @@ const EMPTY_FIELDS: [MetadataColumn; 0] = [];
 /// An IO independent driver for parsing the spectrum metadata
 /// table(s) into [`SpectrumDescription`] instances
 #[derive(Debug)]
-pub struct SpectrumMetadataDecoder<'a, T: SpectrumMetadataLike + 'a> {
+pub struct SpectrumMetadataDecoder<'a, T: ReaderFacetMetadataLike + 'a> {
     pub descriptions: Vec<SpectrumDescription>,
     pub precursors: Vec<DoubleIndexed<Precursor>>,
     pub selected_ions: Vec<DoubleIndexed<SelectedIon>>,
@@ -955,7 +996,7 @@ fn segment_by_index_array(
         .collect())
 }
 
-impl<'a, T: SpectrumMetadataLike + 'a> SpectrumMetadataDecoder<'a, T> {
+impl<'a, T: ReaderFacetMetadataLike + 'a> SpectrumMetadataDecoder<'a, T> {
     pub fn new(metadata: &'a T) -> Self {
         Self {
             descriptions: Vec::new(),
@@ -1037,7 +1078,7 @@ impl<'a, T: SpectrumMetadataLike + 'a> SpectrumMetadataDecoder<'a, T> {
                     &mut local_descr,
                     &self
                         .metadata
-                        .spectrum_metadata_map()
+                        .primary_metadata_map()
                         .unwrap_or(&EMPTY_FIELDS),
                     0,
                 );
@@ -1118,7 +1159,7 @@ impl<'a, T: SpectrumMetadataLike + 'a> SpectrumMetadataDecoder<'a, T> {
                 &mut local_descr,
                 &self
                     .metadata
-                    .spectrum_metadata_map()
+                    .primary_metadata_map()
                     .unwrap_or(&EMPTY_FIELDS),
                 0,
             );
@@ -1423,8 +1464,7 @@ impl<'a> ChromatogramMetadataDecoder<'a> {
             &mut local_descr,
             &self
                 .metadata
-                .chromatogram_metadata_map
-                .as_deref()
+                .chromatograms.primary_metadata_map()
                 .unwrap_or(&EMPTY_FIELDS),
             0,
         );

@@ -1,14 +1,20 @@
-use mzdata::{io::mgf::MGFWriter, prelude::SpectrumLike};
+use clap::Parser;
+use mzdata::{io::mgf::MGFWriter, prelude::*};
 use mzpeak_prototyping::MzPeakReader;
 use std::{
-    env,
-    io::{self, prelude::*},
+    io,
     path::PathBuf,
 };
 
 fn fetch(path: &PathBuf, index: usize) -> io::Result<()> {
     let mut reader = MzPeakReader::new(path)?;
     let mut spec = reader.get_spectrum(index).unwrap();
+    if let Some(arrays) = spec.raw_arrays() {
+        log::debug!("Loaded arrays:");
+        for (k, v)  in arrays.iter() {
+            log::debug!("\t{k:?} => {:?}", v.data_len());
+        }
+    }
     spec.pick_peaks(1.0).unwrap();
 
     let writer = io::stdout().lock();
@@ -27,12 +33,18 @@ fn fetch(path: &PathBuf, index: usize) -> io::Result<()> {
     Ok(())
 }
 
+#[derive(clap::Parser)]
+struct App {
+    #[arg()]
+    path: PathBuf,
+
+    #[arg()]
+    index: usize,
+}
+
 fn main() -> io::Result<()> {
     env_logger::init();
-    let mut args = env::args().skip(1);
+    let args = App::parse();
 
-    let path = args.next().map(|p| PathBuf::from(p)).unwrap();
-    let index: usize = args.next().and_then(|v| v.parse().ok()).unwrap();
-
-    fetch(&path, index)
+    fetch(&args.path, args.index)
 }
