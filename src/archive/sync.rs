@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use bytes::{Buf, Bytes};
 use parquet::encryption::decrypt::FileDecryptionProperties;
+use parquet::encryption::encrypt::FileEncryptionProperties;
 use parquet::file::reader::{ChunkReader, Length};
 use zip::{
     CompressionMethod,
@@ -24,6 +25,36 @@ use crate::constants::{
     SPECTRUM_METADATA_NAME, SPECTRUM_PEAK_DATA_ARRAYS_NAME, WAVELENGTH_SPECTRUM_DATA_ARRAYS_NAME,
     WAVELENGTH_SPECTRUM_METADATA_NAME,
 };
+
+
+/// Create a single shared [`FileDecryptionProperties`] that is used for all [`MzPeakArchiveType`] members,
+/// even those not found in an archive.
+pub fn make_common_decryption_properties(key: &str) -> HashMap<String, Arc<FileDecryptionProperties>> {
+    let mut dec_props = HashMap::default();
+    let dec = FileDecryptionProperties::builder(key.as_bytes().to_vec()).build().unwrap();
+    dec_props.insert(MzPeakArchiveType::SpectrumDataArrays.tag_file_suffix().to_string(), dec.clone());
+    dec_props.insert(MzPeakArchiveType::SpectrumMetadata.tag_file_suffix().to_string(), dec.clone());
+    dec_props.insert(MzPeakArchiveType::SpectrumPeakDataArrays.tag_file_suffix().to_string(), dec.clone());
+    dec_props.insert(MzPeakArchiveType::ChromatogramDataArrays.tag_file_suffix().to_string(), dec.clone());
+    dec_props.insert(MzPeakArchiveType::ChromatogramMetadata.tag_file_suffix().to_string(), dec.clone());
+    dec_props.insert(MzPeakArchiveType::WavelengthSpectrumMetadata.tag_file_suffix().to_string(), dec.clone());
+    dec_props.insert(MzPeakArchiveType::WavelengthSpectrumDataArrays.tag_file_suffix().to_string(), dec.clone());
+    dec_props
+}
+
+/// Replicate a single shared [`FileEncryptionProperties`] that is used for all [`MzPeakArchiveType`] members,
+/// even those not found in an archive.
+pub fn make_common_encryption_properties(encryptor: Arc<FileEncryptionProperties>) -> HashMap<String, Arc<FileEncryptionProperties>> {
+    let mut enc_props = HashMap::default();
+    enc_props.insert(MzPeakArchiveType::SpectrumDataArrays.tag_file_suffix().to_string(), encryptor.clone());
+    enc_props.insert(MzPeakArchiveType::SpectrumMetadata.tag_file_suffix().to_string(), encryptor.clone());
+    enc_props.insert(MzPeakArchiveType::SpectrumPeakDataArrays.tag_file_suffix().to_string(), encryptor.clone());
+    enc_props.insert(MzPeakArchiveType::ChromatogramDataArrays.tag_file_suffix().to_string(), encryptor.clone());
+    enc_props.insert(MzPeakArchiveType::ChromatogramMetadata.tag_file_suffix().to_string(), encryptor.clone());
+    enc_props.insert(MzPeakArchiveType::WavelengthSpectrumMetadata.tag_file_suffix().to_string(), encryptor.clone());
+    enc_props.insert(MzPeakArchiveType::WavelengthSpectrumDataArrays.tag_file_suffix().to_string(), encryptor.clone());
+    enc_props
+}
 
 fn file_options() -> SimpleFileOptions {
     SimpleFileOptions::default()
@@ -539,13 +570,6 @@ impl ArchiveSource for ZipArchiveBytesSource {
     }
 }
 
-pub struct ZipArchiveSource {
-    archive_file: fs::File,
-    archive_offset: Config,
-    pub file_names: Vec<String>,
-    pub file_index: FileIndex,
-    decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>
-}
 
 fn zip_archive_to_config<R: io::Read + io::Seek>(
     archive_file: R,
@@ -612,25 +636,6 @@ fn zip_archive_open_entry_bytes(
     drop(header);
     let chunk = handle.slice(start_offset as usize..(start_offset + length) as usize);
     Ok(ArchiveBytesSlice::new(io::Cursor::new(chunk)))
-}
-
-impl ZipArchiveSource {
-    pub fn new(archive_file: fs::File) -> io::Result<Self> {
-        let (archive_file, file_names, archive_offset, file_index) =
-            zip_archive_to_config(archive_file)?;
-        Ok(Self {
-            archive_file,
-            archive_offset,
-            file_names,
-            file_index: file_index.unwrap_or_default(),
-            decryption_properties: Default::default(),
-        })
-    }
-
-    pub fn open_entry_by_index(&self, index: usize) -> io::Result<ArchiveFacetReader> {
-        let handle = self.archive_file.try_clone()?;
-        zip_archive_open_entry(handle, index, self.archive_offset)
-    }
 }
 
 pub struct SplittingZipArchiveSource {
@@ -755,34 +760,6 @@ pub trait ArchiveSource: Sized + 'static {
         Ok(ParquetRecordBatchReaderBuilder::new_with_metadata(
             handle, metadata,
         ))
-    }
-}
-
-impl ArchiveSource for ZipArchiveSource {
-    type File = ArchiveFacetReader;
-
-    fn from_path(path: PathBuf) -> io::Result<Self> {
-        Self::new(fs::File::open(path)?)
-    }
-
-    fn file_names(&self) -> &[String] {
-        &self.file_names
-    }
-
-    fn open_entry_by_index(&self, index: usize) -> io::Result<Self::File> {
-        self.open_entry_by_index(index)
-    }
-
-    fn file_index(&self) -> &FileIndex {
-        &self.file_index
-    }
-
-    fn set_decryption_properties(&mut self, decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>) {
-        self.decryption_properties = decryption_properties;
-    }
-
-    fn decryption_properties(&self) -> &HashMap<String, Arc<FileDecryptionProperties>> {
-        &self.decryption_properties
     }
 }
 
@@ -959,17 +936,9 @@ impl<T: ArchiveSource + 'static> ArchiveReader<T> {
         Ok(Self { archive, members })
     }
 
+    /// An associated function alias for [`make_common_decryption_properties`]
     pub fn make_common_decryption_properties(key: &str) ->HashMap<String, Arc<FileDecryptionProperties>> {
-        let mut dec_props = HashMap::default();
-        let dec = FileDecryptionProperties::builder(key.as_bytes().to_vec()).build().unwrap();
-        dec_props.insert(MzPeakArchiveType::SpectrumDataArrays.tag_file_suffix().to_string(), dec.clone());
-        dec_props.insert(MzPeakArchiveType::SpectrumMetadata.tag_file_suffix().to_string(), dec.clone());
-        dec_props.insert(MzPeakArchiveType::SpectrumPeakDataArrays.tag_file_suffix().to_string(), dec.clone());
-        dec_props.insert(MzPeakArchiveType::ChromatogramDataArrays.tag_file_suffix().to_string(), dec.clone());
-        dec_props.insert(MzPeakArchiveType::ChromatogramMetadata.tag_file_suffix().to_string(), dec.clone());
-        dec_props.insert(MzPeakArchiveType::WavelengthSpectrumMetadata.tag_file_suffix().to_string(), dec.clone());
-        dec_props.insert(MzPeakArchiveType::WavelengthSpectrumDataArrays.tag_file_suffix().to_string(), dec.clone());
-        dec_props
+        make_common_decryption_properties(key)
     }
 
     pub fn file_index(&self) -> &FileIndex {
@@ -1088,13 +1057,12 @@ impl<T: ArchiveSource + 'static> ArchiveReader<T> {
     }
 }
 
-pub type ZipArchiveReader = ArchiveReader<ZipArchiveSource>;
+// pub type ZipArchiveReader = ArchiveReader<ZipArchiveSource>;
 pub type DirectoryArchiveReader = ArchiveReader<DirectorySource>;
 pub type MemoryMapZipArchiveReader = ArchiveReader<ZipArchiveBytesSource>;
 pub type AnyArchiveReader = ArchiveReader<DispatchArchiveSource>;
 
 pub enum DispatchArchiveSource {
-    Zip(ZipArchiveSource),
     Directory(DirectorySource),
     SplittingZip(SplittingZipArchiveSource),
     MemoryMapZip(ZipArchiveBytesSource),
@@ -1103,7 +1071,7 @@ pub enum DispatchArchiveSource {
 macro_rules! dispatch {
     ($d:ident, $r:ident, $e:expr) => {
         match $d {
-            DispatchArchiveSource::Zip($r) => $e,
+            // DispatchArchiveSource::Zip($r) => $e,
             DispatchArchiveSource::Directory($r) => $e,
             DispatchArchiveSource::SplittingZip($r) => $e,
             DispatchArchiveSource::MemoryMapZip($r) => $e,
@@ -1152,23 +1120,6 @@ impl ArchiveSource for DispatchArchiveSource {
 }
 
 impl ArchiveReader<DispatchArchiveSource> {
-    /// Create a simple ZIP archive reader using a single shared file handle.
-    ///
-    /// # Note
-    /// Using a shared file handle means that the file cannot be in two places at once, so
-    /// this reader will not be able to split work across multiple threads. Instead, please
-    /// either initialize from a path using [`ArchiveReader::from_path`] OR use [`ArchiveReader::memmap`]
-    /// to create a memory-mapped reader that does not use cursor-based access.
-    pub fn new(file: fs::File) -> io::Result<Self> {
-        let archive = DispatchArchiveSource::Zip(ZipArchiveSource::new(file)?);
-        Self::from_archive(archive)
-    }
-
-    pub fn new_with_decryption(file: fs::File, decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>) -> io::Result<Self> {
-        let mut archive = DispatchArchiveSource::Zip(ZipArchiveSource::new(file)?);
-        archive.set_decryption_properties(decryption_properties);
-        Self::from_archive(archive)
-    }
 
     /// Create a memory-mapped reader for `handle`.
     ///
@@ -1190,13 +1141,6 @@ impl ArchiveReader<DispatchArchiveSource> {
         let buf = bytes::Bytes::from_owner(map);
         let mut archive = DispatchArchiveSource::MemoryMapZip(ZipArchiveBytesSource::new(buf)?);
         archive.set_decryption_properties(decryption_properties);
-        Self::from_archive(archive)
-    }
-}
-
-impl ZipArchiveReader {
-    pub fn new(file: fs::File) -> io::Result<Self> {
-        let archive = ZipArchiveSource::new(file)?;
         Self::from_archive(archive)
     }
 }
@@ -1230,7 +1174,7 @@ mod test {
 
     #[test]
     fn test_base() -> io::Result<()> {
-        let arch = ZipArchiveReader::new(fs::File::open("small.mzpeak")?)?;
+        let arch = ArchiveReader::from_archive(SplittingZipArchiveSource::new("small.mzpeak".into())?)?;
         let handle = arch.spectrum_metadata()?;
         let reader = handle.with_limit(5).build()?;
         for batch in reader {
@@ -1242,7 +1186,7 @@ mod test {
         let index = arch.file_index();
         assert_eq!(index.len(), 4);
         assert_eq!(arch.list_files().len(), 5);
-        assert!(!arch.can_split());
+        assert!(arch.can_split());
 
         let mut handle = arch.open_stream("mzpeak_index.json")?;
         handle.seek_relative(20)?;
