@@ -5,10 +5,10 @@ use mzdata::{
     meta::{DataProcessing, ProcessingMethod, Software},
     params::Param,
     prelude::*,
-    spectrum::{SignalContinuity, bindata::BinaryArrayMap3D},
+    spectrum::bindata::BinaryArrayMap3D,
 };
 use mzpeak_prototyping::{
-    archive::MzPeakArchiveType,
+    archive::make_common_encryption_properties,
     buffer_descriptors::BufferOverrideTable,
     chunk_series::ChunkingStrategy,
     writer::{AbstractMzPeakWriter, MzPeakWriterType},
@@ -390,37 +390,10 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
                 .with_aad_prefix_storage(true)
                 .build()
                 .unwrap();
-        log::debug!("key {:?}", encryption_props.footer_key());
-        log::debug!("key metadata {:?}", encryption_props.footer_key_metadata());
-        builder = builder
-            .encrypt_parquet(
-                MzPeakArchiveType::SpectrumDataArrays
-                    .tag_file_suffix()
-                    .into(),
-                encryption_props.clone(),
-            )
-            .encrypt_parquet(
-                MzPeakArchiveType::SpectrumPeakDataArrays
-                    .tag_file_suffix()
-                    .into(),
-                encryption_props.clone(),
-            )
-            .encrypt_parquet(
-                MzPeakArchiveType::SpectrumMetadata.tag_file_suffix().into(),
-                encryption_props.clone(),
-            )
-            .encrypt_parquet(
-                MzPeakArchiveType::ChromatogramDataArrays
-                    .tag_file_suffix()
-                    .into(),
-                encryption_props.clone(),
-            )
-            .encrypt_parquet(
-                MzPeakArchiveType::ChromatogramMetadata
-                    .tag_file_suffix()
-                    .into(),
-                encryption_props.clone(),
-            );
+            log::debug!("key {:?}", encryption_props.footer_key());
+            log::debug!("key metadata {:?}", encryption_props.footer_key_metadata());
+        let encryptor = make_common_encryption_properties(encryption_props.clone());
+        builder = builder.encryption_properties(encryptor);
     }
 
     // Apply all the data type conversion rules generated from the user input
@@ -506,10 +479,7 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
                 if i % 10 == 0 {
                     log::debug!("Writing batch {i} ({}%)", i as f64 / n as f64 * 100.0);
                 }
-                if let Some(mut spectrum) = spectrum {
-                    if spectrum.signal_continuity() != SignalContinuity::Profile {
-                        spectrum.peaks = None;
-                    }
+                if let Some(spectrum) = spectrum {
                     writer.write_spectrum(&spectrum)?;
                 } else if let Some(chromatogram) = chromatogram {
                     writer.write_chromatogram(&chromatogram)?;
