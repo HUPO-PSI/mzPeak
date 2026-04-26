@@ -27,7 +27,8 @@ has_uv:
     cargo r -r --example convert -- -y -z -u "./test/data/TOFsulfasMS4GHzDualMode+DADSpectra+UVSignal272-NoProfile.mzML" -o "./has_uv.mzpeak"
 
 test:
-    cargo t --tests -- --no-capture
+    # cargo t --tests -- --no-capture
+    cargo nextest run
 
 pytest:
     py.test -n auto -l -s -v python/test/ \
