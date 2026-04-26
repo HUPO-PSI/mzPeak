@@ -37,7 +37,7 @@ fn main() -> io::Result<()> {
         args.filename.clone(),
         dec_props
     )?;
-    let reader = MzPeakReader::from_archive_reader(archive, args.filename)?;
+    let reader = MzPeakReader::from_archive_reader(archive, Some(args.filename))?;
     log::info!("Opened in {:0.2} seconds", start.elapsed().as_secs_f64());
     let mut i = 0;
     let mut points = 0;

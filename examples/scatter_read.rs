@@ -25,13 +25,16 @@ struct App {
     /// Read in descending mass order
     #[arg(short, long)]
     pub by_mass: bool,
+
+    #[arg(short, long, default_value_t=10000)]
+    pub chunk_size: usize,
 }
 
 fn scattered_read_from_archive(
     archive: ArchiveReader<DispatchArchiveSource>,
     filename: path::PathBuf,
 ) -> io::Result<()> {
-    let mut reader = MzPeakReader::from_archive_reader(archive, filename)?;
+    let mut reader = MzPeakReader::from_archive_reader(archive, Some(filename))?;
     reader.load_all_spectrum_metadata()?;
     let n = reader.len();
 
@@ -51,8 +54,9 @@ fn scattered_read_from_archive(
 fn load_by_neutral_mass(
     archive: ArchiveReader<DispatchArchiveSource>,
     filename: path::PathBuf,
+    chunk_size: usize,
 ) -> io::Result<()> {
-    let mut reader = MzPeakReader::from_archive_reader(archive, filename)?;
+    let mut reader = MzPeakReader::from_archive_reader(archive, Some(filename))?;
     let records = reader.load_all_spectrum_metadata()?.unwrap();
     let mut ions: Vec<_> = records
         .iter()
@@ -67,13 +71,16 @@ fn load_by_neutral_mass(
         .collect();
     ions.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.2.cmp(&a.2)).then(b.0.cmp(&a.0)));
     reader.set_spectrum_row_group_cache_size(10);
-    for (j, chunk) in ions.chunks(10000).enumerate() {
-        log::info!("Reading {j} {:?}", chunk[0]);
+    let n = ions.len();
+    let mut k = 0;
+    for (j, chunk) in ions.chunks(chunk_size).enumerate() {
+        log::info!("Reading {j} {:?} {k}/{n} ({:0.2}%)", chunk[0], k as f64 / n as f64 * 100.0);
         let indices = chunk.iter().map(|i| i.0);
         let spectra = reader.get_spectra_batch(indices).unwrap();
         for (i, s) in chunk.iter().zip(spectra) {
             assert_eq!(s.index(), i.0);
         }
+        k += chunk.len();
     }
     Ok(())
 }
@@ -97,7 +104,7 @@ fn main() -> io::Result<()> {
             )?
         };
         if args.by_mass {
-            load_by_neutral_mass(archive, args.filename)?;
+            load_by_neutral_mass(archive, args.filename, args.chunk_size)?;
         } else {
             scattered_read_from_archive(archive, args.filename)?;
         }
@@ -107,7 +114,7 @@ fn main() -> io::Result<()> {
             dec_props,
         )?;
         if args.by_mass {
-            load_by_neutral_mass(archive, args.filename)?;
+            load_by_neutral_mass(archive, args.filename, args.chunk_size)?;
         } else {
             scattered_read_from_archive(archive, args.filename)?;
         }

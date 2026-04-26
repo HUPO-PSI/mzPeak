@@ -86,7 +86,7 @@ pub struct MzPeakReaderTypeOfSource<
     C: CentroidLike + BuildArrayMapFrom + BuildFromArrayMap = CentroidPeak,
     D: DeconvolutedCentroidLike + BuildArrayMapFrom + BuildFromArrayMap = DeconvolutedPeak,
 > {
-    path: PathBuf,
+    path: Option<PathBuf>,
     handle: ArchiveReader<T>,
     index: usize,
     detail_level: DetailLevel,
@@ -282,16 +282,22 @@ impl<
     pub fn new<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let path: PathBuf = path.as_ref().into();
         let handle = ArchiveReader::<T>::from_path(path.clone())?;
-        let this = Self::from_archive_reader(handle, path)?;
+        let this = Self::from_archive_reader(handle, Some(path))?;
 
         Ok(this)
     }
 
+    /// Set the size of the spectrum data cache.
+    ///
+    /// The larger this cache is, the more *regions* of the spectrum index space that will be fast to re-visit.
     pub fn set_spectrum_row_group_cache_size(&mut self, max_size: usize) {
         self.spectrum_row_group_cache = CacheBuffer::with_max_size(max_size);
     }
 
-    pub fn from_archive_reader(mut handle: ArchiveReader<T>, path: PathBuf) -> io::Result<Self> {
+    /// Create a new mzPeak reader from an [`ArchiveReader`].
+    ///
+    /// A [`PathBuf`] may optionally provide a location on the file system that would otherwise be unavailable.
+    pub fn from_archive_reader(mut handle: ArchiveReader<T>, path: Option<PathBuf>) -> io::Result<Self> {
         let (metadata, query_indices) = Self::load_indices_from(&mut handle)?;
 
         let mut this = Self {
@@ -335,6 +341,7 @@ impl<
         self.handle.open_stream(name)
     }
 
+    /// Open a [`ParquetRecordBatchReaderBuilder`] by it's name
     pub fn open_parquet(
         &self,
         name: &str,
@@ -374,8 +381,8 @@ impl<
     }
 
     /// The location of the archive.
-    pub fn path(&self) -> &Path {
-        &self.path
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
     }
 
     /// Load the various metadata, indices and reference data
@@ -706,15 +713,17 @@ impl<
         Ok((reader, time_index))
     }
 
-    /// Get the number of spectra in the archive
+    /// Get the number of mass spectra in the archive
     pub fn len(&self) -> usize {
         self.metadata.spectra.id_index.len()
     }
 
+    /// Get the number of chromatograms in the archive
     pub fn len_chromatograms(&self) -> usize {
         self.count_chromatograms()
     }
 
+    /// Get the number of wavelength spectra in the archive
     pub fn len_wavelength_spectra(&self) -> usize {
         self.metadata
             .wavelength_spectra
@@ -723,10 +732,12 @@ impl<
             .unwrap_or_default()
     }
 
+    /// Test if there are no mass spectra in the archive
     pub fn is_empty(&self) -> bool {
         self.metadata.spectra.id_index.is_empty()
     }
 
+    /// Get an iterator over wavelength spectra
     pub fn iter_wavelength_spectra(
         &mut self,
     ) -> io::Result<impl Iterator<Item = MultiLayerSpectrum>> {
@@ -743,6 +754,17 @@ impl<
         }))
     }
 
+    /// Test if the underlying archive supports concurrent independent reading or not.
+    ///
+    /// If this is `false`, the reader does not support concurrent reading. Currently, all drivers support split reading
+    /// but not all are guaranteed to.
+    pub fn can_split(&self) -> bool {
+        self.handle.can_split()
+    }
+
+    /// Open a [`MzPeakWavelengthSpectrumFacet`] if the data are present.
+    ///
+    /// This method creates a separate reading entrypoint into the archive. See [`Self::can_split`] for consequences.
     pub fn wavelength_facet(&self, cache_capacity: usize) -> Option<MzPeakWavelengthSpectrumFacet<'_, T, C, D>> {
         let facet = MzPeakWavelengthSpectrumFacet(self, CacheBuffer::with_max_size(cache_capacity));
         facet.has_facet().then(|| facet)
@@ -868,6 +890,7 @@ impl<
             .map(|v| v.into_iter().nth(index as usize))
     }
 
+    /// Read the complete data arrays for the chromatogram at `index`
     pub fn get_chromatogram_arrays(&mut self, index: u64) -> io::Result<Option<BinaryArrayMap>> {
         let builder = self.handle.chromatograms_data()?;
 
@@ -923,6 +946,7 @@ impl<
         }
     }
 
+    /// Read the complete data arrays for the wavelength spectrum at `index`
     pub fn get_wavelength_spectrum_arrays(
         &mut self,
         index: u64,
@@ -935,6 +959,10 @@ impl<
         }
     }
 
+    /// A helper method for loading the metadata column holding the number of auxiliary arrays the
+    /// corresponding entities have.
+    ///
+    /// This method is parameterized via [`BufferContext`].
     fn load_auxiliary_array_counts_from(
         &self,
         builder: ParquetRecordBatchReaderBuilder<T::File>,
@@ -953,11 +981,13 @@ impl<
         }
     }
 
+    /// A thin wrapper around [`Self::load_auxiliary_array_counts_from`] + [`BufferContext::Spectrum`]
     pub(crate) fn load_spectrum_auxiliary_array_count(&self) -> io::Result<Vec<u32>> {
         let builder = self.handle.spectrum_metadata()?;
         self.load_auxiliary_array_counts_from(builder, BufferContext::Spectrum, self.len())
     }
 
+    /// A thin wrapper around [`Self::load_auxiliary_array_counts_from`] + [`BufferContext::Chromatogram`]
     pub(crate) fn load_chromatogram_auxiliary_array_count(&self) -> io::Result<Vec<u32>> {
         let builder = self.handle.chromatograms_metadata()?;
         self.load_auxiliary_array_counts_from(
@@ -967,6 +997,7 @@ impl<
         )
     }
 
+    /// A thin wrapper around [`Self::load_auxiliary_array_counts_from`] + [`BufferContext::WavelengthSpectrum`]
     pub(crate) fn load_wavelength_spectrum_auxiliary_array_count(&self) -> io::Result<Vec<u32>> {
         match self.handle.wavelength_spectrum_metadata() {
             Some(builder) => self.load_auxiliary_array_counts_from(
@@ -1623,8 +1654,12 @@ pub trait MzPeakSpectrumFacet: Sized {
         Some(spectra)
     }
 
+    /// Get access the [`CacheBuffer`]
     fn data_cache_mut(&mut self) -> &mut CacheBuffer;
 
+    /// Read an entry from the data cache, potentially updating the cache.
+    ///
+    /// This calls [`Self::data_cache_mut`].
     fn read_data_cache(
         &mut self,
         row_group_index: usize,
@@ -1802,13 +1837,13 @@ impl<
     /// See the safety notes on [`memmap2::Mmap`] for more explanation on why this operation is unsafe.
     pub unsafe fn memmap(handle: fs::File, path: Option<PathBuf>) -> io::Result<Self> {
         let mem = unsafe { ArchiveReader::memmap(handle)? };
-        Self::from_archive_reader(mem, path.unwrap_or_default())
+        Self::from_archive_reader(mem, path)
     }
 
     pub fn from_buf(buf: bytes::Bytes) -> io::Result<Self> {
         let mem = DispatchArchiveSource::MemoryMapZip(ZipArchiveBytesSource::new(buf)?);
         let mem = ArchiveReader::from_archive(mem)?;
-        Self::from_archive_reader(mem, PathBuf::default())
+        Self::from_archive_reader(mem, None)
     }
 }
 
