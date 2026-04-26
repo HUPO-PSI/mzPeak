@@ -124,7 +124,7 @@ TODO: write more here
 
 ### ZIP archives
 
-In order to pack multiple Parquet tables together under a single file name on disk, we need a container file format. To that end we use the [ZIP](https://www.iana.org/assignments/media-types/application/zip) archive to bundle multiple files together. ZIP files start with a header containing the magic bytes followed by a sequence of blocks of (header, file) pairs, terminating with a central directory listing how to find each file in the archive. Files saved in a ZIP may be stored compressed or uncompressed. When mzPeak is stored in a ZIP it **MUST** store its member files uncompressed.
+In order to pack multiple Parquet tables together under a single file name on disk, we need a container file format. To that end we use the [ZIP](https://www.iana.org/assignments/media-types/application/zip) archive to bundle multiple files together. ZIP files start with a header containing the magic bytes followed by a sequence of blocks of (header, file) pairs, terminating with a central directory listing how to find each file in the archive. Files saved in a ZIP may be stored compressed or uncompressed. When mzPeak is stored in a ZIP it **MUST** store its member files uncompressed. Files stored uncompressed can be read directly without requiring some intervening decompression to occur to reveal the Parquet file, and the Parquet file itself contains layered compression that is superior to that of most plain ZIP compressors.
 
 #### Why not TAR?
 
