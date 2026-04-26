@@ -118,9 +118,16 @@ impl ChunkDataCacheBlock {
         delta_model: Option<&RegressionDeltaModel<f64>>,
     ) -> io::Result<BinaryArrayMap> {
         let (start, end) = self.find_span_for_query(index);
+
         if !(start.is_some() && end.is_some()) {
-            panic!("Could not find start and end in binary search");
+            let chunks = self.row_group.column(0).as_struct();
+            let arr = chunks.column(0).as_primitive::<UInt64Type>();
+            let x = arr.value(0);
+            let y = arr.value(arr.len() - 1);
+            panic!("Could not find start and end in binary search for {index} in {:?} / {:?} / {:?} ({x}, {y})", self.index_range, self.last_query_index, self.last_query_span);
         }
+
+        log::debug!("Reading {start:?}-{end:?} for {index}");
 
         let chunks = self.row_group.column(0).as_struct();
 
@@ -476,7 +483,9 @@ trait ChunkQuerySource {
 
             let it = spectrum_index
                 .iter()
-                .map(|v| v.map(|v| index_range.contains(&v)));
+                .map(|v| v.map(|v| {
+                    index_range.contains(&v)
+                }));
 
             Ok(it.collect())
         });
@@ -795,8 +804,8 @@ impl<'a> ChunkDecoder<'a> {
         // For each chunk row
         for (row, ((encoding, start), end)) in chunk_iter {
             // For each possible main axis array (e.g. BufferFormat::Chunked)
+            let mut did_decode = false;
             for (name, chunk_vals) in row {
-                let mut did_decode = false;
                 if let Some(chunk_vals) = chunk_vals {
                     if self.main_axis.is_none() {
                         self.main_axis =
@@ -839,7 +848,9 @@ impl<'a> ChunkDecoder<'a> {
                         }
                     }
                 }
-                if !did_decode {
+            }
+
+            if !did_decode {
                     match encoding {
                         NO_COMPRESSION => {
                             (ChunkingStrategy::Basic { chunk_size: 50.0 }).decode_arrow(
@@ -867,7 +878,6 @@ impl<'a> ChunkDecoder<'a> {
                         }
                     }
                 }
-            }
         }
     }
 }
@@ -1235,7 +1245,6 @@ impl<T: ChunkReader + 'static> ChunkDataReader<T> {
         query_indices: &impl BasicChunkQueryIndex,
     ) -> io::Result<ChunkDataCacheBlock> {
         let (rows, predicate) = self.prepare_cache_block_query(index_range, query_indices);
-
         let schema = self.builder.schema().clone();
         let reader = self
             .builder
@@ -1245,7 +1254,7 @@ impl<T: ChunkReader + 'static> ChunkDataReader<T> {
 
         let mut batches = Vec::new();
         for bat in reader {
-            batches.push(bat.map_err(io::Error::other)?);
+            batches.push(bat.inspect_err(|e| log::error!("Failed to load batch for cache block: {e}")).map_err(io::Error::other)?);
         }
 
         let batch =

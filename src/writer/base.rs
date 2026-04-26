@@ -694,14 +694,19 @@ pub trait AbstractMzPeakWriter {
                 auxiliary_arrays: aux_arrays,
             } = match peaks {
                 mzdata::spectrum::RefPeakDataLevel::Missing => {
+                    log::trace!("No signal data for {spectrum_count}");
                     EntryMetadataDerivedFromData::new(None, None)
                 }
-                mzdata::spectrum::RefPeakDataLevel::RawData(binary_array_map) => self
-                    .write_spectrum_binary_array_map(spectrum, spectrum_count, binary_array_map)?,
+                mzdata::spectrum::RefPeakDataLevel::RawData(binary_array_map) => {
+                    log::trace!("Writing {} raw arrays for {spectrum_count}", binary_array_map.len());
+                    self.write_spectrum_binary_array_map(spectrum, spectrum_count, binary_array_map)?
+                },
                 mzdata::spectrum::RefPeakDataLevel::Centroid(peaks) => {
+                    log::trace!("Writing {} peaks for {spectrum_count}", peaks.len());
                     self.write_peaks(spectrum_count, spectrum_time, peaks.as_slice())?
                 }
                 mzdata::spectrum::RefPeakDataLevel::Deconvoluted(peaks) => {
+                    log::trace!("Writing {} peaks for {spectrum_count}", peaks.len());
                     self.write_peaks(spectrum_count, spectrum_time, peaks.as_slice())?
                 }
             };
