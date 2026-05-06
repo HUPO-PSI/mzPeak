@@ -522,14 +522,14 @@ pub trait AbstractMzPeakWriter {
             } else {
                 None
             };
-            let chunking =
-                if !is_profile && matches!(chunking, ChunkingStrategy::Delta { chunk_size: _ }) {
-                    ChunkingStrategy::Basic {
-                        chunk_size: chunking.chunk_size(),
-                    }
-                } else {
-                    chunking
-                };
+            // let chunking =
+            //     if !is_profile && matches!(chunking, ChunkingStrategy::Delta { chunk_size: _ }) {
+            //         ChunkingStrategy::Basic {
+            //             chunk_size: chunking.chunk_size(),
+            //         }
+            //     } else {
+            //         chunking
+            //     };
             let buffer_ref = self.spectrum_data_buffer_mut();
             let (chunks, auxiliary_arrays) = ArrowArrayChunk::from_arrays(
                 spectrum_count,
@@ -592,8 +592,6 @@ pub trait AbstractMzPeakWriter {
     }
 
     /// Write a peak list to the data buffer.
-    ///
-    /// If chunked encoding is enabled, [`ChunkingStrategy::Basic`] will be used.
     fn write_peaks<C: ToMzPeakDataSeries>(
         &mut self,
         spectrum_count: u64,
@@ -605,6 +603,14 @@ pub trait AbstractMzPeakWriter {
             spectrum_time = None;
         }
         if let Some(encoding) = self.use_chunked_encoding().copied() {
+            // let encoding =
+            //     if matches!(encoding, ChunkingStrategy::Delta { chunk_size: _ }) {
+            //         ChunkingStrategy::Basic {
+            //             chunk_size: encoding.chunk_size(),
+            //         }
+            //     } else {
+            //         encoding
+            //     };
             let arrays = C::as_arrays(peaks);
             let buffer_ref = self.spectrum_data_buffer_mut();
             let (chunks, auxiliary_arrays) = ArrowArrayChunk::from_arrays(
@@ -614,9 +620,7 @@ pub trait AbstractMzPeakWriter {
                     .clone()
                     .with_priority(Some(BufferPriority::Primary)),
                 &arrays,
-                ChunkingStrategy::Basic {
-                    chunk_size: encoding.chunk_size(),
-                },
+                encoding,
                 buffer_ref.overrides(),
                 false,
                 false,
