@@ -208,7 +208,7 @@ impl AsyncSpectrumDataCache {
         row_group_index: usize,
         spectrum_index: u64,
         mz_delta_model: Option<&RegressionDeltaModel<f64>>,
-    ) -> io::Result<BinaryArrayMap> {
+    ) -> io::Result<Option<BinaryArrayMap>> {
         if self.contains(row_group_index, spectrum_index) {
             match self {
                 Self::Point(spectrum_data_point_cache) => {
@@ -1060,7 +1060,7 @@ impl<
             let rg = self
                 .read_spectrum_data_cache(row_group_index, index)
                 .await?;
-            let mut arrays = rg.slice_to_arrays_of(row_group_index, index, delta_model.as_ref())?;
+            let mut arrays = rg.slice_to_arrays_of(row_group_index, index, delta_model.as_ref())?.unwrap_or_default();
             for v in self.load_auxiliary_arrays_for_spectrum(index).await? {
                 arrays.add(v);
             }

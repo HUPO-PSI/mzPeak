@@ -589,6 +589,51 @@ pub struct ArrowArrayChunk {
 }
 
 impl ArrowArrayChunk {
+    /// A wrapper around [`Self::from_arrays`] and [`Self::to_struct_array`]
+    ///
+    /// See [`Self::from_arrays`] for parameter descriptions
+    pub fn build(
+        series_index: u64,
+        series_time: Option<f32>,
+        buffer_context: BufferContext,
+        arrays: &BinaryArrayMap,
+        encoding: ChunkingStrategy,
+        overrides: &BufferOverrideTable,
+        drop_zero_intensity: bool,
+        nullify_zero_intensity: bool,
+        fields: &Fields,
+    ) -> Result<(Option<StructArray>, Vec<AuxiliaryArray>), ArrayRetrievalError> {
+        let (chunks, auxiliary_arrays) = ArrowArrayChunk::from_arrays(
+            series_index,
+            series_time,
+            buffer_context.main_axis()
+                .with_priority(Some(BufferPriority::Primary)),
+            &arrays,
+            encoding,
+            overrides,
+            drop_zero_intensity,
+            nullify_zero_intensity,
+            Some(fields),
+        )?;
+        let chunks = if !chunks.is_empty() {
+            let chunks = ArrowArrayChunk::to_struct_array(
+                &chunks,
+                buffer_context,
+                &[
+                    encoding,
+                    ChunkingStrategy::Basic {
+                        chunk_size: encoding.chunk_size(),
+                    },
+                ],
+                series_time.is_some(),
+            );
+            Some(chunks)
+        } else {
+            None
+        };
+        Ok((chunks, auxiliary_arrays))
+    }
+
     /// Low level constructor for a single chunk record.
     ///
     /// Prefer [`ArrowArrayChunk::from_arrays`] for constructing a block of [`ArrowArrayChunk`]
@@ -618,7 +663,6 @@ impl ArrowArrayChunk {
     pub fn to_struct_array(
         chunks: &[Self],
         buffer_context: BufferContext,
-        _schema: &Fields,
         encodings: &[ChunkingStrategy],
         include_time: bool,
     ) -> StructArray {
@@ -1177,7 +1221,6 @@ mod test {
         let rendered = ArrowArrayChunk::to_struct_array(
             &chunks,
             BufferContext::Spectrum,
-            Schema::empty().fields(),
             &[
                 ChunkingStrategy::Basic { chunk_size: 50.0 },
                 ChunkingStrategy::Delta { chunk_size: 50.0 },
@@ -1265,7 +1308,6 @@ mod test {
         let rendered = ArrowArrayChunk::to_struct_array(
             &chunks,
             BufferContext::Spectrum,
-            Schema::empty().fields(),
             &[
                 ChunkingStrategy::Basic { chunk_size: 50.0 },
                 ChunkingStrategy::Delta { chunk_size: 50.0 },
@@ -1393,7 +1435,6 @@ mod test {
         let rendered = ArrowArrayChunk::to_struct_array(
             &chunks,
             BufferContext::Spectrum,
-            Schema::empty().fields(),
             &[
                 ChunkingStrategy::Basic { chunk_size: 50.0 },
                 ChunkingStrategy::Delta { chunk_size: 50.0 },
@@ -1445,7 +1486,6 @@ mod test {
         let rendered = ArrowArrayChunk::to_struct_array(
             &chunks,
             BufferContext::Spectrum,
-            Schema::empty().fields(),
             &[
                 ChunkingStrategy::Basic { chunk_size: 50.0 },
                 ChunkingStrategy::NumpressLinear { chunk_size: 50.0 },
@@ -1512,7 +1552,6 @@ mod test {
         let rendered = ArrowArrayChunk::to_struct_array(
             &chunks,
             BufferContext::Spectrum,
-            Schema::empty().fields(),
             &[
                 ChunkingStrategy::Basic { chunk_size: 50.0 },
                 ChunkingStrategy::Delta { chunk_size: 50.0 },
@@ -1609,7 +1648,6 @@ mod test {
         let rendered = ArrowArrayChunk::to_struct_array(
             &chunks,
             BufferContext::Spectrum,
-            Schema::empty().fields(),
             &[
                 ChunkingStrategy::Basic { chunk_size: 50.0 },
                 ChunkingStrategy::Delta { chunk_size: 50.0 },
@@ -1752,7 +1790,6 @@ mod test {
         let rendered = ArrowArrayChunk::to_struct_array(
             &chunks,
             BufferContext::Spectrum,
-            Schema::empty().fields(),
             &[
                 ChunkingStrategy::Basic { chunk_size: 50.0 },
                 ChunkingStrategy::Delta { chunk_size: 50.0 },

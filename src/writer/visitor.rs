@@ -1696,7 +1696,6 @@ impl SpectrumDetailsBuilder {
         summaries
     }
 
-    #[allow(unused)]
     fn peak_summaries<
         C: CentroidLike,
         D: DeconvolutedCentroidLike,
@@ -1728,17 +1727,18 @@ impl SpectrumDetailsBuilder {
         self.curies_to_mask.clear();
 
         let summaries = self.raw_summaries(item);
+        let pk_summaries = self.peak_summaries(item);
 
         let n_pts = summaries.len();
         let base_peak_mz = if n_pts > 0 {
             Some(summaries.base_peak.mz)
         } else {
-            None
+            pk_summaries.as_ref().map(|s| s.base_peak.mz)
         };
         let base_peak_intensity = if n_pts > 0 {
             Some(summaries.base_peak.intensity)
         } else {
-            None
+            pk_summaries.as_ref().map(|s| s.base_peak.intensity)
         };
 
         let spectrum_type = if let Some(v) = item
@@ -1780,16 +1780,26 @@ impl SpectrumDetailsBuilder {
         self.base_peak_mz.append_option(base_peak_mz);
         self.base_peak_intensity.append_option(base_peak_intensity);
         self.total_ion_current.append_value(summaries.tic);
-        self.number_of_data_points.append_value(n_pts as u64);
-        if item.signal_continuity() == SignalContinuity::Centroid {
-            self.number_of_peaks.append_value(n_pts as u64);
-        } else {
-            match self.peak_summaries(item) {
-                Some(summary) => {
-                    self.number_of_peaks.append_value(summary.count as u64);
-                }
-                None => self.number_of_peaks.append_null(),
-            }
+        match item.signal_continuity() {
+            SignalContinuity::Unknown => {
+                log::warn!("Signal continuity was unknown for {index} = {}, assuming profile", item.id());
+                self.number_of_data_points.append_value(n_pts as u64);
+                self.number_of_peaks.append_null();
+            },
+            SignalContinuity::Centroid => {
+                let n = if n_pts == 0 {
+                    pk_summaries.as_ref().map(|v| v.len() as u64).unwrap_or_default()
+                } else {
+                    n_pts as u64
+                };
+                self.number_of_peaks.append_value(n);
+                self.number_of_data_points.append_null();
+            },
+            SignalContinuity::Profile => {
+                let pk_pts = pk_summaries.as_ref().map(|v| v.len() as u64);
+                self.number_of_peaks.append_option(pk_pts);
+                self.number_of_data_points.append_value(n_pts as u64);
+            },
         }
 
         self.data_processing_ref.append_null();

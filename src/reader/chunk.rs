@@ -116,7 +116,7 @@ impl ChunkDataCacheBlock {
         &mut self,
         index: u64,
         delta_model: Option<&RegressionDeltaModel<f64>>,
-    ) -> io::Result<BinaryArrayMap> {
+    ) -> io::Result<Option<BinaryArrayMap>> {
         let (start, end) = self.find_span_for_query(index);
 
         if !(start.is_some() && end.is_some()) {
@@ -152,7 +152,7 @@ impl ChunkDataCacheBlock {
                 for v in bin_map.into_values() {
                     out.add(v);
                 }
-                return Ok(out);
+                return Ok(Some(out));
             }
         };
 
@@ -174,7 +174,7 @@ impl ChunkDataCacheBlock {
             delta_model,
         )?;
 
-        Ok(out)
+        Ok(Some(out))
     }
 }
 

@@ -439,7 +439,7 @@ impl<
         if row_group_indices.len() == 1 {
             let row_group_index = row_group_indices[0];
             let rg = self.read_spectrum_data_cache(row_group_index, index)?;
-            let mut arrays = rg.slice_to_arrays_of(row_group_index, index, delta_model.as_ref())?;
+            let mut arrays = rg.slice_to_arrays_of(row_group_index, index, delta_model.as_ref())?.unwrap_or_default();
             for v in self.load_auxiliary_arrays_for_spectrum(index)? {
                 arrays.add(v);
             }
@@ -1164,18 +1164,46 @@ impl<
             .get_spectrum_metadata(index as u64)
             .inspect_err(|e| log::error!("Failed to read spectrum metadata for {index}: {e}"))
             .ok()??;
-        let arrays = if self.detail_level == DetailLevel::Full {
-            self.get_spectrum_arrays(index as u64)
-                .inspect_err(|e| log::error!("Failed to read spectrum data for {index}: {e}"))
-                .ok()??
+        let (arrays, peaks) = if self.detail_level == DetailLevel::Full {
+            let arrays = if self.metadata.spectra.data_point_counts().get(index).copied().unwrap_or_default() > 0 {
+                self.get_spectrum_arrays(index as u64)
+                    .inspect_err(|e| log::error!("Failed to read spectrum data for {index}: {e}"))
+                    .ok()??
+            } else {
+                BinaryArrayMap::new()
+            };
+
+            let peaks = if self.metadata.spectra.peak_counts().get(index).copied().unwrap_or_default() > 0 {
+                self.get_spectrum_peaks_for(index as u64)
+                    .inspect_err(|e| log::error!("Failed to read spectrum peak data for {index}: {e}"))
+                    .ok()??
+            } else {
+                PeakDataLevel::Missing
+            };
+            (arrays, peaks)
         } else {
-            BinaryArrayMap::new()
+            (BinaryArrayMap::new(), PeakDataLevel::Missing)
         };
 
-        Some(MultiLayerSpectrum::from_arrays_and_description(
+        let mut spectrum = MultiLayerSpectrum::from_arrays_and_description(
             arrays,
             description,
-        ))
+        );
+
+        match peaks {
+            PeakDataLevel::Missing => {},
+            PeakDataLevel::RawData(binary_array_map) => {
+                spectrum.arrays = Some(binary_array_map)
+            },
+            PeakDataLevel::Centroid(peak_set_vec) => {
+                spectrum.peaks = Some(peak_set_vec)
+            },
+            PeakDataLevel::Deconvoluted(peak_set_vec) => {
+                spectrum.deconvoluted_peaks = Some(peak_set_vec)
+            },
+        }
+
+        Some(spectrum)
     }
 
     /// Retrieve multiple spectra by index, internally scheduling the reads more efficiently.
@@ -1876,7 +1904,8 @@ mod test {
         let descr = reader.get_spectrum(0).unwrap();
         assert_eq!(descr.index(), 0);
         assert_eq!(descr.signal_continuity(), SignalContinuity::Profile);
-        assert_eq!(descr.peaks().len(), 13589);
+        let arr = descr.raw_arrays().and_then(|a| a.mzs().ok()).unwrap();
+        assert_eq!(arr.len(), 13589);
         if descr.ms_level() > 1 {
             assert_eq!(descr.precursor_iter().count(), 1);
             assert_eq!(descr.precursor().unwrap().ions.len(), 1);

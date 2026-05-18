@@ -1967,8 +1967,10 @@ impl PeakInfoDecoder {
             macro_rules! extract {
                 ($dtype:ty) => {
                     if let Some(col) = col.as_primitive_opt::<$dtype>() {
-                        for val in col.iter() {
-                            self.data_point_counts.push(val.unwrap_or_default() as u64);
+                        for (val, i) in col.iter().zip(index_array.iter()) {
+                            if let Some(i) = i {
+                                self.data_point_counts[i as usize] = (val.unwrap_or_default() as u64);
+                            }
                         }
                         true
                     } else {
@@ -1989,8 +1991,10 @@ impl PeakInfoDecoder {
             macro_rules! extract {
                 ($dtype:ty) => {
                     if let Some(col) = col.as_primitive_opt::<$dtype>() {
-                        for val in col.iter() {
-                            self.peak_counts.push(val.unwrap_or_default() as u64);
+                        for (val, i) in col.iter().zip(index_array.iter()) {
+                            if let Some(i) = i {
+                                self.peak_counts[i as usize] = (val.unwrap_or_default() as u64);
+                            }
                         }
                         true
                     } else {

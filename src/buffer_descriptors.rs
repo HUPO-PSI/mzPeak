@@ -9,7 +9,7 @@ use mzdata::{
 use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 
-use crate::{constants::{CHROMATOGRAM_INDEX, SPECTRUM_INDEX, SPECTRUM_TIME, WAVELENGTH_SPECTRUM_INDEX, WAVELENGTH_SPECTRUM_TIME}, peak_series::array_to_arrow_type};
+use crate::{constants::{CHROMATOGRAM_ARRAY_INDEX, CHROMATOGRAM_INDEX, SPECTRUM_ARRAY_INDEX, SPECTRUM_INDEX, SPECTRUM_TIME, WAVELENGTH_SPECTRUM_ARRAY_INDEX, WAVELENGTH_SPECTRUM_INDEX, WAVELENGTH_SPECTRUM_TIME}, peak_series::array_to_arrow_type};
 use crate::{
     constants::{CHROMATOGRAM, SPECTRUM},
     param::{
@@ -84,6 +84,14 @@ impl BufferContext {
         }
     }
 
+    pub const fn array_index_name(&self) -> &'static str {
+        match self {
+            BufferContext::Spectrum => SPECTRUM_ARRAY_INDEX,
+            BufferContext::Chromatogram => CHROMATOGRAM_ARRAY_INDEX,
+            BufferContext::WavelengthSpectrum => WAVELENGTH_SPECTRUM_ARRAY_INDEX,
+        }
+    }
+
     pub fn main_axis(&self) -> BufferName {
         match self {
             BufferContext::Spectrum => MZ_ARRAY
@@ -130,6 +138,7 @@ pub struct CustomBufferContext {
     pub main_struct_name: String,
     pub default_sorted_array: ArrayType,
     pub main_axis: BufferName,
+    pub array_index_name: String,
 }
 
 impl CustomBufferContext {
@@ -140,6 +149,7 @@ impl CustomBufferContext {
         main_struct_name: String,
         default_sorted_array: ArrayType,
         main_axis: BufferName,
+        array_index_name: String,
     ) -> Self {
         Self {
             index_name,
@@ -148,6 +158,7 @@ impl CustomBufferContext {
             main_struct_name,
             default_sorted_array,
             main_axis,
+            array_index_name,
         }
     }
 }
@@ -165,6 +176,7 @@ pub trait BufferContextMethods {
 
     fn main_axis(&self) -> BufferName;
 
+    fn array_index_name(&self) -> &str;
 }
 
 impl BufferContextMethods for BufferContext {
@@ -191,6 +203,10 @@ impl BufferContextMethods for BufferContext {
     fn main_struct_name(&self) -> &str {
         self.main_struct_name()
     }
+
+    fn array_index_name(&self) -> &str {
+        self.array_index_name()
+    }
 }
 
 impl BufferContextMethods for CustomBufferContext {
@@ -216,6 +232,10 @@ impl BufferContextMethods for CustomBufferContext {
 
     fn main_struct_name(&self) -> &str {
         &self.main_struct_name
+    }
+
+    fn array_index_name(&self) -> &str {
+        &self.array_index_name
     }
 }
 

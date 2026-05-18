@@ -17,7 +17,7 @@ use crate::{
     filter::{drop_where_column_is_zero_run, nullify_at_zero_pair},
     peak_series::{
         ArrayIndex, ArrayIndexEntry, INTENSITY_ARRAY, MZ_ARRAY, TIME_ARRAY, WAVELENGTH_ARRAY,
-    },
+    }, spectrum::AuxiliaryArray,
 };
 
 pub trait ArrayBufferWriter {
@@ -54,10 +54,10 @@ pub trait ArrayBufferWriter {
     /// This might call [`ArrayBufferWriter::add_arrays`].
     fn add<T: ToMzPeakDataSeries>(
         &mut self,
-        spectrum_index: u64,
-        spectrum_time: Option<f32>,
+        series_index: u64,
+        series_time: Option<f32>,
         peaks: &[T],
-    );
+    ) -> Vec<AuxiliaryArray>;
 
     /// The number of distinct blocks of data points buffered
     fn num_chunks(&self) -> usize;
@@ -166,11 +166,13 @@ pub trait ArrayBufferWriter {
                 }
             }
         }
-        log::trace!(
-            "{} array indices: {}",
-            self.buffer_context(),
-            array_index.to_json()
-        );
+        if log::log_enabled!(log::Level::Trace) {
+            log::trace!(
+                "{} array indices: {}",
+                self.buffer_context(),
+                array_index.to_json()
+            );
+        }
         array_index
     }
 
@@ -239,11 +241,11 @@ impl PointBuffers {
 
     pub fn add<T: ToMzPeakDataSeries>(
         &mut self,
-        spectrum_index: u64,
-        spectrum_time: Option<f32>,
+        series_index: u64,
+        series_time: Option<f32>,
         peaks: &[T],
-    ) {
-        let (fields, chunks) = T::to_arrays(spectrum_index, spectrum_time, peaks, &self.overrides);
+    ) -> Vec<AuxiliaryArray> {
+        let (fields, chunks) = T::to_arrays(series_index, series_time, peaks, &self.overrides);
         let mut visited = HashSet::new();
         for (f, arr) in fields.iter().zip(chunks.into_iter()) {
             let name = BufferName::from_field(self.buffer_context, f.clone())
@@ -268,6 +270,7 @@ impl PointBuffers {
                 }
             }
         }
+        Vec::new()
     }
 
     pub fn add_arrays(
@@ -401,11 +404,11 @@ impl ArrayBufferWriter for PointBuffers {
     #[inline(always)]
     fn add<T: ToMzPeakDataSeries>(
         &mut self,
-        spectrum_index: u64,
-        spectrum_time: Option<f32>,
+        series_index: u64,
+        series_time: Option<f32>,
         peaks: &[T],
-    ) {
-        self.add(spectrum_index, spectrum_time, peaks);
+    ) -> Vec<AuxiliaryArray> {
+        self.add(series_index, series_time, peaks)
     }
 
     fn num_chunks(&self) -> usize {
@@ -522,40 +525,30 @@ impl ArrayBufferWriter for ChunkBuffers {
         self.chunk_buffer.len()
     }
 
-    /// Adds a peak list to the buffer using [`ChunkingStrategy::Basic`]
+    /// Adds a peak list to the buffer
     fn add<T: ToMzPeakDataSeries>(
         &mut self,
-        spectrum_index: u64,
-        spectrum_time: Option<f32>,
+        series_index: u64,
+        series_time: Option<f32>,
         peaks: &[T],
-    ) {
+    ) -> Vec<AuxiliaryArray> {
         self.is_profile_buffer.push(false);
         let arrays = BuildArrayMapFrom::as_arrays(peaks);
-        let (chunks, _aux) = ArrowArrayChunk::from_arrays(
-            spectrum_index,
-            spectrum_time,
-            MZ_ARRAY,
+        let (chunks, aux) = ArrowArrayChunk::build(
+            series_index,
+            series_time,
+            BufferContext::Spectrum,
             &arrays,
-            ChunkingStrategy::Basic {
-                chunk_size: self.chunking_strategy.chunk_size(),
-            },
+            self.chunking_strategy,
             self.overrides(),
             self.drop_zero_intensity(),
             self.nullify_zero_intensity(),
-            None,
-        )
-        .unwrap();
-        let (fields, arrays, _) = ArrowArrayChunk::to_struct_array(
-            &chunks,
-            self.buffer_context(),
-            self.schema().fields(),
-            &[ChunkingStrategy::Basic {
-                chunk_size: self.chunking_strategy.chunk_size(),
-            }],
-            self.include_time(),
-        )
-        .into_parts();
-        self.add_arrays(fields, arrays, peaks.len(), false);
+            self.fields()).unwrap();
+        if let Some(chunks) = chunks {
+            let (fields, arrays, _) = chunks.into_parts();
+            self.add_arrays(fields, arrays, peaks.len(), false);
+        }
+        aux
     }
 
     fn drain(&mut self) -> impl Iterator<Item = RecordBatch> {
@@ -681,16 +674,16 @@ impl ArrayBufferWriter for ArrayBufferWriterVariants {
 
     fn add<T: ToMzPeakDataSeries>(
         &mut self,
-        spectrum_index: u64,
-        spectrum_time: Option<f32>,
+        series_index: u64,
+        series_time: Option<f32>,
         peaks: &[T],
-    ) {
+    ) -> Vec<AuxiliaryArray> {
         match self {
             ArrayBufferWriterVariants::ChunkBuffers(chunk_buffers) => {
-                chunk_buffers.add(spectrum_index, spectrum_time, peaks)
+                chunk_buffers.add(series_index, series_time, peaks)
             }
             ArrayBufferWriterVariants::PointBuffers(array_buffers) => {
-                array_buffers.add(spectrum_index, spectrum_time, peaks)
+                array_buffers.add(series_index, series_time, peaks)
             }
         }
     }
@@ -858,6 +851,13 @@ impl ArrayBuffersBuilder {
     pub fn add_override(mut self, from: impl Into<BufferName>, to: impl Into<BufferName>) -> Self {
         self.overrides.insert(from.into(), to.into());
         self.apply_overrides();
+        self
+    }
+
+    pub fn extend_overrides(mut self, iter: impl Iterator<Item = (BufferName, BufferName)>) -> Self {
+        for (k, v) in iter {
+            self = self.add_override(k, v);
+        }
         self
     }
 

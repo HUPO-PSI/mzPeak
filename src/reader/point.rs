@@ -309,7 +309,7 @@ impl PointDataCacheBlock {
         &mut self,
         index: u64,
         mz_delta_model: Option<&RegressionDeltaModel<f64>>,
-    ) -> io::Result<BinaryArrayMap> {
+    ) -> io::Result<Option<BinaryArrayMap>> {
         let mut bin_map = HashMap::new();
         for v in self.spectrum_array_indices.iter() {
             bin_map.insert(&v.name, v.as_buffer_name().as_data_array(0));
@@ -349,7 +349,7 @@ impl PointDataCacheBlock {
                 for v in bin_map.into_values() {
                     out.add(v);
                 }
-                return Ok(out);
+                return Ok(Some(out));
             }
         };
 
@@ -359,7 +359,7 @@ impl PointDataCacheBlock {
         for v in bin_map.into_values() {
             out.add(v);
         }
-        Ok(out)
+        Ok(Some(out))
     }
 }
 

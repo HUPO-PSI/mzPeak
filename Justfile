@@ -1,4 +1,4 @@
-export RUST_LOG := "debug"
+export RUST_LOG := "debug,mzpeak_prototyping::writer=trace"
 
 small:
     cargo r -r --example convert -- -y -z -u small.mzML -o small.mzpeak

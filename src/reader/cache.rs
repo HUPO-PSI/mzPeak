@@ -63,7 +63,7 @@ impl DataCacheBlock {
         row_group_index: usize,
         index: u64,
         delta_model: Option<&RegressionDeltaModel<f64>>,
-    ) -> io::Result<BinaryArrayMap> {
+    ) -> io::Result<Option<BinaryArrayMap>> {
         if self.contains(row_group_index, index) {
             match self {
                 DataCacheBlock::Point(spectrum_data_point_cache) => {
@@ -232,7 +232,7 @@ impl OneCache {
         row_group_index: usize,
         index: u64,
         delta_model: Option<&RegressionDeltaModel<f64>>,
-    ) -> io::Result<BinaryArrayMap> {
+    ) -> io::Result<Option<BinaryArrayMap>> {
         self.0
             .as_mut()
             .map(|b| b.slice_to_arrays_of(row_group_index, index, delta_model))
@@ -335,7 +335,7 @@ impl CacheBuffer {
         row_group_index: usize,
         index: u64,
         delta_model: Option<&RegressionDeltaModel<f64>>,
-    ) -> io::Result<BinaryArrayMap> {
+    ) -> io::Result<Option<BinaryArrayMap>> {
         for (i, b) in self.blocks.iter_mut().enumerate() {
             if b.contains(row_group_index, index) {
                 let result = b.slice_to_arrays_of(row_group_index, index, delta_model)?;
@@ -415,7 +415,7 @@ pub trait DataCacheFrontend {
         row_group_index: usize,
         index: u64,
         delta_model: Option<&RegressionDeltaModel<f64>>,
-    ) -> io::Result<BinaryArrayMap>;
+    ) -> io::Result<Option<BinaryArrayMap>>;
 }
 
 
@@ -454,7 +454,7 @@ impl DataCacheFrontend for OneCache {
         row_group_index: usize,
         index: u64,
         delta_model: Option<&RegressionDeltaModel<f64>>,
-    ) -> io::Result<BinaryArrayMap> {
+    ) -> io::Result<Option<BinaryArrayMap>> {
         self.slice_to_arrays_of(row_group_index, index, delta_model)
     }
 }
@@ -490,7 +490,7 @@ impl DataCacheFrontend for CacheBuffer {
         row_group_index: usize,
         index: u64,
         delta_model: Option<&RegressionDeltaModel<f64>>,
-    ) -> io::Result<BinaryArrayMap> {
+    ) -> io::Result<Option<BinaryArrayMap>> {
         self.slice_to_arrays_of(row_group_index, index, delta_model)
     }
 }
