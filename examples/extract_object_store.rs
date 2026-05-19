@@ -64,7 +64,7 @@ async fn main() -> io::Result<()> {
     });
 
     let (mut it, time_index) = reader
-        .extract_peaks(time_range, Some(mz_range), None, ms_level_range)
+        .extract_signal(time_range, Some(mz_range), None, ms_level_range)
         .await?;
 
     let query_range_end = std::time::Instant::now();

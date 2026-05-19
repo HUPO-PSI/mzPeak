@@ -17,7 +17,7 @@ use crate::{
     filter::RegressionDeltaModel,
     param::{MetadataColumn, MetadataColumnCollection},
     reader::{
-        index::{QueryIndex, SpectrumMetadataIndexLike, SpectrumPointIndex},
+        index::{QueryIndex, SpectrumDataIndex, SpectrumMetadataIndexLike, SpectrumPointIndex},
         utils::MaskSet,
         visitor::{
             CompoundIndexVisitor, DoubleIndexed, Indexed, MzChromatogramBuilder,
@@ -351,11 +351,11 @@ pub(crate) fn build_id_index<T: ArchiveSource>(
 #[derive(Debug, Default, Clone)]
 pub struct PeakMetadata {
     pub array_indices: ArrayIndex,
-    pub query_index: SpectrumPointIndex,
+    pub query_index: SpectrumDataIndex,
 }
 
 impl PeakMetadata {
-    pub fn new(array_indices: ArrayIndex, query_index: SpectrumPointIndex) -> Self {
+    pub fn new(array_indices: ArrayIndex, query_index: SpectrumDataIndex) -> Self {
         Self {
             array_indices,
             query_index,
@@ -380,7 +380,7 @@ impl PeakMetadata {
             }
         }
         if has_arrays {
-            let index = SpectrumPointIndex::from_reader(reader, &this.array_indices);
+            let index = SpectrumDataIndex::Point(SpectrumPointIndex::from_reader(reader, &this.array_indices));
             this.query_index = index;
             Some(this)
         } else {

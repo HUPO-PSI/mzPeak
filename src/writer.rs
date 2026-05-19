@@ -731,9 +731,7 @@ impl<
     implement_mz_metadata!();
 
     #[allow(unused)]
-    fn get_or_create_peak_writer(
-        &mut self,
-    ) -> io::Result<&mut MiniPeakWriterType<fs::File>> {
+    fn get_or_create_peak_writer(&mut self) -> io::Result<&mut MiniPeakWriterType<fs::File>> {
         if self.spectrum_peaks_writer.is_none() {
             let peak_buffer_file = tempfile::tempfile()?;
             let builder = ArrayBuffersBuilder::default()
@@ -864,10 +862,12 @@ impl<
                 SPECTRUM_COUNT.into(),
                 Some(self.spectrum_counter().to_string()),
             );
-            self.append_key_value_metadata(
-                SPECTRUM_DATA_POINT_COUNT.into(),
-                Some(self.spectrum_data_buffers.point_count().to_string()),
-            );
+            let n_p = self
+                .spectrum_peak_writer()
+                .map(|v| v.n_points())
+                .unwrap_or_default()
+                + self.spectrum_data_buffers.point_count();
+            self.append_key_value_metadata(SPECTRUM_DATA_POINT_COUNT.into(), Some(n_p.to_string()));
 
             let mut writer = self.archive_writer.take().unwrap().into_inner()?;
 

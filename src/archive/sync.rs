@@ -1184,8 +1184,8 @@ mod test {
         }
 
         let index = arch.file_index();
-        assert_eq!(index.len(), 4);
-        assert_eq!(arch.list_files().len(), 5);
+        assert_eq!(index.len(), 5);
+        assert_eq!(arch.list_files().len(), 6);
         assert!(arch.can_split());
 
         let mut handle = arch.open_stream("mzpeak_index.json")?;
@@ -1207,8 +1207,8 @@ mod test {
         }
 
         let index = arch.file_index();
-        assert_eq!(index.len(), 4);
-        assert_eq!(arch.list_files().len(), 5);
+        assert_eq!(index.len(), 5);
+        assert_eq!(arch.list_files().len(), 6);
         assert!(arch.can_split());
 
         let mut handle = arch.open_stream("mzpeak_index.json")?;
@@ -1230,8 +1230,8 @@ mod test {
         }
 
         let index = arch.file_index();
-        assert_eq!(index.len(), 4);
-        assert_eq!(arch.list_files().len(), 5);
+        assert_eq!(index.len(), 5);
+        assert_eq!(arch.list_files().len(), 6);
         assert!(arch.can_split());
 
         let mut handle = arch.open_stream("mzpeak_index.json")?;
@@ -1252,8 +1252,8 @@ mod test {
         }
 
         let index = arch.file_index();
-        assert_eq!(index.len(), 4);
-        assert_eq!(arch.list_files().len(), 5);
+        assert_eq!(index.len(), 5);
+        assert_eq!(arch.list_files().len(), 6);
         assert!(arch.can_split());
 
         let mut handle = arch.open_stream("mzpeak_index.json")?;

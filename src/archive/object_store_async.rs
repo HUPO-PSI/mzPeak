@@ -565,7 +565,7 @@ mod test {
             }
         }
 
-        assert_eq!(handle.file_index().len(), 4);
+        assert_eq!(handle.file_index().len(), 5);
 
         let mut buf = String::new();
         let mut reader = handle.open_stream("mzpeak_index.json").await?;
@@ -598,7 +598,7 @@ mod test {
             }
         }
 
-        assert_eq!(handle.file_index().len(), 4);
+        assert_eq!(handle.file_index().len(), 5);
 
         let mut buf = String::new();
         let mut reader = handle.open_stream("mzpeak_index.json").await?;

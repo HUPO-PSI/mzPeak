@@ -553,7 +553,8 @@ impl<
     }
 
     /// Read all signal data within the specified `time_range`, optionally constrained to `mz_range` m/z values and/or
-    /// `ion_mobility_range` IM values.
+    /// `ion_mobility_range` IM values. This operates **only** on the profile data. See [`Self::query_peaks`] to do the
+    /// same operation on centroids.
     ///
     /// # Arguments
     /// - `time_range`: A time interval to select spectra from.
@@ -564,7 +565,7 @@ impl<
     /// # Returns
     /// - An iterator over record batches covering the spectrum data: `BatchIterator<'_>`.
     /// - A mapping from spectrum index to scan start time.
-    pub fn extract_peaks(
+    pub fn extract_signal(
         &mut self,
         time_range: SimpleInterval<f64>,
         mz_range: Option<SimpleInterval<f64>>,
@@ -2061,7 +2062,7 @@ mod test {
         let mut reader = MzPeakReader::new(path)?;
 
         let (it, _time_index) =
-            reader.extract_peaks((0.3..0.4).into(), Some((800.0..820.0).into()), None, None)?;
+            reader.extract_signal((0.3..0.4).into(), Some((800.0..820.0).into()), None, None)?;
 
         let mut k = 0;
         for batch in it.flatten() {
@@ -2073,7 +2074,7 @@ mod test {
         // Drops null points
         assert_eq!(k, 659);
 
-        let (it, _) = reader.extract_peaks(
+        let (it, _) = reader.extract_signal(
             (0.3..0.4).into(),
             Some((800.0..820.0).into()),
             None,
@@ -2096,7 +2097,7 @@ mod test {
         let mut reader = MzPeakReader::new("small.chunked.mzpeak")?;
 
         let (it, _time_index) =
-            reader.extract_peaks((0.3..0.4).into(), Some((800.0..820.0).into()), None, None)?;
+            reader.extract_signal((0.3..0.4).into(), Some((800.0..820.0).into()), None, None)?;
 
         let mut k = 0;
         for batch in it.flatten() {
@@ -2108,7 +2109,7 @@ mod test {
         // Does not drop null points
         assert_eq!(k, 785);
 
-        let (it, _) = reader.extract_peaks(
+        let (it, _) = reader.extract_signal(
             (0.3..0.4).into(),
             Some((800.0..820.0).into()),
             None,

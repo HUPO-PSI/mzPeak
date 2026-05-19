@@ -14,7 +14,7 @@ pub struct MiniPeakWriterType<W: Write + Send + Seek> {
     buffers: ArrayBufferWriterVariants,
     buffer_size: usize,
     n_points: u64,
-    n_spectra: u64,
+    n_entries: u64,
 }
 
 impl<W: Write + Send + Seek> MiniPeakWriterType<W> {
@@ -24,7 +24,7 @@ impl<W: Write + Send + Seek> MiniPeakWriterType<W> {
             buffers,
             buffer_size,
             n_points: 0,
-            n_spectra: 0,
+            n_entries: 0,
         };
         let spectrum_array_index: ArrayIndex = this.buffers.as_array_index();
         this.append_key_value_metadata(
@@ -72,7 +72,7 @@ impl<W: Write + Send + Seek> MiniPeakWriterType<W> {
         };
 
         self.n_points += peaks.len() as u64;
-        self.n_spectra += 1;
+        self.n_entries += 1;
 
         if self.buffers.len() >= self.buffer_size {
             self.flush()?;
@@ -88,12 +88,20 @@ impl<W: Write + Send + Seek> MiniPeakWriterType<W> {
     }
 
     pub fn finish(mut self) -> Result<W, parquet::errors::ParquetError> {
-        self.append_key_value_metadata("spectrum_count", Some(self.n_spectra.to_string()));
+        self.append_key_value_metadata("spectrum_count", Some(self.n_entries.to_string()));
         self.append_key_value_metadata(
             "spectrum_data_point_count",
             Some(self.n_points.to_string()),
         );
         self.flush()?;
         self.writer.into_inner()
+    }
+
+    pub fn n_points(&self) -> u64 {
+        self.n_points
+    }
+
+    pub fn n_entries(&self) -> u64 {
+        self.n_entries
     }
 }
