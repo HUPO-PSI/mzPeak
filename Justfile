@@ -1,4 +1,4 @@
-export RUST_LOG := "debug,mzpeak_prototyping::writer=trace"
+export RUST_LOG := "debug"
 
 small:
     cargo r -r --example convert -- -y -z -u small.mzML -o small.mzpeak
@@ -25,6 +25,9 @@ small_chunked:
 
 has_uv:
     cargo r -r --example convert -- -y -z -u "./test/data/TOFsulfasMS4GHzDualMode+DADSpectra+UVSignal272-NoProfile.mzML" -o "./has_uv.mzpeak"
+
+small_unpacked:
+    unzip -uo small.mzpeak -d small.unpacked.mzpeak
 
 test:
     # cargo t --tests -- --no-capture
