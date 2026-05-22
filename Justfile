@@ -27,7 +27,7 @@ has_uv:
     cargo r -r --example convert -- -y -z -u "./test/data/TOFsulfasMS4GHzDualMode+DADSpectra+UVSignal272-NoProfile.mzML" -o "./has_uv.mzpeak"
 
 small_unpacked:
-    unzip -uo small.mzpeak -d small.unpacked.mzpeak
+    unzip -o small.mzpeak -d small.unpacked.mzpeak
 
 test:
     # cargo t --tests -- --no-capture

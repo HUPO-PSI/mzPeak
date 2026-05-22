@@ -49,7 +49,11 @@ use crate::{
             WavelengthSpectrumIndex,
         },
         metadata::{
-            AuxiliaryArrayCountDecoder, ChromatogramMetadataDecoder, ChromatogramMetadataQuerySource, ChromatogramMetadataReader, PeakInfoDecoder, ReaderFacetMetadataLike, SpectrumMetadataDecoder, SpectrumMetadataFacet, SpectrumMetadataQuerySource, SpectrumMetadataReader, TimeEncodedSeriesDecoder, TimeIndexDecoder, WavelengthSpectrumMetadataFacet
+            AuxiliaryArrayCountDecoder, ChromatogramMetadataDecoder,
+            ChromatogramMetadataQuerySource, ChromatogramMetadataReader, PeakInfoDecoder,
+            ReaderFacetMetadataLike, SpectrumMetadataDecoder, SpectrumMetadataFacet,
+            SpectrumMetadataQuerySource, SpectrumMetadataReader, TimeEncodedSeriesDecoder,
+            TimeIndexDecoder, WavelengthSpectrumMetadataFacet,
         },
         point::PointDataReader,
         visitor::AuxiliaryArrayVisitor,
@@ -76,6 +80,29 @@ use point::PointDataArrayReader;
 
 pub use crate::reader::utils::{BatchIterator, MaskSet};
 
+/// Express a preference for loading profile data, centroid data, or both, when the option
+/// is available.
+#[derive(Debug, Default, Clone, Copy, Hash)]
+pub enum SignalLoadingPreference {
+    /// Prefer loading the profile-mode or "continuous" representation of the data
+    #[default]
+    Profiles,
+    /// Prefer loading the centroided peak list representation of the data
+    Centroids,
+    /// Load both representations of the data
+    ProfilesAndCentroids,
+}
+
+impl SignalLoadingPreference {
+    pub const fn profiles(&self) -> bool {
+        matches!(self, Self::Profiles | Self::ProfilesAndCentroids)
+    }
+
+    pub const fn centroids(&self) -> bool {
+        matches!(self, Self::Centroids | Self::ProfilesAndCentroids)
+    }
+}
+
 /// A reader for mzPeak files, abstract over the source type.
 pub struct MzPeakReaderTypeOfSource<
     T: ArchiveSource = SplittingZipArchiveSource,
@@ -88,6 +115,7 @@ pub struct MzPeakReaderTypeOfSource<
     detail_level: DetailLevel,
     pub metadata: ReaderMetadata,
     pub query_indices: QueryIndex,
+    prefer_spectra_peaks: SignalLoadingPreference,
     spectrum_metadata_cache: Option<Vec<SpectrumDescription>>,
     spectrum_data_cache: CacheBuffer,
     spectrum_peak_cache: CacheBuffer,
@@ -294,7 +322,10 @@ impl<
     /// Create a new mzPeak reader from an [`ArchiveReader`].
     ///
     /// A [`PathBuf`] may optionally provide a location on the file system that would otherwise be unavailable.
-    pub fn from_archive_reader(mut handle: ArchiveReader<T>, path: Option<PathBuf>) -> io::Result<Self> {
+    pub fn from_archive_reader(
+        mut handle: ArchiveReader<T>,
+        path: Option<PathBuf>,
+    ) -> io::Result<Self> {
         let (metadata, query_indices) = Self::load_indices_from(&mut handle)?;
 
         let mut this = Self {
@@ -302,6 +333,7 @@ impl<
             index: 0,
             detail_level: DetailLevel::Full,
             handle,
+            prefer_spectra_peaks: SignalLoadingPreference::default(),
             metadata,
             query_indices,
             spectrum_metadata_cache: None,
@@ -408,7 +440,9 @@ impl<
                 .unwrap())
         } else {
             log::trace!("Spectrum data cache miss {row_group_index:?}:{spectrum_index}");
-            if let Some(cache) = DataCacheBlock::load_data_for(self, row_group_index, spectrum_index)? {
+            if let Some(cache) =
+                DataCacheBlock::load_data_for(self, row_group_index, spectrum_index)?
+            {
                 self.spectrum_data_cache.accept(cache);
                 // Ok(self.spectrum_row_group_cache.as_mut().unwrap())
                 Ok(self
@@ -437,7 +471,9 @@ impl<
         if row_group_indices.len() == 1 {
             let row_group_index = row_group_indices[0];
             let rg = self.read_spectrum_data_cache(row_group_index, index)?;
-            let mut arrays = rg.slice_to_arrays_of(row_group_index, index, delta_model.as_ref())?.unwrap_or_default();
+            let mut arrays = rg
+                .slice_to_arrays_of(row_group_index, index, delta_model.as_ref())?
+                .unwrap_or_default();
             for v in self.load_auxiliary_arrays_for_spectrum(index)? {
                 arrays.add(v);
             }
@@ -764,7 +800,10 @@ impl<
     /// Open a [`MzPeakWavelengthSpectrumFacet`] if the data are present.
     ///
     /// This method creates a separate reading entrypoint into the archive. See [`Self::can_split`] for consequences.
-    pub fn wavelength_facet(&self, cache_capacity: usize) -> Option<MzPeakWavelengthSpectrumFacet<'_, T, C, D>> {
+    pub fn wavelength_facet(
+        &self,
+        cache_capacity: usize,
+    ) -> Option<MzPeakWavelengthSpectrumFacet<'_, T, C, D>> {
         let facet = MzPeakWavelengthSpectrumFacet(self, CacheBuffer::with_max_size(cache_capacity));
         facet.has_facet().then(|| facet)
     }
@@ -800,26 +839,26 @@ impl<
         if row_group_indices.len() == 1 {
             let row_group_index = row_group_indices[0];
             let arrays = if self.spectrum_peak_cache.contains(row_group_index, index) {
-                self.spectrum_peak_cache.slice_to_arrays_of(row_group_index, index, None)?
+                self.spectrum_peak_cache
+                    .slice_to_arrays_of(row_group_index, index, None)?
             } else {
                 let reader = PointDataReader(builder, BufferContext::Spectrum);
-                let block = reader.load_cache_block_into(row_group_index, meta_index.array_indices.clone())?;
+                let block = reader
+                    .load_cache_block_into(row_group_index, meta_index.array_indices.clone())?;
                 self.spectrum_peak_cache.accept(block.into());
-                self.spectrum_peak_cache.slice_to_arrays_of(row_group_index, index, None)?
+                self.spectrum_peak_cache
+                    .slice_to_arrays_of(row_group_index, index, None)?
             };
             match arrays {
-                Some(arrays) => {
-                    match PeakDataLevel::try_from(&arrays) {
-                        Ok(peaks) => Ok(Some(peaks)),
-                        Err(e) => Err(e.into())
-                    }
+                Some(arrays) => match PeakDataLevel::try_from(&arrays) {
+                    Ok(peaks) => Ok(Some(peaks)),
+                    Err(e) => Err(e.into()),
                 },
-                None => Ok(None)
+                None => Ok(None),
             }
         } else {
             PointDataReader(builder, BufferContext::Spectrum).get_peak_list_for(index, meta_index)
         }
-
     }
 
     /// Perform slicing random access over the peak data for spectra in this file.
@@ -1192,7 +1231,37 @@ impl<
             .inspect_err(|e| log::error!("Failed to read spectrum metadata for {index}: {e}"))
             .ok()??;
         let (arrays, peaks) = if self.detail_level == DetailLevel::Full {
-            let arrays = if self.metadata.spectra.data_point_counts().get(index).copied().unwrap_or_default() > 0 {
+            let mut read_profiles = self
+                .metadata
+                .spectra
+                .data_point_counts()
+                .get(index)
+                .copied()
+                .unwrap_or_default()
+                > 0;
+            let mut read_peaks = self
+                .metadata
+                .spectra
+                .peak_counts()
+                .get(index)
+                .copied()
+                .unwrap_or_default()
+                > 0;
+
+            if read_profiles && read_peaks {
+                match self.prefer_spectra_peaks {
+                    SignalLoadingPreference::Profiles => {
+                        read_peaks = false;
+                    },
+                    SignalLoadingPreference::Centroids => {
+                        read_profiles = false;
+                    },
+                    SignalLoadingPreference::ProfilesAndCentroids => {},
+                }
+            }
+
+            let arrays = if read_profiles
+            {
                 self.get_spectrum_arrays(index as u64)
                     .inspect_err(|e| log::error!("Failed to read spectrum data for {index}: {e}"))
                     .ok()??
@@ -1200,9 +1269,12 @@ impl<
                 BinaryArrayMap::new()
             };
 
-            let peaks = if self.metadata.spectra.peak_counts().get(index).copied().unwrap_or_default() > 0 {
+            let peaks = if read_peaks
+            {
                 self.get_spectrum_peaks_for(index as u64)
-                    .inspect_err(|e| log::error!("Failed to read spectrum peak data for {index}: {e}"))
+                    .inspect_err(|e| {
+                        log::error!("Failed to read spectrum peak data for {index}: {e}")
+                    })
                     .ok()??
             } else {
                 PeakDataLevel::Missing
@@ -1212,22 +1284,15 @@ impl<
             (BinaryArrayMap::new(), PeakDataLevel::Missing)
         };
 
-        let mut spectrum = MultiLayerSpectrum::from_arrays_and_description(
-            arrays,
-            description,
-        );
+        let mut spectrum = MultiLayerSpectrum::from_arrays_and_description(arrays, description);
 
         match peaks {
-            PeakDataLevel::Missing => {},
-            PeakDataLevel::RawData(binary_array_map) => {
-                spectrum.arrays = Some(binary_array_map)
-            },
-            PeakDataLevel::Centroid(peak_set_vec) => {
-                spectrum.peaks = Some(peak_set_vec)
-            },
+            PeakDataLevel::Missing => {}
+            PeakDataLevel::RawData(binary_array_map) => spectrum.arrays = Some(binary_array_map),
+            PeakDataLevel::Centroid(peak_set_vec) => spectrum.peaks = Some(peak_set_vec),
             PeakDataLevel::Deconvoluted(peak_set_vec) => {
                 spectrum.deconvoluted_peaks = Some(peak_set_vec)
-            },
+            }
         }
 
         Some(spectrum)
@@ -1443,6 +1508,22 @@ impl<
 
         let chrom = mzdata::spectrum::Chromatogram::new(descr, arrays);
         Ok(chrom)
+    }
+
+    /// Fetch whether to prefer reading centroid data when both centroid peaks and profile spectra data
+    /// are available.
+    ///
+    /// If only one is available, this has no effect.
+    pub fn prefer_spectra_peaks(&self) -> SignalLoadingPreference {
+        self.prefer_spectra_peaks
+    }
+
+    /// Set whether to prefer reading centroid data when both centroid peaks and profile spectra data
+    /// are available.
+    ///
+    /// If only one is available, this has no effect.
+    pub fn set_prefer_spectra_peaks(&mut self, prefer: SignalLoadingPreference) {
+        self.prefer_spectra_peaks = prefer;
     }
 }
 
@@ -1687,16 +1768,14 @@ pub trait MzPeakSpectrumFacet: Sized {
     }
 
     /// Construct an entry
-    fn make_spectrum(&self, description: SpectrumDescription, arrays: BinaryArrayMap) -> Self::Item;
+    fn make_spectrum(&self, description: SpectrumDescription, arrays: BinaryArrayMap)
+    -> Self::Item;
 
     /// Retrieve multiple spectra by index, internally scheduling the reads more efficiently.
     ///
     /// This method can be faster than a series of calls to [`Self::get`] in a random order, but
     /// it has some overhead involved.
-    fn get_batch(
-        &mut self,
-        indices: impl IntoIterator<Item = usize>,
-    ) -> Option<Vec<Self::Item>> {
+    fn get_batch(&mut self, indices: impl IntoIterator<Item = usize>) -> Option<Vec<Self::Item>> {
         let mut ii: Vec<(usize, usize)> = indices.into_iter().enumerate().collect();
         let n = ii.len();
         ii.sort_by(|a, b| a.1.cmp(&b.1));
@@ -1732,12 +1811,12 @@ pub trait MzPeakSpectrumFacet: Sized {
                 .unwrap())
         } else {
             log::trace!("Spectrum data cache miss {row_group_index:?}:{spectrum_index}");
-            if let Some(cache) = DataCacheBlock::load_data_for_facet(self, row_group_index, spectrum_index)? {
+            if let Some(cache) =
+                DataCacheBlock::load_data_for_facet(self, row_group_index, spectrum_index)?
+            {
                 let data_cache = self.data_cache_mut();
                 data_cache.accept(cache);
-                Ok(data_cache
-                    .get_mut(row_group_index, spectrum_index)
-                    .unwrap())
+                Ok(data_cache.get_mut(row_group_index, spectrum_index).unwrap())
             } else {
                 Err(io::Error::other(format!(
                     "Failed to load data cache for {row_group_index:?} {spectrum_index}"
@@ -1807,7 +1886,11 @@ impl<
         &mut self.1
     }
 
-    fn make_spectrum(&self, description: SpectrumDescription, arrays: BinaryArrayMap) -> Self::Item {
+    fn make_spectrum(
+        &self,
+        description: SpectrumDescription,
+        arrays: BinaryArrayMap,
+    ) -> Self::Item {
         MultiLayerSpectrum::new(description, Some(arrays), None, None)
     }
 }
@@ -1872,7 +1955,11 @@ impl<
         &mut self.1
     }
 
-    fn make_spectrum(&self, description: SpectrumDescription, arrays: BinaryArrayMap) -> Self::Item {
+    fn make_spectrum(
+        &self,
+        description: SpectrumDescription,
+        arrays: BinaryArrayMap,
+    ) -> Self::Item {
         MultiLayerSpectrum::new(description, Some(arrays), None, None)
     }
 }
