@@ -1590,7 +1590,7 @@ impl VisitorBase for SpectrumDetailsBuilder {
                 ),
                 DataType::Float64
             ),
-            field!("MS_1003060_number_of_data_points", DataType::UInt64), //MS_1003059_number_of_peaks
+            field!("MS_1003060_number_of_data_points", DataType::UInt64),
             field!("MS_1003059_number_of_peaks", DataType::UInt64),
             field!(
                 inflect_cv_term_to_column_name(
@@ -2128,6 +2128,7 @@ pub struct ChromatogramDetailsBuilder {
     parameters: ParamListBuilder,
     auxiliary_arrays: LargeListBuilder<AuxiliaryArrayBuilder>,
     number_of_auxiliary_arrays: UInt32Builder,
+    number_of_data_points: UInt64Builder,
 
     extra: Vec<Box<dyn StructVisitorBuilder<Chromatogram>>>,
     curies_to_mask: Vec<CURIE>,
@@ -2164,6 +2165,9 @@ impl ChromatogramDetailsBuilder {
             self.auxiliary_arrays.append_null();
         }
 
+        let n_pts = item.time().map(|a| a.len() as u64).ok();
+        self.number_of_data_points.append_option(n_pts);
+
         for e in self.extra.iter_mut() {
             if e.append_value(item) {
                 self.curies_to_mask.extend(e.associated_curie_to_skip());
@@ -2193,6 +2197,7 @@ impl VisitorBase for ChromatogramDetailsBuilder {
                 self.chromatogram_type.as_struct_type()
             ),
             field!("data_processing_ref", DataType::LargeUtf8),
+            field!("MS_1003060_number_of_data_points", DataType::UInt64),
         ];
         fields.extend(self.parameters.fields());
         fields.extend([
@@ -2217,6 +2222,7 @@ impl VisitorBase for ChromatogramDetailsBuilder {
         self.polarity.append_null();
         self.chromatogram_type.append_null();
         self.data_processing_ref.append_null();
+        self.number_of_data_points.append_null();
         self.auxiliary_arrays.append_null();
         self.number_of_auxiliary_arrays.append_null();
         for e in self.extra.iter_mut() {
@@ -2241,6 +2247,7 @@ impl ArrayBuilder for ChromatogramDetailsBuilder {
             finish_it!(self.polarity),
             self.chromatogram_type.finish(),
             finish_it!(self.data_processing_ref),
+            finish_it!(self.number_of_data_points),
             self.parameters.finish(),
             finish_it!(self.auxiliary_arrays),
             finish_it!(self.number_of_auxiliary_arrays),
@@ -2260,6 +2267,7 @@ impl ArrayBuilder for ChromatogramDetailsBuilder {
             finish_cloned!(self.polarity),
             self.chromatogram_type.finish_cloned(),
             finish_cloned!(self.data_processing_ref),
+            finish_cloned!(self.number_of_data_points),
             self.parameters.finish_cloned(),
             finish_cloned!(self.auxiliary_arrays),
             finish_cloned!(self.number_of_auxiliary_arrays),
