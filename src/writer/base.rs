@@ -872,7 +872,8 @@ pub trait AbstractMzPeakWriter {
             .set_compression(compression)
             .set_dictionary_enabled(true)
             .set_sorting_columns(Some(sorted))
-            .set_column_encoding(index_path.into(), Encoding::RLE)
+            .set_column_encoding(index_path.clone().into(), Encoding::RLE)
+            .set_column_bloom_filter_enabled(index_path.clone().into(), true)
             .set_writer_version(WriterVersion::PARQUET_2_0)
             .set_statistics_enabled(EnabledStatistics::Page);
 
@@ -991,7 +992,8 @@ pub trait AbstractMzPeakWriter {
             .set_compression(compression)
             .set_dictionary_enabled(true)
             .set_sorting_columns(Some(sorted))
-            .set_column_encoding(index_path.into(), Encoding::RLE)
+            .set_column_encoding(index_path.clone().into(), Encoding::RLE)
+            .set_column_bloom_filter_enabled(index_path.clone().into(), true)
             .set_writer_version(WriterVersion::PARQUET_2_0)
             .set_statistics_enabled(EnabledStatistics::Page)
             .set_write_batch_size(write_batch_size);
