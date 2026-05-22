@@ -36,6 +36,18 @@ pub enum DataCacheBlock {
     Chunk(ChunkDataCacheBlock),
 }
 
+impl From<ChunkDataCacheBlock> for DataCacheBlock {
+    fn from(v: ChunkDataCacheBlock) -> Self {
+        Self::Chunk(v)
+    }
+}
+
+impl From<PointDataCacheBlock> for DataCacheBlock {
+    fn from(v: PointDataCacheBlock) -> Self {
+        Self::Point(v)
+    }
+}
+
 impl DataCacheBlock {
 
     /// Get the last index that was queried in this block which might hint to which half to search for
@@ -106,16 +118,7 @@ impl DataCacheBlock {
         if let Some(_query_index) = reader.query_indices.spectrum.data_index.as_point() {
             let builder = reader.handle.spectrum_data()?;
             let builder = PointDataReader::new(builder, BufferContext::Spectrum);
-            let rg = builder.load_cache_block_into(row_group_index)?;
-            let cache = PointDataCacheBlock::new(
-                rg,
-                reader.metadata.spectra.array_indices.clone(),
-                row_group_index,
-                None,
-                None,
-                BufferContext::Spectrum,
-            );
-
+            let cache = builder.load_cache_block_into(row_group_index, reader.metadata.spectra.array_indices.clone())?;
             Ok(Some(Self::Point(cache)))
         } else if let Some(query_index) = reader.query_indices.spectrum.data_index.as_chunked() {
             let builder = reader.handle.spectrum_data()?;
@@ -145,16 +148,7 @@ impl DataCacheBlock {
         if reader.query_indices.spectrum.data_index.is_point() {
             let builder = reader.handle.spectra_data().await?;
             let builder = AsyncPointDataReader(builder, BufferContext::Spectrum);
-            let rg = builder.load_cache_block_into(row_group_index).await?;
-            let cache = PointDataCacheBlock::new(
-                rg,
-                reader.metadata.spectra.array_indices.clone(),
-                row_group_index,
-                None,
-                None,
-                BufferContext::Spectrum,
-            );
-
+            let cache = builder.load_cache_block_into(row_group_index, reader.metadata.spectra.array_indices.clone()).await?;
             Ok(Some(Self::Point(cache)))
         } else if let Some(query_index) = reader.query_indices.spectrum.data_index.as_chunked() {
             let builder = reader.handle.spectra_data().await?;

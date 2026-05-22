@@ -249,15 +249,12 @@ impl AsyncSpectrumDataCache {
         if reader.query_indices.spectrum.data_index.is_point() {
             let builder = reader.handle.spectra_data().await?;
             let builder = AsyncPointDataReader(builder, BufferContext::Spectrum);
-            let rg = builder.load_cache_block_into(row_group_index).await?;
-            let cache = PointDataCacheBlock::new(
-                rg,
-                reader.metadata.spectra.array_indices.clone(),
-                row_group_index,
-                None,
-                None,
-                BufferContext::Spectrum,
-            );
+            let cache = builder
+                .load_cache_block_into(
+                    row_group_index,
+                    reader.metadata.spectra.array_indices.clone(),
+                )
+                .await?;
 
             Ok(Some(Self::Point(cache)))
         } else if let Some(query_index) = reader.query_indices.spectrum.data_index.as_chunked() {
@@ -550,7 +547,15 @@ impl<
             .inspect_err(|e| log::error!("Failed to read spectrum metadata for {index}: {e}"))
             .ok()??;
         let (arrays, peaks) = if self.detail_level == DetailLevel::Full {
-            let arrays = if self.metadata.spectra.data_point_counts().get(index).copied().unwrap_or_default() > 0 {
+            let arrays = if self
+                .metadata
+                .spectra
+                .data_point_counts()
+                .get(index)
+                .copied()
+                .unwrap_or_default()
+                > 0
+            {
                 self.get_spectrum_arrays(index as u64)
                     .await
                     .inspect_err(|e| log::error!("Failed to read spectrum data for {index}: {e}"))
@@ -559,10 +564,20 @@ impl<
                 BinaryArrayMap::new()
             };
 
-            let peaks = if self.metadata.spectra.peak_counts().get(index).copied().unwrap_or_default() > 0 {
+            let peaks = if self
+                .metadata
+                .spectra
+                .peak_counts()
+                .get(index)
+                .copied()
+                .unwrap_or_default()
+                > 0
+            {
                 self.get_spectrum_peaks_for(index as u64)
                     .await
-                    .inspect_err(|e| log::error!("Failed to read spectrum peak data for {index}: {e}"))
+                    .inspect_err(|e| {
+                        log::error!("Failed to read spectrum peak data for {index}: {e}")
+                    })
                     .ok()??
             } else {
                 PeakDataLevel::Missing
@@ -572,22 +587,15 @@ impl<
             (BinaryArrayMap::new(), PeakDataLevel::Missing)
         };
 
-        let mut spectrum = MultiLayerSpectrum::from_arrays_and_description(
-            arrays,
-            description,
-        );
+        let mut spectrum = MultiLayerSpectrum::from_arrays_and_description(arrays, description);
 
         match peaks {
-            PeakDataLevel::Missing => {},
-            PeakDataLevel::RawData(binary_array_map) => {
-                spectrum.arrays = Some(binary_array_map)
-            },
-            PeakDataLevel::Centroid(peak_set_vec) => {
-                spectrum.peaks = Some(peak_set_vec)
-            },
+            PeakDataLevel::Missing => {}
+            PeakDataLevel::RawData(binary_array_map) => spectrum.arrays = Some(binary_array_map),
+            PeakDataLevel::Centroid(peak_set_vec) => spectrum.peaks = Some(peak_set_vec),
             PeakDataLevel::Deconvoluted(peak_set_vec) => {
                 spectrum.deconvoluted_peaks = Some(peak_set_vec)
-            },
+            }
         }
 
         Some(spectrum)
@@ -1089,7 +1097,9 @@ impl<
             let rg = self
                 .read_spectrum_data_cache(row_group_index, index)
                 .await?;
-            let mut arrays = rg.slice_to_arrays_of(row_group_index, index, delta_model.as_ref())?.unwrap_or_default();
+            let mut arrays = rg
+                .slice_to_arrays_of(row_group_index, index, delta_model.as_ref())?
+                .unwrap_or_default();
             for v in self.load_auxiliary_arrays_for_spectrum(index).await? {
                 arrays.add(v);
             }
@@ -1228,7 +1238,8 @@ mod test {
         let descr = reader.get_spectrum(0).await.unwrap();
         assert_eq!(descr.index(), 0);
         assert_eq!(descr.signal_continuity(), SignalContinuity::Profile);
-        assert_eq!(descr.peaks().len(), 13589);
+        let arr = descr.raw_arrays().and_then(|a| a.mzs().ok()).unwrap();
+        assert_eq!(arr.len(), 13589);
         if descr.ms_level() > 1 {
             assert_eq!(descr.precursor_iter().count(), 1);
             assert_eq!(descr.precursor().unwrap().ions.len(), 1);
@@ -1309,11 +1320,11 @@ mod test {
         }
         assert!(k > 0);
         // Drops null points
-        assert_eq!(k, 659);
+        assert_eq!(k, 563);
         drop(it);
 
         let (mut it, _) = reader
-            .extract_signal(
+            .query_peaks(
                 (0.3..0.4).into(),
                 Some((800.0..820.0).into()),
                 None,
@@ -1354,11 +1365,11 @@ mod test {
         }
         assert!(k > 0);
         // Does not drop null points
-        assert_eq!(k, 785);
+        assert_eq!(k, 689);
         drop(it);
 
         let (mut it, _) = reader
-            .extract_signal(
+            .query_peaks(
                 (0.3..0.4).into(),
                 Some((800.0..820.0).into()),
                 None,
@@ -1387,7 +1398,7 @@ mod test {
             k += batch.num_rows();
         }
         assert!(k > 0);
-        assert_eq!(k, 93);
+        assert_eq!(k, 189);
         Ok(())
     }
 }

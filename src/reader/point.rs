@@ -768,12 +768,12 @@ mod async_impl {
             }
         }
 
-        pub(crate) async fn load_cache_block_into(self, row_group: usize) -> io::Result<RecordBatch> {
+        pub(crate) async fn load_cache_block_into(self, row_group: usize, array_indices: Arc<ArrayIndex>) -> io::Result<PointDataCacheBlock> {
             let builder = Self::configure_cache_block_reader(self.0, row_group);
             let mut builder = builder.build()?;
             let batch = builder.next().await.transpose()?;
             if let Some(batch) = batch {
-                Ok(batch)
+                Ok(PointDataCacheBlock::new(batch, array_indices, row_group, None, None, self.1))
             } else {
                 Err(parquet::errors::ParquetError::General(format!(
                     "Couldn't read row group {row_group}"
@@ -1160,12 +1160,13 @@ mod sync_impl {
             }
         }
 
-        pub(crate) fn load_cache_block_into(self, row_group: usize) -> io::Result<RecordBatch> {
+        pub(crate) fn load_cache_block_into(self, row_group: usize, array_indices: Arc<ArrayIndex>) -> io::Result<PointDataCacheBlock> {
+            let ctx = self.buffer_context();
             let builder = Self::configure_cache_block_reader(self.0, row_group);
 
             let batch = builder.build()?.flatten().next();
             if let Some(batch) = batch {
-                Ok(batch)
+                Ok(PointDataCacheBlock::new(batch, array_indices, row_group, None, None, ctx))
             } else {
                 Err(parquet::errors::ParquetError::General(format!(
                     "Couldn't read row group {row_group}"

@@ -49,11 +49,7 @@ use crate::{
             WavelengthSpectrumIndex,
         },
         metadata::{
-            AuxiliaryArrayCountDecoder, ChromatogramMetadataDecoder,
-            ChromatogramMetadataQuerySource, ChromatogramMetadataReader, PeakInfoDecoder,
-            SpectrumMetadataFacet, SpectrumMetadataDecoder, ReaderFacetMetadataLike,
-            SpectrumMetadataQuerySource, SpectrumMetadataReader, TimeEncodedSeriesDecoder,
-            TimeIndexDecoder, WavelengthSpectrumMetadataFacet,
+            AuxiliaryArrayCountDecoder, ChromatogramMetadataDecoder, ChromatogramMetadataQuerySource, ChromatogramMetadataReader, PeakInfoDecoder, ReaderFacetMetadataLike, SpectrumMetadataDecoder, SpectrumMetadataFacet, SpectrumMetadataQuerySource, SpectrumMetadataReader, TimeEncodedSeriesDecoder, TimeIndexDecoder, WavelengthSpectrumMetadataFacet
         },
         point::PointDataReader,
         visitor::AuxiliaryArrayVisitor,
@@ -93,7 +89,8 @@ pub struct MzPeakReaderTypeOfSource<
     pub metadata: ReaderMetadata,
     pub query_indices: QueryIndex,
     spectrum_metadata_cache: Option<Vec<SpectrumDescription>>,
-    spectrum_row_group_cache: CacheBuffer,
+    spectrum_data_cache: CacheBuffer,
+    spectrum_peak_cache: CacheBuffer,
     _t: PhantomData<(C, D)>,
 }
 
@@ -291,7 +288,7 @@ impl<
     ///
     /// The larger this cache is, the more *regions* of the spectrum index space that will be fast to re-visit.
     pub fn set_spectrum_row_group_cache_size(&mut self, max_size: usize) {
-        self.spectrum_row_group_cache = CacheBuffer::with_max_size(max_size);
+        self.spectrum_data_cache = CacheBuffer::with_max_size(max_size);
     }
 
     /// Create a new mzPeak reader from an [`ArchiveReader`].
@@ -308,7 +305,8 @@ impl<
             metadata,
             query_indices,
             spectrum_metadata_cache: None,
-            spectrum_row_group_cache: Default::default(),
+            spectrum_data_cache: Default::default(),
+            spectrum_peak_cache: Default::default(),
             _t: Default::default(),
         };
 
@@ -399,22 +397,22 @@ impl<
         spectrum_index: u64,
     ) -> io::Result<&mut DataCacheBlock> {
         let cache_hit = self
-            .spectrum_row_group_cache
+            .spectrum_data_cache
             .contains(row_group_index, spectrum_index);
 
         if cache_hit {
             log::trace!("Spectrum data cache hit {row_group_index:?}:{spectrum_index}");
             Ok(self
-                .spectrum_row_group_cache
+                .spectrum_data_cache
                 .get_mut(row_group_index, spectrum_index)
                 .unwrap())
         } else {
             log::trace!("Spectrum data cache miss {row_group_index:?}:{spectrum_index}");
             if let Some(cache) = DataCacheBlock::load_data_for(self, row_group_index, spectrum_index)? {
-                self.spectrum_row_group_cache.accept(cache);
+                self.spectrum_data_cache.accept(cache);
                 // Ok(self.spectrum_row_group_cache.as_mut().unwrap())
                 Ok(self
-                    .spectrum_row_group_cache
+                    .spectrum_data_cache
                     .get_mut(row_group_index, spectrum_index)
                     .unwrap())
             } else {
@@ -793,7 +791,35 @@ impl<
                 "peak data index was not found",
             ))?;
 
-        PointDataReader(builder, BufferContext::Spectrum).get_peak_list_for(index, meta_index)
+        let PageQuery {
+            pages: _,
+            row_group_indices,
+        } = meta_index.query_index.query_pages(index);
+
+        // If there is only one row group in the scan, take the fast path through the cache
+        if row_group_indices.len() == 1 {
+            let row_group_index = row_group_indices[0];
+            let arrays = if self.spectrum_peak_cache.contains(row_group_index, index) {
+                self.spectrum_peak_cache.slice_to_arrays_of(row_group_index, index, None)?
+            } else {
+                let reader = PointDataReader(builder, BufferContext::Spectrum);
+                let block = reader.load_cache_block_into(row_group_index, meta_index.array_indices.clone())?;
+                self.spectrum_peak_cache.accept(block.into());
+                self.spectrum_peak_cache.slice_to_arrays_of(row_group_index, index, None)?
+            };
+            match arrays {
+                Some(arrays) => {
+                    match PeakDataLevel::try_from(&arrays) {
+                        Ok(peaks) => Ok(Some(peaks)),
+                        Err(e) => Err(e.into())
+                    }
+                },
+                None => Ok(None)
+            }
+        } else {
+            PointDataReader(builder, BufferContext::Spectrum).get_peak_list_for(index, meta_index)
+        }
+
     }
 
     /// Perform slicing random access over the peak data for spectra in this file.
@@ -2072,9 +2098,9 @@ mod test {
         }
         assert!(k > 0);
         // Drops null points
-        assert_eq!(k, 659);
+        assert_eq!(k, 563);
 
-        let (it, _) = reader.extract_signal(
+        let (it, _) = reader.query_peaks(
             (0.3..0.4).into(),
             Some((800.0..820.0).into()),
             None,
@@ -2107,9 +2133,9 @@ mod test {
         }
         assert!(k > 0);
         // Does not drop null points
-        assert_eq!(k, 785);
+        assert_eq!(k, 689);
 
-        let (it, _) = reader.extract_signal(
+        let (it, _) = reader.query_peaks(
             (0.3..0.4).into(),
             Some((800.0..820.0).into()),
             None,
@@ -2135,7 +2161,7 @@ mod test {
             k += batch.num_rows();
         }
         assert!(k > 0);
-        assert_eq!(k, 93);
+        assert_eq!(k, 189);
         Ok(())
     }
 
