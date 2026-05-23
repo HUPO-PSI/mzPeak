@@ -16,7 +16,7 @@ except ImportError:
 from pyarrow import compute as pc
 from pyarrow import parquet as pq
 
-from .util import Span, _slice_to_range
+from .util import _SeekableIter, _SeekableMixin, Span, _slice_to_range
 from .filters import null_delta_decode, fill_nulls
 
 logger = logging.getLogger(__name__)
@@ -237,7 +237,7 @@ class _DataIndex:
             return 0
 
 
-class _BatchIterator:
+class _BatchIterator(Iterator[tuple[int, pa.RecordBatch]]):
     """
     Incrementally partition a stream of :class:`pyarrow.RecordBatch` instances into
     blocks of single spectrum or chromatogram data.
@@ -289,19 +289,53 @@ class _BatchIterator:
         self.it = it
         self.batch = None
         self.index_column = index_column
+
         # Set up index precondition for _read_next_chunk first-time initialization step
         self.current_index = None
         self._read_next_chunk(update_index=True)
-        if current_index is not None:
+
+        # Seek to the requested index if necessary
+        if current_index is not None and self.current_index is not None and current_index > self.current_index:
             self.seek(current_index)
 
-    def _infer_starting_index(self):
+    def _infer_starting_index(self) -> int | None:
+        """
+        Get the smallest value in the index column.
+
+        Returns :const:`None` if :attr:`batch` is :const:`None`.
+
+        Returns
+        -------
+        :class:`int` or :const:`None`
+        """
+        if self.batch is None:
+            return None
         return pc.min(pc.struct_field(self.batch, self.index_column)).as_py()
+
+    def _next_index_value(self) -> int | None:
+        """
+        Get the first value in the index column.
+
+        Returns :const:`None` if either :attr:`batch` is :const:`None`
+        or if the index column is empty.
+
+        Returns
+        -------
+        :class:`int` or :const:`None`
+        """
+        if self.batch is None:
+            return
+        arr: pa.UInt64Array = pc.struct_field(self.batch, self.index_column)
+        if len(arr) > 0:
+            return arr[0].as_py()
 
     def __next__(self):
         batch = self._extract_for_index()
         i = self.current_index
         self.current_index += 1
+        next_val = self._next_index_value()
+        if next_val and next_val > self.current_index:
+            self.current_index = next_val
         return i, batch
 
     def __iter__(self):
@@ -344,7 +378,7 @@ class _BatchIterator:
         mask = pc.less(index_col, self.current_index)
         return np.all(mask)
 
-    def _extract_for_index(self):
+    def _extract_for_index(self) -> pa.RecordBatch | None:
         if self.batch is None:
             raise StopIteration()
         mask = pc.equal(
@@ -423,7 +457,12 @@ psims_dtypes = {
 _SpectrumArrays = dict[str, np.ndarray]
 
 
-class _PointBatchCleaner:
+class _BatchCleanerBase:
+    def expand(self, data: pa.RecordBatch | pa.StructArray) -> _SpectrumArrays:
+        raise NotImplementedError()
+
+
+class _PointBatchCleaner(_BatchCleanerBase):
     """
     Help clean :term:`Point Layout` data, formatting
     for more ease of use outside of Arrow.
@@ -494,7 +533,7 @@ class _PointBatchCleaner:
         return data
 
     def fill_nulls(
-        self, v: pa.Array, index_runs: np.ndarray, index_values_unique: np.ndarray
+        self, v: pa.Array, index_runs: np.ndarray | None, index_values_unique: np.ndarray | None
     ) -> np.ndarray:
         """
         Fill null values into a data array using the delta model.
@@ -519,8 +558,11 @@ class _PointBatchCleaner:
                 v_np[start:run_end] = fill_nulls(v_for, delta_model_for)
                 start = run_end
             v = v_np
-
-        elif not np.any(np.isnan(self.delta_model)):
+        elif self.has_multiple_delta_models and self.delta_model is not None and index_values_unique is not None:
+            delta_model = self.delta_model[index_values_unique[0]]
+            if not np.any(np.isnan(delta_model)):
+                v = fill_nulls(v, delta_model)
+        elif not self.has_multiple_delta_models and self.delta_model is not None and not np.any(np.isnan(self.delta_model)):
             v = fill_nulls(v, self.delta_model)
         return v
 
@@ -546,7 +588,7 @@ class _PointBatchCleaner:
 
         index_runs = index_values_unique = None
 
-        if self.has_mulitple_indices and self.has_multiple_delta_models:
+        if self.has_multiple_delta_models:
             (index_runs, index_values_unique) = self.get_index_runs(data)
 
         data = self.convert_struct_array_to_dict(data)
@@ -573,7 +615,7 @@ class _PointBatchCleaner:
         return result
 
 
-class _ChunkBatchCleaner:
+class _ChunkBatchCleaner(_BatchCleanerBase):
     namespace: str
     array_index: dict[str, dict]
     drop_index: bool
@@ -1209,7 +1251,111 @@ class MzPeakArrayDataReader(Sequence[_SpectrumArrays]):
         elif self._chunk_index.init:
             return BufferFormat.ChunkValues
         else:
+            if self.array_index:
+                array_spec: dict = next(iter(self.array_index.values()))
+                prefix = array_spec['path'].split('.')[0]
+                if prefix == 'point':
+                    return BufferFormat.Point
+                elif prefix == 'chunk':
+                    return BufferFormat.ChunkValues
             raise ValueError("Could not infer buffer format")
+
+    def _batch_iterator(self, index: int=0) -> _SeekableIter[pa.RecordBatch]:
+        buffer_fmt = self.buffer_format()
+        if buffer_fmt == BufferFormat.Point:
+            it = self.handle.iter_batches(columns=["point"])
+            return _SeekableIter(
+                _BatchIterator(
+                    it,
+                    index,
+                    index_column=f"{self._namespace}_index",
+                )
+            )
+        elif buffer_fmt == BufferFormat.ChunkValues:
+            it = self.handle.iter_batches(128, columns=["chunk"])
+            return _SeekableIter(
+                _BatchIterator(
+                    it,
+                    index,
+                    index_column=f"{self._namespace}_index",
+                )
+            )
+        else:
+            raise ValueError(buffer_fmt)
+
+    def _data_iterator(self, index: int=0):
+        it = self._batch_iterator(index)
+        fmt = self.buffer_format()
+        if fmt == BufferFormat.ChunkValues:
+            cleaner = _ChunkBatchCleaner(
+                self._namespace,
+                array_index=self.array_index,
+                drop_index=True,
+                delta_model={i: x for i, x  in enumerate(self._delta_model_series)}
+                if self._do_null_filling and self._delta_model_series is not None
+                else None,
+            )
+        elif fmt == BufferFormat.Point:
+            cleaner = _PointBatchCleaner(
+                self._namespace,
+                array_index=self.array_index,
+                drop_index=True,
+                delta_model={i: x for i, x in enumerate(self._delta_model_series)}
+                if self._do_null_filling and self._delta_model_series is not None
+                else None,
+                has_multiple_indices=False,
+            )
+        else:
+            raise ValueError()
+        return _DataBatchIter(it, fmt, cleaner)
 
 
 MzPeakSpectrumDataReader = MzPeakArrayDataReader
+
+
+class _DataBatchIter(
+    Iterator[tuple[int, _SpectrumArrays]],
+    _SeekableMixin[_SpectrumArrays]
+):
+    inner: _BatchIterator
+    buffer_format: BufferFormat
+    batch_cleaner: _BatchCleanerBase
+
+    def __init__(
+        self,
+        inner: _BatchIterator,
+        buffer_format: BufferFormat,
+        batch_cleaner: _BatchCleanerBase,
+    ):
+        self.batch_cleaner = batch_cleaner
+        self.buffer_format = buffer_format
+        self.inner = inner
+        if self.inner._peek is not None:
+            self._coerce_peeked()
+
+    def _coerce_peeked(self):
+        self.inner._peek = (
+            self.inner._peek[0],
+            self.batch_cleaner.expand(self.inner._peek[1]),
+        )
+
+    def peek(self) -> tuple[int, _SpectrumArrays] | None:
+        if self.inner._peek is None:
+            try:
+                self.inner._peek = next(self.inner)
+                self._coerce_peeked()
+            except StopIteration:
+                return None
+        return self.inner._peek
+
+    def __next__(self) -> tuple[int, _SpectrumArrays]:
+        if self.inner._peek is not None:
+            val = self.inner._peek
+            self.inner._peek = None
+            self.peek()
+            return val
+        i, batch = next(self.inner)
+        return (i, self.batch_cleaner.expand(batch))
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.buffer_format}, {self.inner})"

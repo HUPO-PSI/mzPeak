@@ -26,6 +26,15 @@ MZPeakSpectrumMetadataFile <- R6::R6Class(
     precursors = NULL,
     selected_ions = NULL,
 
+    count_data_points = function(index) {
+      point_count <- self$spectra$GetColumnByName("MS_1003060_number_of_data_points")
+      ifelse(is.null(point_count), NULL, point_count[index]$as_vector())
+    },
+    count_peaks = function(index) {
+      point_count <- self$spectra$GetColumnByName("MS_1003059_number_of_peaks")
+      ifelse(is.null(point_count), NULL, point_count[index]$as_vector())
+    },
+
     initialize = function(path) {
       logger::log_debug("Loading metadata")
       # Read the entire table into RAM, we will decompose it next
@@ -96,7 +105,14 @@ MZPeakChromatogramMetadataFile <- R6::R6Class(
     chromatograms = NULL,
     precursors = NULL,
     selected_ions = NULL,
-
+    count_data_points = function(index) {
+      point_count <- self$spectra$GetColumnByName("MS_1003060_number_of_data_points")
+      ifelse(is.null(point_count), NULL, point_count[index]$as_vector())
+    },
+    count_peaks = function(index) {
+      point_count <- self$spectra$GetColumnByName("MS_1003059_number_of_peaks")
+      ifelse(is.null(point_count), NULL, point_count[index]$as_vector())
+    },
     initialize = function(path) {
       logger::log_debug("Loading chromatogram metadata")
       # Read the entire table into RAM, we will decompose it next
@@ -236,6 +252,7 @@ MZPeakSpectrumDataFile <- R6::R6Class(
       # fill in NULL-marked positions.
       self$mz_delta_models <- NULL
     },
+
     #' @description
     #' Read the actual signal data associated with a spectrum
     read_spectrum = function(index) {
@@ -285,6 +302,7 @@ MZPeakSpectrumDataFile <- R6::R6Class(
         stop("error: not implemented")
       }
     },
+
     #' @description
     #' Configure the m/z delta models
     set_mz_delta_models = function(models) {
@@ -343,6 +361,22 @@ MZPeakFile <- R6::R6Class(
     wavelength_spectrum_metadata = NULL,
     wavelength_spectrum_data = NULL,
     file_index = NULL,
+    spectrum_count_data_points = function(index) {
+      self$spectrum_metadata$count_data_points(index)
+    },
+    spectrum_count_peaks = function(index) {
+      self$spectrum_metadata$count_peaks(index)
+    },
+    chromatogram_count_data_points = function(index) {
+      self$chromatogram_metadata$count_data_points(index)
+    },
+    wavelength_spectrum_count_data_points = function(index) {
+      if (is.null(self$wavelength_spectrum_metadata)) {
+        NULL
+      } else {
+        self$wavelength_spectrum_metadata$count_data_points(index)
+      }
+    },
     #' @description
     #' A reader for mzPeak files.\cr
     #'
@@ -436,13 +470,35 @@ MZPeakFile <- R6::R6Class(
     },
 
     #' @description
-    #' Read a spectrum's signal data
+    #' Read a spectrum's signal or peak data
     #'
     #' @param index (`integer(1)`).
     #' @return [tibble]
     read_spectrum = function(index) {
-      self$spectrum_data$read_spectrum(index)
+      dp <- self$spectrum_count_data_points(index)
+      if (!is.na(dp)) {
+        return(self$read_spectrum_profiles(index))
+      }
+      pt <- self$spectrum_count_peaks(index)
+      if (!is.na(pt)) {
+        return(self$read_spectrum_peaks(index))
+      }
     },
+
+    #' @description
+    #' Read a spectrum's signal data, if the profile data volume is present
+    #'
+    #' @param index (`integer(1)`).
+    #' @return [tibble]
+    read_spectrum_profiles = function(index) {
+      if(
+        is.null(self$spectrum_data)
+      ) {
+        NULL
+      } else {
+        self$spectrum_data$read_spectrum(index)
+      }
+    }
 
     #' @description
     #' Read a spectrum's peaks, if the peak data volume is present, and are stored separately
@@ -450,11 +506,13 @@ MZPeakFile <- R6::R6Class(
     #' @param index (`integer(1)`).
     #' @return [tibble]
     read_spectrum_peaks = function(index) {
-      ifelse(
-        is.null(self$spectrum_peak_data),
-        NULL,
+      if(
+        is.null(self$spectrum_peak_data)
+      ) {
+        NULL
+      } else {
         self$spectrum_peak_data$read_spectrum(index)
-      )
+      }
     },
 
     #' @description
