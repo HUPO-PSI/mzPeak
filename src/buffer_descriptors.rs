@@ -1365,6 +1365,16 @@ pub struct SerializedArrayIndex {
 #[derive(Debug, Default, Clone)]
 pub struct BufferOverrideTable(HashMap<BufferName, BufferName>);
 
+impl IntoIterator for BufferOverrideTable {
+    type Item = (BufferName, BufferName);
+
+    type IntoIter = std::collections::hash_map::IntoIter<BufferName, BufferName>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
 impl BufferOverrideTable {
     /// Check if a [`BufferName`] is overridden
     pub fn contains_key(&self, k: &BufferName) -> bool {

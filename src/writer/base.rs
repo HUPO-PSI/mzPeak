@@ -727,8 +727,20 @@ pub trait AbstractMzPeakWriter {
                     EntryMetadataDerivedFromData::new(None, None)
                 }
                 mzdata::spectrum::RefPeakDataLevel::RawData(binary_array_map) => {
-                    log::trace!("Writing {} raw arrays for {spectrum_count}", binary_array_map.len());
-                    self.write_spectrum_binary_array_map(spectrum, spectrum_count, binary_array_map)?
+
+                    match spectrum.signal_continuity() {
+                        SignalContinuity::Profile => {
+                            log::trace!("Writing {} raw arrays for {spectrum_count}", binary_array_map.len());
+                            self.write_spectrum_binary_array_map(spectrum, spectrum_count, binary_array_map)?
+                        },
+                        SignalContinuity::Centroid | SignalContinuity::Unknown => {
+                            log::trace!("Writing {} peaks from raw arrays for {spectrum_count}", peaks.len());
+                            let writer = self.get_or_create_spectrum_peak_writer()?;
+                            // self.write_spectrum_binary_array_map(spectrum, spectrum_count, binary_array_map)?
+                            let aux = writer.write_peaks(spectrum_count, spectrum_time, peaks)?;
+                            EntryMetadataDerivedFromData { mz_delta_model: None, auxiliary_arrays: Some(aux) }
+                        },
+                    }
                 },
                 mzdata::spectrum::RefPeakDataLevel::Centroid(_) => {
                     self.get_or_create_spectrum_peak_writer()?.write_peaks(spectrum_count, spectrum_time, peaks)?.into()
@@ -872,7 +884,7 @@ pub trait AbstractMzPeakWriter {
             .set_compression(compression)
             .set_dictionary_enabled(true)
             .set_sorting_columns(Some(sorted))
-            .set_column_encoding(index_path.clone().into(), Encoding::RLE)
+            .set_column_encoding(index_path.clone().into(), Encoding::DELTA_BINARY_PACKED)
             .set_column_bloom_filter_enabled(index_path.clone().into(), true)
             .set_writer_version(WriterVersion::PARQUET_2_0)
             .set_statistics_enabled(EnabledStatistics::Page);
@@ -992,7 +1004,7 @@ pub trait AbstractMzPeakWriter {
             .set_compression(compression)
             .set_dictionary_enabled(true)
             .set_sorting_columns(Some(sorted))
-            .set_column_encoding(index_path.clone().into(), Encoding::RLE)
+            .set_column_encoding(index_path.clone().into(), Encoding::DELTA_BINARY_PACKED)
             .set_column_bloom_filter_enabled(index_path.clone().into(), true)
             .set_writer_version(WriterVersion::PARQUET_2_0)
             .set_statistics_enabled(EnabledStatistics::Page)

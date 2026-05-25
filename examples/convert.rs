@@ -412,6 +412,8 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
     builder = builder
         // Populate the spectrum data schema from whatever data is available
         .sample_array_types_from_spectrum_source(&mut reader)
+        // Include the peaks eagerly so that we do not resort to the default schema
+        .sample_array_types_for_peaks_from_spectrum_source(&mut reader)
         // Populate the chromatogram data schema from whatever data is available
         .sample_array_types_from_chromatograms(reader.iter_chromatograms().take(10));
 

@@ -5,7 +5,7 @@ use mzpeaks::{CentroidLike, DeconvolutedCentroidLike};
 use parquet::{arrow::ArrowWriter, file::metadata::KeyValue};
 
 use crate::{
-    ToMzPeakDataSeries, peak_series::ArrayIndex, spectrum::AuxiliaryArray, writer::{ArrayBufferWriter, ArrayBufferWriterVariants}
+    ToMzPeakDataSeries, peak_series::{ArrayIndex, array_map_to_schema_arrays_and_excess}, spectrum::AuxiliaryArray, writer::{ArrayBufferWriter, ArrayBufferWriterVariants}
 };
 
 /// A small helper for writing peak list data to another stream with very narrow options.
@@ -57,7 +57,8 @@ impl<W: Write + Send + Seek> MiniPeakWriterType<W> {
         } else {
             None
         };
-        log::trace!("Writing {} peaks for {spectrum_count}", peaks.len());
+        let n = peaks.len();
+        log::trace!("Writing {n} peaks for {spectrum_count}");
         let aux = match peaks {
             RefPeakDataLevel::Centroid(peaks) => {
                 self.buffers
@@ -68,10 +69,22 @@ impl<W: Write + Send + Seek> MiniPeakWriterType<W> {
                     .add(spectrum_count, spectrum_time, peaks.as_slice())
             }
             RefPeakDataLevel::Missing => unimplemented!(),
-            RefPeakDataLevel::RawData(_) => unimplemented!(),
+            RefPeakDataLevel::RawData(arrays) => {
+                let (fields, cols, aux) = array_map_to_schema_arrays_and_excess(
+                    crate::BufferContext::Spectrum,
+                    arrays,
+                    n,
+                    spectrum_count,
+                    spectrum_time,
+                    Some(self.buffers.fields()),
+                    self.buffers.overrides(),
+                )?;
+                self.buffers.add_arrays(fields, cols, n, false);
+                aux
+            },
         };
 
-        self.n_points += peaks.len() as u64;
+        self.n_points += n as u64;
         self.n_entries += 1;
 
         if self.buffers.len() >= self.buffer_size {

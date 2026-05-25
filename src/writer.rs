@@ -367,7 +367,7 @@ impl MzPeakWriterBuilder {
     }
 
     fn take_or_initialize_peak_builder(&mut self) -> ArrayBuffersBuilder {
-        let point_builder = self
+        let mut point_builder = self
             .store_peaks_and_profiles_apart
             .take()
             .unwrap_or_else(|| {
@@ -375,6 +375,7 @@ impl MzPeakWriterBuilder {
                     .prefix("point")
                     .with_context(BufferContext::Spectrum)
             });
+        point_builder = point_builder.extend_overrides(self.spectrum_overrides().into_iter());
         point_builder
     }
 
