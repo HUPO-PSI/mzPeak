@@ -61,16 +61,16 @@ def common_checks(reader: MzPeakFile, subtests: pytest.Subtests):
         assert spec["spectrum representation"] == "MS:1000127"
         assert spec['index'] == 4
 
-    # with subtests.test("read slice"):
-    #     idx_slc = reader.time.resolve(slice(0.3, 0.4))
-    #     values = reader.spectra_signal_for_indices(idx_slc)
-    #     assert len(values) > 0
+    with subtests.test("read slice"):
+        idx_slc = reader.time.resolve(slice(0.3, 0.4))
+        values = reader.spectra_signal_for_indices(idx_slc)
+        assert len(values) > 0
 
-    #     chunks = reader.read_spectrum(idx_slc)
-    #     assert len(chunks) == (idx_slc.stop - idx_slc.start)
+        chunks = reader.read_spectrum(idx_slc)
+        assert len(chunks) == (idx_slc.stop - idx_slc.start)
 
-    #     chunks = reader.read_spectrum(range(idx_slc.start, idx_slc.stop))
-    #     assert len(chunks) == (idx_slc.stop - idx_slc.start)
+        chunks = reader.read_spectrum(range(idx_slc.start, idx_slc.stop))
+        assert len(chunks) == (idx_slc.stop - idx_slc.start)
 
 
     with subtests.test("archive behavior"):
@@ -118,7 +118,7 @@ def test_load_unpacked(subtests: pytest.Subtests):
 
 
 def test_load_numpress(subtests: pytest.Subtests):
-    reader = MzPeakFile(chunk_path)
+    reader = MzPeakFile(numpress_path)
     assert reader.spectrum_data.buffer_format() == BufferFormat.Chunk
     assert reader.wavelength_data is None
     common_checks(reader, subtests)

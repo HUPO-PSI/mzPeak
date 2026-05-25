@@ -96,16 +96,13 @@ impl BufferContext {
         match self {
             BufferContext::Spectrum => MZ_ARRAY
                 .clone()
-                .with_priority(Some(BufferPriority::Primary))
-                .with_sorting_rank(Some(1)),
+                .with_priority(Some(BufferPriority::Primary)),
             BufferContext::Chromatogram => TIME_ARRAY
                 .clone()
-                .with_priority(Some(BufferPriority::Primary))
-                .with_sorting_rank(Some(1)),
+                .with_priority(Some(BufferPriority::Primary)),
             BufferContext::WavelengthSpectrum => WAVELENGTH_ARRAY
                 .clone()
-                .with_priority(Some(BufferPriority::Primary))
-                .with_sorting_rank(Some(1)),
+                .with_priority(Some(BufferPriority::Primary)),
         }
     }
 }
