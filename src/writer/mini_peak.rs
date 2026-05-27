@@ -85,9 +85,8 @@ impl<W: Write + Send + Seek> MiniPeakWriterType<W> {
                     Some(self.buffers.fields()),
                     self.buffers.overrides(),
                 )?;
-                self.buffers.add_arrays(fields, cols, n, false);
-                // TODO: Fill this with a real value
-                (aux, 0)
+                let pts_written = self.buffers.add_arrays(fields, cols, n, false);
+                (aux, pts_written)
             }
         };
 

@@ -1728,7 +1728,8 @@ impl SpectrumDetailsBuilder {
         let summaries = self.raw_summaries(item);
         let pk_summaries = self.peak_summaries(item);
 
-        let n_pts = summaries.len();
+        let n_pts = entry_derived.data_point_count.unwrap_or_else(|| summaries.len()) as u64;
+        let n_pks = entry_derived.peak_count.or(pk_summaries.as_ref().map(|p| p.len()));
         let base_peak_mz = if n_pts > 0 {
             Some(summaries.base_peak.mz)
         } else {
@@ -1787,7 +1788,7 @@ impl SpectrumDetailsBuilder {
             },
             SignalContinuity::Centroid => {
                 let n = if n_pts == 0 {
-                    pk_summaries.as_ref().map(|v| v.len() as u64).unwrap_or_default()
+                    n_pks.unwrap_or_default() as u64
                 } else {
                     n_pts as u64
                 };

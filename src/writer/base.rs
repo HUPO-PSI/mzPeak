@@ -219,12 +219,11 @@ impl GenericDataArrayWriter {
                 buffer.overrides(),
             )?;
 
-            buffer.add_arrays(fields, data, n_points, is_profile);
+            let pts_written = buffer.add_arrays(fields, data, n_points, is_profile);
             for aux in auxiliary_arrays.iter() {
                 log::debug!("{:?} {:?} {:?}", aux.name, aux.data_type, aux.unit);
             }
-            // TODO: update n_points to actual # of logical points
-            (auxiliary_arrays, n_points)
+            (auxiliary_arrays, pts_written)
         };
 
         Ok(EntryMetadataDerivedFromData::new(delta_model, Some(extra_arrays), Some(n_points), None))
@@ -420,9 +419,8 @@ pub trait AbstractMzPeakWriter {
                 buffer.overrides(),
             )?;
 
-            buffer.add_arrays(fields, data, n_points, true);
-            // TODO: update n_points to actual # of logical points
-            (Some(extra_arrays), n_points)
+            let pts_written = buffer.add_arrays(fields, data, n_points, true);
+            (Some(extra_arrays), pts_written)
         };
 
         Ok((extra_arrays, n_points))
@@ -595,9 +593,8 @@ pub trait AbstractMzPeakWriter {
                 buffer.overrides(),
             )?;
 
-            // TODO: update n_points to actual # of logical points
-            buffer.add_arrays(fields, data, n_points, is_profile);
-            (delta_model, Some(extra_arrays), n_points)
+            let pts_written = buffer.add_arrays(fields, data, n_points, is_profile);
+            (delta_model, Some(extra_arrays), pts_written)
         };
 
         Ok(EntryMetadataDerivedFromData::new(
