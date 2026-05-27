@@ -103,6 +103,8 @@ pub(crate) use implement_mz_metadata;
 pub struct EntryMetadataDerivedFromData {
     pub mz_delta_model: Option<Vec<f64>>,
     pub auxiliary_arrays: Option<Vec<AuxiliaryArray>>,
+    pub data_point_count: Option<usize>,
+    pub peak_count: Option<usize>,
 }
 
 impl From<Vec<AuxiliaryArray>> for EntryMetadataDerivedFromData {
@@ -110,7 +112,7 @@ impl From<Vec<AuxiliaryArray>> for EntryMetadataDerivedFromData {
         if value.is_empty() {
             Self::default()
         } else {
-            Self::new(None, Some(value))
+            Self::new(None, Some(value), None, None)
         }
     }
 }
@@ -119,10 +121,14 @@ impl EntryMetadataDerivedFromData {
     pub fn new(
         mz_delta_model: Option<Vec<f64>>,
         auxiliary_arrays: Option<Vec<AuxiliaryArray>>,
+        data_point_count: Option<usize>,
+        peak_count: Option<usize>,
     ) -> Self {
         Self {
             mz_delta_model,
             auxiliary_arrays,
+            data_point_count,
+            peak_count,
         }
     }
 }
@@ -180,10 +186,10 @@ impl GenericDataArrayWriter {
             None
         };
 
-        let extra_arrays = if let Some(chunk_encoding) = self.use_chunked_encoding().copied() {
+        let (extra_arrays, n_points) = if let Some(chunk_encoding) = self.use_chunked_encoding().copied() {
             let buffer = &mut self.data_buffers;
 
-            let (chunks, auxiliary_arrays) = ArrowArrayChunk::build(
+            let (chunks, auxiliary_arrays, n_pts) = ArrowArrayChunk::build(
                 series_index,
                 series_time,
                 buffer.buffer_context(),
@@ -200,7 +206,7 @@ impl GenericDataArrayWriter {
                 buffer.add_arrays(fields, arrays, size, is_profile);
             }
 
-            Some(auxiliary_arrays)
+            (auxiliary_arrays, n_pts)
         } else {
             let buffer = &mut self.data_buffers;
             let (fields, data, auxiliary_arrays) = array_map_to_schema_arrays_and_excess(
@@ -217,10 +223,11 @@ impl GenericDataArrayWriter {
             for aux in auxiliary_arrays.iter() {
                 log::debug!("{:?} {:?} {:?}", aux.name, aux.data_type, aux.unit);
             }
-            Some(auxiliary_arrays)
+            // TODO: update n_points to actual # of logical points
+            (auxiliary_arrays, n_points)
         };
 
-        Ok(EntryMetadataDerivedFromData::new(delta_model, extra_arrays))
+        Ok(EntryMetadataDerivedFromData::new(delta_model, Some(extra_arrays), Some(n_points), None))
     }
 
     /// Write a peak list to the data buffer.
@@ -235,7 +242,7 @@ impl GenericDataArrayWriter {
             let arrays = C::as_arrays(peaks);
             let buffer_ref = &mut self.data_buffers;
 
-            let (chunks, auxiliary_arrays) = ArrowArrayChunk::build(
+            let (chunks, auxiliary_arrays, n_pts) = ArrowArrayChunk::build(
                 series_index,
                 series_time,
                 ctx,
@@ -253,11 +260,13 @@ impl GenericDataArrayWriter {
             Ok(EntryMetadataDerivedFromData::new(
                 None,
                 Some(auxiliary_arrays),
+                None,
+                Some(n_pts)
             ))
         } else {
-            self.data_buffers
+            let (aux, n_pts) = self.data_buffers
                 .add(series_index, series_time, peaks);
-            Ok(EntryMetadataDerivedFromData::new(None, None))
+            Ok(EntryMetadataDerivedFromData::new(None, Some(aux), None, Some(n_pts)))
         }
     }
 
@@ -373,14 +382,14 @@ pub trait AbstractMzPeakWriter {
         &mut self,
         _chromatogram: &impl ChromatogramLike,
         binary_array_map: &BinaryArrayMap,
-    ) -> io::Result<Option<Vec<AuxiliaryArray>>> {
+    ) -> io::Result<(Option<Vec<AuxiliaryArray>>, usize)> {
         let time = binary_array_map.get(&ArrayType::TimeArray).unwrap();
         let n_points = time.data_len()?;
         let chromatogram_index = self.chromatogram_counter();
-        let extra_arrays = if let Some(chunking) = self.use_chromatogram_chunked_encoding().copied()
+        let (extra_arrays, n_points) = if let Some(chunking) = self.use_chromatogram_chunked_encoding().copied()
         {
             let buffer_ref = self.chromatogram_data_buffer_mut();
-            let (chunks, auxiliary_arrays) = ArrowArrayChunk::build(
+            let (chunks, auxiliary_arrays, n_pts) = ArrowArrayChunk::build(
                 chromatogram_index,
                 None,
                 BufferContext::Chromatogram,
@@ -397,7 +406,7 @@ pub trait AbstractMzPeakWriter {
                 buffer_ref.add_arrays(fields, arrays, size, true);
             }
 
-            Some(auxiliary_arrays)
+            (Some(auxiliary_arrays), n_pts)
         } else {
             let buffer = self.chromatogram_data_buffer_mut();
 
@@ -412,10 +421,11 @@ pub trait AbstractMzPeakWriter {
             )?;
 
             buffer.add_arrays(fields, data, n_points, true);
-            Some(extra_arrays)
+            // TODO: update n_points to actual # of logical points
+            (Some(extra_arrays), n_points)
         };
 
-        Ok(extra_arrays)
+        Ok((extra_arrays, n_points))
     }
 
     /// Write a `chromatogram` to the MzPeak file
@@ -424,7 +434,7 @@ pub trait AbstractMzPeakWriter {
     /// to be written.
     fn write_chromatogram(&mut self, chromatogram: &Chromatogram) -> io::Result<()> {
         log::trace!("Writing chromatogram {}", chromatogram.id());
-        let aux_arrays = self.write_chromatogram_arrays(chromatogram, &chromatogram.arrays)?;
+        let (aux_arrays, _n_points) = self.write_chromatogram_arrays(chromatogram, &chromatogram.arrays)?;
         self.chromatogram_entry_buffer_mut()
             .append_value(chromatogram, aux_arrays);
         self.check_data_buffer()?;
@@ -474,12 +484,9 @@ pub trait AbstractMzPeakWriter {
                 }
             }
         }
-        let EntryMetadataDerivedFromData {
-            mz_delta_model,
-            auxiliary_arrays: aux_arrays,
-        } = self.write_spectrum_data(spectrum)?;
+        let entry_derived = self.write_spectrum_data(spectrum)?;
         self.spectrum_entry_buffer_mut()
-            .append_value(spectrum, mz_delta_model, aux_arrays);
+            .append_value(spectrum, entry_derived);
         self.check_data_buffer()?;
         Ok(())
     }
@@ -538,7 +545,7 @@ pub trait AbstractMzPeakWriter {
             None
         };
         log::trace!("Writing {n_points} points for {spectrum_count}");
-        let (delta_params, extra_arrays) = if let Some(chunking) =
+        let (delta_params, extra_arrays, n_pts) = if let Some(chunking) =
             self.use_chunked_encoding().copied()
         {
             // If we use the chunked encoding, we pre-encode everything
@@ -550,7 +557,7 @@ pub trait AbstractMzPeakWriter {
             };
             let buffer_ref = self.spectrum_data_buffer_mut();
 
-            let (chunks, auxiliary_arrays) = ArrowArrayChunk::build(
+            let (chunks, auxiliary_arrays, n_pts) = ArrowArrayChunk::build(
                 spectrum_count,
                 spectrum_time,
                 BufferContext::Spectrum,
@@ -567,7 +574,7 @@ pub trait AbstractMzPeakWriter {
                 buffer_ref.add_arrays(fields, arrays, size, is_profile);
             }
 
-            (delta_model, Some(auxiliary_arrays))
+            (delta_model, Some(auxiliary_arrays), n_pts)
         } else {
             let nullify_zero_intensity = self.spectrum_data_buffer_mut().nullify_zero_intensity();
             let delta_model = if is_profile && nullify_zero_intensity {
@@ -588,13 +595,15 @@ pub trait AbstractMzPeakWriter {
                 buffer.overrides(),
             )?;
 
+            // TODO: update n_points to actual # of logical points
             buffer.add_arrays(fields, data, n_points, is_profile);
-            (delta_model, Some(extra_arrays))
+            (delta_model, Some(extra_arrays), n_points)
         };
 
         Ok(EntryMetadataDerivedFromData::new(
             delta_params,
             extra_arrays,
+            Some(n_pts), None
         ))
     }
 
@@ -613,7 +622,7 @@ pub trait AbstractMzPeakWriter {
             let arrays = C::as_arrays(peaks);
             let buffer_ref = self.spectrum_data_buffer_mut();
 
-            let (chunks, auxiliary_arrays) = ArrowArrayChunk::build(
+            let (chunks, auxiliary_arrays, n_pts) = ArrowArrayChunk::build(
                 spectrum_count,
                 spectrum_time,
                 BufferContext::Spectrum,
@@ -632,11 +641,13 @@ pub trait AbstractMzPeakWriter {
             Ok(EntryMetadataDerivedFromData::new(
                 None,
                 Some(auxiliary_arrays),
+                None,
+                Some(n_pts)
             ))
         } else {
-            self.spectrum_data_buffer_mut()
+            let (aux, n_pts) = self.spectrum_data_buffer_mut()
                 .add(spectrum_count, spectrum_time, peaks);
-            Ok(EntryMetadataDerivedFromData::new(None, None))
+            Ok(EntryMetadataDerivedFromData::new(None, Some(aux), None, Some(n_pts)))
         }
     }
 
@@ -690,7 +701,7 @@ pub trait AbstractMzPeakWriter {
         &mut self,
         spectrum: &impl SpectrumLike<CI, DI>,
     ) -> io::Result<EntryMetadataDerivedFromData> {
-        let spectrum_count = self.spectrum_counter();
+        let spectrum_index = self.spectrum_counter();
 
         let peaks = spectrum.peaks();
 
@@ -700,7 +711,7 @@ pub trait AbstractMzPeakWriter {
             None
         };
 
-        let (delta_params, aux_arrays) = if
+        let entry_derived = if
             matches!(
                 spectrum.peaks(),
                 RefPeakDataLevel::Centroid(_) | RefPeakDataLevel::Deconvoluted(_)
@@ -708,51 +719,44 @@ pub trait AbstractMzPeakWriter {
             && spectrum.raw_arrays().is_some()
             && spectrum.signal_continuity() == SignalContinuity::Profile
         {
-            log::trace!("Writing both profile signal and peaks for {spectrum_count}");
+            log::trace!("Writing both profile signal and peaks for {spectrum_index}");
             let raw_arrays = spectrum.raw_arrays().unwrap();
-            let EntryMetadataDerivedFromData {
-                mz_delta_model: delta_params,
-                auxiliary_arrays: aux_arrays,
-            } = self.write_spectrum_binary_array_map(spectrum, spectrum_count, raw_arrays)?;
+            let entry_derived= self.write_spectrum_binary_array_map(spectrum, spectrum_index, raw_arrays)?;
             self.get_or_create_spectrum_peak_writer()?
-                .write_peaks(spectrum_count, spectrum_time, peaks)?;
-            (delta_params, aux_arrays)
+                .write_peaks(spectrum_index, spectrum_time, peaks)?;
+            entry_derived
         } else {
-            let EntryMetadataDerivedFromData {
-                mz_delta_model: delta_params,
-                auxiliary_arrays: aux_arrays,
-            } = match peaks {
+            let entry_derived = match peaks {
                 mzdata::spectrum::RefPeakDataLevel::Missing => {
-                    log::trace!("No signal data for {spectrum_count}");
-                    EntryMetadataDerivedFromData::new(None, None)
+                    log::trace!("No signal data for {spectrum_index}");
+                    EntryMetadataDerivedFromData::default()
                 }
                 mzdata::spectrum::RefPeakDataLevel::RawData(binary_array_map) => {
 
                     match spectrum.signal_continuity() {
                         SignalContinuity::Profile => {
-                            log::trace!("Writing {} raw arrays for {spectrum_count}", binary_array_map.len());
-                            self.write_spectrum_binary_array_map(spectrum, spectrum_count, binary_array_map)?
+                            log::trace!("Writing {} raw arrays for {spectrum_index}", binary_array_map.len());
+                            self.write_spectrum_binary_array_map(spectrum, spectrum_index, binary_array_map)?
                         },
                         SignalContinuity::Centroid | SignalContinuity::Unknown => {
-                            log::trace!("Writing {} peaks from raw arrays for {spectrum_count}", peaks.len());
+                            log::trace!("Writing {} peaks from raw arrays for {spectrum_index}", peaks.len());
                             let writer = self.get_or_create_spectrum_peak_writer()?;
                             // self.write_spectrum_binary_array_map(spectrum, spectrum_count, binary_array_map)?
-                            let aux = writer.write_peaks(spectrum_count, spectrum_time, peaks)?;
-                            EntryMetadataDerivedFromData { mz_delta_model: None, auxiliary_arrays: Some(aux) }
+                            writer.write_peaks(spectrum_index, spectrum_time, peaks)?
                         },
                     }
                 },
                 mzdata::spectrum::RefPeakDataLevel::Centroid(_) => {
-                    self.get_or_create_spectrum_peak_writer()?.write_peaks(spectrum_count, spectrum_time, peaks)?.into()
+                    self.get_or_create_spectrum_peak_writer()?.write_peaks(spectrum_index, spectrum_time, peaks)?.into()
                 }
                 mzdata::spectrum::RefPeakDataLevel::Deconvoluted(_) => {
-                    self.get_or_create_spectrum_peak_writer()?.write_peaks(spectrum_count, spectrum_time, peaks)?.into()
+                    self.get_or_create_spectrum_peak_writer()?.write_peaks(spectrum_index, spectrum_time, peaks)?.into()
                 }
             };
-            (delta_params, aux_arrays)
+            entry_derived
         };
 
-        Ok(EntryMetadataDerivedFromData::new(delta_params, aux_arrays))
+        Ok(entry_derived)
     }
 
     /// Get the writer for the separate peak list file, if one is available

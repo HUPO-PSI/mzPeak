@@ -602,8 +602,8 @@ impl ArrowArrayChunk {
         drop_zero_intensity: bool,
         nullify_zero_intensity: bool,
         fields: &Fields,
-    ) -> Result<(Option<StructArray>, Vec<AuxiliaryArray>), ArrayRetrievalError> {
-        let (chunks, auxiliary_arrays) = ArrowArrayChunk::from_arrays(
+    ) -> Result<(Option<StructArray>, Vec<AuxiliaryArray>, usize), ArrayRetrievalError> {
+        let (chunks, auxiliary_arrays, n_pts) = ArrowArrayChunk::from_arrays(
             series_index,
             series_time,
             buffer_context.main_axis()
@@ -631,7 +631,7 @@ impl ArrowArrayChunk {
         } else {
             None
         };
-        Ok((chunks, auxiliary_arrays))
+        Ok((chunks, auxiliary_arrays, n_pts))
     }
 
     /// Low level constructor for a single chunk record.
@@ -922,7 +922,7 @@ impl ArrowArrayChunk {
         drop_zero_intensity: bool,
         nullify_zero_intensity: bool,
         fields: Option<&Fields>,
-    ) -> Result<(Vec<Self>, Vec<AuxiliaryArray>), ArrayRetrievalError> {
+    ) -> Result<(Vec<Self>, Vec<AuxiliaryArray>, usize), ArrayRetrievalError> {
         let mut chunks = Vec::new();
 
         let mut arrow_arrays = Vec::new();
@@ -964,7 +964,7 @@ impl ArrowArrayChunk {
             {
                 auxiliary_arrays.push(AuxiliaryArray::from_data_array(arr)?);
             }
-            return Ok((Vec::new(), auxiliary_arrays));
+            return Ok((Vec::new(), auxiliary_arrays, 0));
         }
 
         for (i, (_, arr)) in arrays.iter().enumerate() {
@@ -1076,9 +1076,11 @@ impl ArrowArrayChunk {
                 log::warn!(
                     "Primary axis array is missing ({main_axis}) for {series_index} post-conversion"
                 );
-                return Ok((Vec::new(), Vec::new()));
+                return Ok((Vec::new(), Vec::new(), 0));
             }
         };
+
+        let n_pts = main_axis_array.len();
 
         let steps = match array_to_arrow_type(main_axis.dtype) {
             DataType::Float32 => null_chunk_every_k(
@@ -1134,7 +1136,7 @@ impl ArrowArrayChunk {
             ));
         }
 
-        Ok((chunks, auxiliary_arrays))
+        Ok((chunks, auxiliary_arrays, n_pts))
     }
 }
 
@@ -1199,7 +1201,7 @@ mod test {
             BinaryDataArrayType::Float32,
         );
 
-        let (chunks, _) = ArrowArrayChunk::from_arrays(
+        let (chunks, _, _) = ArrowArrayChunk::from_arrays(
             0,
             None,
             target,
@@ -1287,7 +1289,7 @@ mod test {
             BinaryDataArrayType::Float64,
         );
 
-        let (chunks, _) = ArrowArrayChunk::from_arrays(
+        let (chunks, _, _) = ArrowArrayChunk::from_arrays(
             0,
             None,
             target,
@@ -1420,7 +1422,7 @@ mod test {
             .with_transform(Some(BufferTransform::NumpressSLOF));
         let overrides = BufferOverrideTable::from_iter(vec![(intensity_name, intensity_name_tfm)]);
 
-        let (chunks, _) = ArrowArrayChunk::from_arrays(
+        let (chunks, _, _) = ArrowArrayChunk::from_arrays(
             0,
             None,
             target,
@@ -1471,7 +1473,7 @@ mod test {
             .with_transform(Some(BufferTransform::NumpressSLOF));
         let overrides = BufferOverrideTable::from_iter(vec![(intensity_name, intensity_name_tfm)]);
 
-        let (chunks, _) = ArrowArrayChunk::from_arrays(
+        let (chunks, _, _) = ArrowArrayChunk::from_arrays(
             0,
             None,
             target,
@@ -1537,7 +1539,7 @@ mod test {
         )
         .with_unit(Unit::MZ);
 
-        let (chunks, _) = ArrowArrayChunk::from_arrays(
+        let (chunks, _, _) = ArrowArrayChunk::from_arrays(
             0,
             None,
             target,
@@ -1633,7 +1635,7 @@ mod test {
             BinaryDataArrayType::Float64,
         );
 
-        let (chunks, _) = ArrowArrayChunk::from_arrays(
+        let (chunks, _, _) = ArrowArrayChunk::from_arrays(
             0,
             None,
             target,
@@ -1775,7 +1777,7 @@ mod test {
             BinaryDataArrayType::Float64,
         );
 
-        let (chunks, _) = ArrowArrayChunk::from_arrays(
+        let (chunks, _, _) = ArrowArrayChunk::from_arrays(
             0,
             None,
             target,

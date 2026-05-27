@@ -5,7 +5,9 @@ use mzpeaks::{CentroidLike, DeconvolutedCentroidLike};
 use parquet::{arrow::ArrowWriter, file::metadata::KeyValue};
 
 use crate::{
-    ToMzPeakDataSeries, peak_series::{ArrayIndex, array_map_to_schema_arrays_and_excess}, spectrum::AuxiliaryArray, writer::{ArrayBufferWriter, ArrayBufferWriterVariants}
+    ToMzPeakDataSeries,
+    peak_series::{ArrayIndex, array_map_to_schema_arrays_and_excess},
+    writer::{ArrayBufferWriter, ArrayBufferWriterVariants, base::EntryMetadataDerivedFromData},
 };
 
 /// A small helper for writing peak list data to another stream with very narrow options.
@@ -18,7 +20,11 @@ pub struct MiniPeakWriterType<W: Write + Send + Seek> {
 }
 
 impl<W: Write + Send + Seek> MiniPeakWriterType<W> {
-    pub fn new(writer: ArrowWriter<W>, buffers: ArrayBufferWriterVariants, buffer_size: usize) -> Self {
+    pub fn new(
+        writer: ArrowWriter<W>,
+        buffers: ArrayBufferWriterVariants,
+        buffer_size: usize,
+    ) -> Self {
         let mut this = Self {
             writer,
             buffers,
@@ -51,7 +57,7 @@ impl<W: Write + Send + Seek> MiniPeakWriterType<W> {
         spectrum_count: u64,
         spectrum_time: Option<f32>,
         peaks: RefPeakDataLevel<C, D>,
-    ) -> io::Result<Vec<AuxiliaryArray>> {
+    ) -> io::Result<EntryMetadataDerivedFromData> {
         let spectrum_time = if self.buffers.include_time() {
             spectrum_time
         } else {
@@ -59,7 +65,7 @@ impl<W: Write + Send + Seek> MiniPeakWriterType<W> {
         };
         let n = peaks.len();
         log::trace!("Writing {n} peaks for {spectrum_count}");
-        let aux = match peaks {
+        let (aux, n_peaks) = match peaks {
             RefPeakDataLevel::Centroid(peaks) => {
                 self.buffers
                     .add(spectrum_count, spectrum_time, peaks.as_slice())
@@ -80,8 +86,9 @@ impl<W: Write + Send + Seek> MiniPeakWriterType<W> {
                     self.buffers.overrides(),
                 )?;
                 self.buffers.add_arrays(fields, cols, n, false);
-                aux
-            },
+                // TODO: Fill this with a real value
+                (aux, 0)
+            }
         };
 
         self.n_points += n as u64;
@@ -90,7 +97,12 @@ impl<W: Write + Send + Seek> MiniPeakWriterType<W> {
         if self.buffers.len() >= self.buffer_size {
             self.flush()?;
         }
-        Ok(aux)
+        Ok(EntryMetadataDerivedFromData::new(
+            None,
+            Some(aux),
+            None,
+            Some(n_peaks),
+        ))
     }
 
     pub fn flush(&mut self) -> io::Result<()> {

@@ -112,7 +112,7 @@ impl<'a> ArrayTypesSampler<'a> {
                 None,
             )
             .ok()
-            .and_then(|(chunks, _aux_arrays)| {
+            .and_then(|(chunks, _aux_arrays, _)| {
                 chunks.first().map(|c| {
                     c.to_schema(
                         context,

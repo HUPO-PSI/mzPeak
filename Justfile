@@ -31,7 +31,7 @@ small_unpacked:
 
 test:
     # cargo t --tests -- --no-capture
-    cargo nextest run
+    cargo nextest run --tests
 
 pytest:
     py.test -n auto -l -s -v python/test/ \

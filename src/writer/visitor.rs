@@ -21,7 +21,7 @@ use mzdata::{
 use crate::{
     constants::{CHROMATOGRAM, PRECURSOR, SCAN, SELECTED_ION, SPECTRUM},
     spectrum::AuxiliaryArray,
-    writer::builder::SpectrumFieldVisitors,
+    writer::{base::EntryMetadataDerivedFromData, builder::SpectrumFieldVisitors},
 };
 
 pub trait VisitorBase: Debug {
@@ -1721,8 +1721,7 @@ impl SpectrumDetailsBuilder {
         &mut self,
         index: u64,
         item: &S,
-        mz_delta_model_params: Option<Vec<f64>>,
-        auxiliary_arrays: Option<Vec<AuxiliaryArray>>,
+        entry_derived: EntryMetadataDerivedFromData,
     ) -> bool {
         self.curies_to_mask.clear();
 
@@ -1804,7 +1803,7 @@ impl SpectrumDetailsBuilder {
 
         self.data_processing_ref.append_null();
 
-        if let Some(arrays) = auxiliary_arrays.as_ref() {
+        if let Some(arrays) = entry_derived.auxiliary_arrays.as_ref() {
             let b = self.auxiliary_arrays.values();
             for a in arrays {
                 b.append_value(a);
@@ -1815,9 +1814,9 @@ impl SpectrumDetailsBuilder {
         }
 
         self.number_of_auxiliary_arrays
-            .append_value(auxiliary_arrays.map(|v| v.len()).unwrap_or_default() as u32);
+            .append_value(entry_derived.auxiliary_arrays.map(|v| v.len()).unwrap_or_default() as u32);
 
-        match mz_delta_model_params {
+        match entry_derived.mz_delta_model {
             Some(params) => {
                 self.mz_delta_model.values().append_slice(&params);
                 self.mz_delta_model.append(true);
@@ -1950,16 +1949,14 @@ impl SpectrumBuilder {
     >(
         &mut self,
         item: &S,
-        mz_delta_model_params: Option<Vec<f64>>,
-        auxiliary_arrays: Option<Vec<AuxiliaryArray>>,
+        entry_derived_metadata: EntryMetadataDerivedFromData,
     ) -> bool {
         self.id_to_index
             .insert(item.id().to_string(), self.spectrum_index_counter);
         let out = self.spectrum.append_value(
             self.spectrum_index_counter,
             item,
-            mz_delta_model_params,
-            auxiliary_arrays,
+            entry_derived_metadata,
         );
         for s in item.acquisition().scans.iter() {
             self.scan.append_value(&(self.spectrum_index_counter, s));
@@ -2937,7 +2934,7 @@ mod test {
             .with_name("base_peak_mz_2"),
         );
 
-        builder.append_value(&spec, None, None);
+        builder.append_value(&spec, Default::default());
         builder.equalize_lengths();
         builder.append_null();
         let arrays = builder.finish_cloned();
