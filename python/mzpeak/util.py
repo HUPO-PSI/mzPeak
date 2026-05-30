@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from numbers import Number
 from typing import Any, Generic, Mapping, TypeVar, Iterator
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 
@@ -36,6 +37,14 @@ class Span(Generic[Q]):
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.start}, {self.end})"
+
+
+DTYPES = {
+    "MS:1000519": np.int32,
+    "MS:1000521": np.float32,
+    "MS:1000522": np.int64,
+    "MS:1000523": np.float64,
+}
 
 
 def _slice_to_range(slice_val: slice, n: int) -> range:

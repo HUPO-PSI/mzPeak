@@ -19,7 +19,7 @@ from pyarrow import parquet as pq
 
 from .mz_reader import _DataBatchIter, MzPeakArrayDataReader, _SpectrumArrays
 from .file_index import FileIndex, DataKind, EntityType
-from .util import _SeekableIter, OntologyMapper
+from .util import _SeekableIter, OntologyMapper, DTYPES
 
 try:
     has_upath = True
@@ -178,12 +178,7 @@ class _AuxiliaryArrayDecoder:
         "MS:1002312": pynumpress.decode_linear,
     }
 
-    dtypes = {
-        "MS:1000519": np.int32,
-        "MS:1000521": np.float32,
-        "MS:1000522": np.int64,
-        "MS:1000523": np.float64,
-    }
+    dtypes = DTYPES
     ascii_code = "MS:1001479"
 
     @classmethod
@@ -316,6 +311,14 @@ class _MzPeakDataIter(Iterator[tuple[int, _SpectrumArrays]]):
                 if self.peak_iter.at_index(i):
                     data = next(self.peak_iter)
                     return data
+
+    def empty_arrays(self) -> _SpectrumArrays | None:
+        if self.prefer_peaks and self.peak_iter:
+            return self.peak_iter.empty_arrays()
+        elif self.data_iter:
+            return self.data_iter.empty_arrays()
+        elif self.peak_iter:
+            return self.peak_iter.empty_arrays()
 
     def __next__(self):
         i = self.index
@@ -802,7 +805,13 @@ class MzPeakFileIter(Iterator["_SpectrumType"]):
             profile_iter = reader.spectrum_data._data_iterator(0)
         if reader.spectrum_peak_data:
             peak_iter = reader.spectrum_peak_data._data_iterator(0)
-        data_iter = _MzPeakDataIter(reader.spectrum_metadata, profile_iter, peak_iter, len(reader.spectrum_metadata))
+        data_iter = _MzPeakDataIter(
+            reader.spectrum_metadata,
+            profile_iter,
+            peak_iter,
+            len(reader.spectrum_metadata),
+            prefer_peaks=reader.prefer_peaks
+        )
         return cls(data_iter, reader.spectrum_metadata)
 
     def __init__(
@@ -822,6 +831,8 @@ class MzPeakFileIter(Iterator["_SpectrumType"]):
         self.data_iter.seek(i)
         _j, data = next(self.data_iter)
         meta = self.metadata[i]
+        if data is None:
+            data = self.data_iter.inner.empty_arrays()
         meta.update(data)
         return meta
 
@@ -861,6 +872,11 @@ class _SpectrumCollectionMixin(Sequence[_SpectrumType]):
                     data = self.spectrum_data[index]
                 elif not pd.isna(pk) and pk > 0 and self.spectrum_peak_data is not None:
                     data = self.spectrum_peak_data[index]
+            if not data:
+                if self.prefer_peaks and self.spectrum_peak_data:
+                    data = self.spectrum_peak_data._empty_array_map()
+                else:
+                    data = self.spectrum_data._empty_array_map()
             if data:
                 spec.update(data)
         elif isinstance(index, Iterable):
@@ -934,6 +950,9 @@ class MzPeakFile(_SpectrumCollectionMixin):
         data from. This will only be present if the file was written with a separate
         centroid stream to store both centroids and profile data side-by-side, as
         in some instrument vendor formats.
+    prefer_peaks : :class:`bool`
+        Whether to preferentially load peak or profile data when both are available for
+        the same spectrum.
     chromatogram_data : :class:`~.MzPeakArrayDataReader` or :const:`None`
         The facet of the data file for reading chromatogram signal data from. This
         will only be present if the writer specifically writes chromatogram data.

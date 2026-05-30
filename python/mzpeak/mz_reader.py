@@ -16,7 +16,7 @@ except ImportError:
 from pyarrow import compute as pc
 from pyarrow import parquet as pq
 
-from .util import _SeekableIter, _SeekableMixin, Span, _slice_to_range
+from .util import _SeekableIter, _SeekableMixin, Span, _slice_to_range, DTYPES
 from .filters import null_delta_decode, fill_nulls
 
 logger = logging.getLogger(__name__)
@@ -1307,7 +1307,13 @@ class MzPeakArrayDataReader(Sequence[_SpectrumArrays]):
             )
         else:
             raise ValueError()
-        return _DataBatchIter(it, fmt, cleaner)
+        return _DataBatchIter(it, fmt, cleaner, self._empty_array_map())
+
+    def _empty_array_map(self) -> _SpectrumArrays:
+        arrays = {}
+        for arr in self.array_index.values():
+            arrays[arr['array_name']] = np.array([], dtype=DTYPES[arr['data_type']])
+        return arrays
 
 
 MzPeakSpectrumDataReader = MzPeakArrayDataReader
@@ -1320,18 +1326,24 @@ class _DataBatchIter(
     inner: _BatchIterator
     buffer_format: BufferFormat
     batch_cleaner: _BatchCleanerBase
+    _empty_arrays: _SpectrumArrays | None = None
 
     def __init__(
         self,
         inner: _BatchIterator,
         buffer_format: BufferFormat,
         batch_cleaner: _BatchCleanerBase,
+        _empty_arrays: _SpectrumArrays | None = None
     ):
         self.batch_cleaner = batch_cleaner
         self.buffer_format = buffer_format
         self.inner = inner
+        self._empty_arrays = _empty_arrays
         if self.inner._peek is not None:
             self._coerce_peeked()
+
+    def empty_arrays(self) -> _SpectrumArrays | None:
+        return self._empty_arrays.copy() if self._empty_arrays is not None else None
 
     def _coerce_peeked(self):
         self.inner._peek = (
