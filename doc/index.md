@@ -53,8 +53,8 @@
     - [Adding a new `Entity Type`](#adding-a-new-entity-type)
 - [Spectrum Signal Data File - `spectra_data.parquet`](#spectrum-signal-data-file---spectra_dataparquet)
   - [Recommendations](#recommendations)
-- [Spectrum Metadata - spectra\_metadata.parquet](#spectrum-metadata---spectra_metadataparquet)
 - [Spectrum Peak Data - `spectra_peaks.parquet`](#spectrum-peak-data---spectra_peaksparquet)
+- [Spectrum Metadata - spectra\_metadata.parquet](#spectrum-metadata---spectra_metadataparquet)
 - [Chromatogram Signal Data - `chromatograms_data.parquet`](#chromatogram-signal-data---chromatograms_dataparquet)
   - [Recommendations](#recommendations-1)
 - [Chromatogram Metadata - `chromatograms_metadata.parquet`](#chromatogram-metadata---chromatograms_metadataparquet)
@@ -1190,7 +1190,7 @@ The spectrum signal data is encoded using either [point layout](#point-layout) o
 
 When using [null marking](#null-marking), follow the [null semantics for signal data](#null-semantics-for-signal-data) with care for profile data.
 
-Only profile spectra should be written to this file, centroid spectra, or processed, centroid views of profile spectra when storing both modes should be written to the [peak data](#spectrum-peak-data---spectra_peaksparquet) file. The number of points written to this file for a particular spectrum _SHOULD_ be written to the metadata table
+Only profile spectra should be written to this file, centroid spectra, or processed, centroid views of profile spectra when storing both modes should be written to the [peak data](#spectrum-peak-data---spectra_peaksparquet) file. The number of points written to this file for a particular spectrum _MUST_ be written to the [`spectrum.MS_1003060_number_of_data_points`](http://purl.obolibrary.org/obo/MS_1003060) column in the [`spectra_metadata.parquet`](#spectrum-metadata---spectra_metadataparquet) file to facilitate appropriate reading operation planning.
 
 ## Recommendations
 
@@ -1200,6 +1200,22 @@ When selecting a [Parquet encoding](https://parquet.apache.org/docs/file-format/
 - `spectrum_time`: [byte stream split](https://parquet.apache.org/docs/file-format/data-pages/encodings/#byte-stream-split-byte_stream_split--9)
 - m/z arrays: [byte stream split](https://parquet.apache.org/docs/file-format/data-pages/encodings/#byte-stream-split-byte_stream_split--9), also called byte shuffling, or [RLE dictionary encoding](https://parquet.apache.org/docs/file-format/data-pages/encodings/#dictionary-encoding-plain_dictionary--2-and-rle_dictionary--8) when there is ion mobility data.
 - ion mobility arrays: [RLE dictionary encoding](https://parquet.apache.org/docs/file-format/data-pages/encodings/#dictionary-encoding-plain_dictionary--2-and-rle_dictionary--8), byte shuffling tends to not be very helpful. Also consider increasing the dictionary page size.
+
+
+# Spectrum Peak Data - `spectra_peaks.parquet`
+
+**File index entry:**
+
+```json
+{
+  "name": "spectra_peaks.parquet",
+  "entity_type": "spectrum",
+  "data_kind": "peaks"
+}
+```
+
+The spectrum peak lists separately stored from the raw signal stored in [`spectra_data.parquet`](#spectrum-signal-data-file---spectra_dataparquet). The `entity index` column _MUST_ be named `spectrum_index`, and if a time column is written alongside it, it _SHOULD_ be named `spectrum_time`. Any centroid spectra _MUST_ be written to this file, not [`spectra_data.parquet`](#spectrum-signal-data-file---spectra_dataparquet). The number of peaks written for a given spectrum in this file _MUST_ be written to the [`spectrum.MS_1003059_number_of_peaks`](http://purl.obolibrary.org/obo/MS_1003059) column in the [`spectra_metadata.parquet`](#spectrum-metadata---spectra_metadataparquet) file to facilitate reading operation planning.
+
 
 # Spectrum Metadata - spectra_metadata.parquet
 
@@ -1293,20 +1309,6 @@ This metadata table uses the [packed parallel metadata table](#packed-parallel-m
       - [`MS_1000042_intensity_unit_MS_1000131`](http://purl.obolibrary.org/obo/MS_1000131)
 
 QUESTION: Is there a better way to make ion mobility storage generic over type ("ion mobility drift time", "inverse reduced ion mobility", "FAIMS compensation voltage")?
-
-# Spectrum Peak Data - `spectra_peaks.parquet`
-
-**File index entry:**
-
-```json
-{
-  "name": "spectra_peaks.parquet",
-  "entity_type": "spectrum",
-  "data_kind": "peaks"
-}
-```
-
-The spectrum peak lists separately stored from the raw signal stored in [`spectra_data.parquet`](#spectrum-signal-data-file---spectra_dataparquet). This _SHOULD_ be encoded using the [point layout](#point-layout). The `entity index` column _MUST_ be named `spectrum_index`, and if a time column is written alongside it, it _SHOULD_ be named `spectrum_time`. When storing peak lists separately, the writer _MUST_ store the primary data representation in [`spectra_data.parquet`](#spectrum-signal-data-file---spectra_dataparquet), even if that primary representation is already a peak list.
 
 # Chromatogram Signal Data - `chromatograms_data.parquet`
 
