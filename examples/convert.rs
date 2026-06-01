@@ -383,6 +383,7 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
             }
         }
         let encryption_props =
+            // Add a bunch of extra JSON metadata to let pyarrow's hamstrung encryption machinery work
             FileEncryptionProperties::builder(encryption_key.as_bytes().to_vec())
                 .with_footer_key_metadata(r#"{"isFooterKey": true, "keyMaterialType": "PKMT1", "internalStorage": true, "doubleWrapping": false,
                                               "kmsInstanceID": "dummy_kms_instance_id", "kmsInstanceURL": "dummy_kms_instance_url", "masterKeyID": "dummy_master_key_id",
@@ -404,12 +405,15 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
 
     // If we are storing peaks too, configure the extra builder.
     if args.write_peaks_and_profiles {
+        log::debug!("Sampling peak array types");
         builder = builder.sample_array_types_for_peaks_from_spectrum_source(&mut reader);
     }
 
     builder = builder
         // Populate the spectrum data schema from whatever data is available
         .sample_array_types_from_spectrum_source(&mut reader)
+        // Include the peaks eagerly so that we do not resort to the default schema
+        .sample_array_types_for_peaks_from_spectrum_source(&mut reader)
         // Populate the chromatogram data schema from whatever data is available
         .sample_array_types_from_chromatograms(reader.iter_chromatograms().take(10));
 

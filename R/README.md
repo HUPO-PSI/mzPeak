@@ -82,7 +82,8 @@ head(mzIntens)
 6 202.6078  2819.127
 ```
 
-Similarly, `read_spectrum_peaks` can be used to read separately written peak data for profile spectra that have their centroids stored adjacently.
+Similarly, `read_spectrum_peaks` can be used to read separately written peak data for profile spectra that have their centroids
+stored adjacently or `read_spectrum_profiles` to explicitly read.
 
 ## File-Level Metadata
 

@@ -21,7 +21,7 @@ use mzdata::{
 use crate::{
     constants::{CHROMATOGRAM, PRECURSOR, SCAN, SELECTED_ION, SPECTRUM},
     spectrum::AuxiliaryArray,
-    writer::builder::SpectrumFieldVisitors,
+    writer::{base::EntryMetadataDerivedFromData, builder::SpectrumFieldVisitors},
 };
 
 pub trait VisitorBase: Debug {
@@ -1590,7 +1590,7 @@ impl VisitorBase for SpectrumDetailsBuilder {
                 ),
                 DataType::Float64
             ),
-            field!("MS_1003060_number_of_data_points", DataType::UInt64), //MS_1003059_number_of_peaks
+            field!("MS_1003060_number_of_data_points", DataType::UInt64),
             field!("MS_1003059_number_of_peaks", DataType::UInt64),
             field!(
                 inflect_cv_term_to_column_name(
@@ -1696,7 +1696,6 @@ impl SpectrumDetailsBuilder {
         summaries
     }
 
-    #[allow(unused)]
     fn peak_summaries<
         C: CentroidLike,
         D: DeconvolutedCentroidLike,
@@ -1722,23 +1721,24 @@ impl SpectrumDetailsBuilder {
         &mut self,
         index: u64,
         item: &S,
-        mz_delta_model_params: Option<Vec<f64>>,
-        auxiliary_arrays: Option<Vec<AuxiliaryArray>>,
+        entry_derived: EntryMetadataDerivedFromData,
     ) -> bool {
         self.curies_to_mask.clear();
 
         let summaries = self.raw_summaries(item);
+        let pk_summaries = self.peak_summaries(item);
 
-        let n_pts = summaries.len();
+        let n_pts = entry_derived.data_point_count.unwrap_or_else(|| summaries.len()) as u64;
+        let n_pks = entry_derived.peak_count.or(pk_summaries.as_ref().map(|p| p.len()));
         let base_peak_mz = if n_pts > 0 {
             Some(summaries.base_peak.mz)
         } else {
-            None
+            pk_summaries.as_ref().map(|s| s.base_peak.mz)
         };
         let base_peak_intensity = if n_pts > 0 {
             Some(summaries.base_peak.intensity)
         } else {
-            None
+            pk_summaries.as_ref().map(|s| s.base_peak.intensity)
         };
 
         let spectrum_type = if let Some(v) = item
@@ -1780,21 +1780,31 @@ impl SpectrumDetailsBuilder {
         self.base_peak_mz.append_option(base_peak_mz);
         self.base_peak_intensity.append_option(base_peak_intensity);
         self.total_ion_current.append_value(summaries.tic);
-        self.number_of_data_points.append_value(n_pts as u64);
-        if item.signal_continuity() == SignalContinuity::Centroid {
-            self.number_of_peaks.append_value(n_pts as u64);
-        } else {
-            match self.peak_summaries(item) {
-                Some(summary) => {
-                    self.number_of_peaks.append_value(summary.count as u64);
-                }
-                None => self.number_of_peaks.append_null(),
-            }
+        match item.signal_continuity() {
+            SignalContinuity::Unknown => {
+                log::warn!("Signal continuity was unknown for {index} = {}, assuming profile", item.id());
+                self.number_of_data_points.append_value(n_pts as u64);
+                self.number_of_peaks.append_null();
+            },
+            SignalContinuity::Centroid => {
+                let n = if n_pts == 0 {
+                    n_pks.unwrap_or_default() as u64
+                } else {
+                    n_pts as u64
+                };
+                self.number_of_peaks.append_value(n);
+                self.number_of_data_points.append_null();
+            },
+            SignalContinuity::Profile => {
+                let pk_pts = pk_summaries.as_ref().map(|v| v.len() as u64);
+                self.number_of_peaks.append_option(pk_pts);
+                self.number_of_data_points.append_value(n_pts as u64);
+            },
         }
 
         self.data_processing_ref.append_null();
 
-        if let Some(arrays) = auxiliary_arrays.as_ref() {
+        if let Some(arrays) = entry_derived.auxiliary_arrays.as_ref() {
             let b = self.auxiliary_arrays.values();
             for a in arrays {
                 b.append_value(a);
@@ -1805,9 +1815,9 @@ impl SpectrumDetailsBuilder {
         }
 
         self.number_of_auxiliary_arrays
-            .append_value(auxiliary_arrays.map(|v| v.len()).unwrap_or_default() as u32);
+            .append_value(entry_derived.auxiliary_arrays.map(|v| v.len()).unwrap_or_default() as u32);
 
-        match mz_delta_model_params {
+        match entry_derived.mz_delta_model {
             Some(params) => {
                 self.mz_delta_model.values().append_slice(&params);
                 self.mz_delta_model.append(true);
@@ -1940,16 +1950,14 @@ impl SpectrumBuilder {
     >(
         &mut self,
         item: &S,
-        mz_delta_model_params: Option<Vec<f64>>,
-        auxiliary_arrays: Option<Vec<AuxiliaryArray>>,
+        entry_derived_metadata: EntryMetadataDerivedFromData,
     ) -> bool {
         self.id_to_index
             .insert(item.id().to_string(), self.spectrum_index_counter);
         let out = self.spectrum.append_value(
             self.spectrum_index_counter,
             item,
-            mz_delta_model_params,
-            auxiliary_arrays,
+            entry_derived_metadata,
         );
         for s in item.acquisition().scans.iter() {
             self.scan.append_value(&(self.spectrum_index_counter, s));
@@ -2118,6 +2126,7 @@ pub struct ChromatogramDetailsBuilder {
     parameters: ParamListBuilder,
     auxiliary_arrays: LargeListBuilder<AuxiliaryArrayBuilder>,
     number_of_auxiliary_arrays: UInt32Builder,
+    number_of_data_points: UInt64Builder,
 
     extra: Vec<Box<dyn StructVisitorBuilder<Chromatogram>>>,
     curies_to_mask: Vec<CURIE>,
@@ -2154,6 +2163,9 @@ impl ChromatogramDetailsBuilder {
             self.auxiliary_arrays.append_null();
         }
 
+        let n_pts = item.time().map(|a| a.len() as u64).ok();
+        self.number_of_data_points.append_option(n_pts);
+
         for e in self.extra.iter_mut() {
             if e.append_value(item) {
                 self.curies_to_mask.extend(e.associated_curie_to_skip());
@@ -2183,6 +2195,7 @@ impl VisitorBase for ChromatogramDetailsBuilder {
                 self.chromatogram_type.as_struct_type()
             ),
             field!("data_processing_ref", DataType::LargeUtf8),
+            field!("MS_1003060_number_of_data_points", DataType::UInt64),
         ];
         fields.extend(self.parameters.fields());
         fields.extend([
@@ -2207,6 +2220,7 @@ impl VisitorBase for ChromatogramDetailsBuilder {
         self.polarity.append_null();
         self.chromatogram_type.append_null();
         self.data_processing_ref.append_null();
+        self.number_of_data_points.append_null();
         self.auxiliary_arrays.append_null();
         self.number_of_auxiliary_arrays.append_null();
         for e in self.extra.iter_mut() {
@@ -2231,6 +2245,7 @@ impl ArrayBuilder for ChromatogramDetailsBuilder {
             finish_it!(self.polarity),
             self.chromatogram_type.finish(),
             finish_it!(self.data_processing_ref),
+            finish_it!(self.number_of_data_points),
             self.parameters.finish(),
             finish_it!(self.auxiliary_arrays),
             finish_it!(self.number_of_auxiliary_arrays),
@@ -2250,6 +2265,7 @@ impl ArrayBuilder for ChromatogramDetailsBuilder {
             finish_cloned!(self.polarity),
             self.chromatogram_type.finish_cloned(),
             finish_cloned!(self.data_processing_ref),
+            finish_cloned!(self.number_of_data_points),
             self.parameters.finish_cloned(),
             finish_cloned!(self.auxiliary_arrays),
             finish_cloned!(self.number_of_auxiliary_arrays),
@@ -2919,7 +2935,7 @@ mod test {
             .with_name("base_peak_mz_2"),
         );
 
-        builder.append_value(&spec, None, None);
+        builder.append_value(&spec, Default::default());
         builder.equalize_lengths();
         builder.append_null();
         let arrays = builder.finish_cloned();

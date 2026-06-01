@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from mzpeak import MzPeakFile
@@ -49,7 +50,7 @@ def common_checks(reader: MzPeakFile, subtests: pytest.Subtests):
         assert len(spec['m/z array']) == 13589
         assert len(spec["intensity array"]) == 13589
 
-        if reader.has_secondary_peaks_data:
+        if reader.has_secondary_peaks_data and not pd.isna(reader.spectrum_metadata.peak_count(0)):
             peaks = reader.read_peaks_for(0)
             assert len(peaks['m/z array']) == 1612
 
@@ -117,7 +118,7 @@ def test_load_unpacked(subtests: pytest.Subtests):
 
 
 def test_load_numpress(subtests: pytest.Subtests):
-    reader = MzPeakFile(chunk_path)
+    reader = MzPeakFile(numpress_path)
     assert reader.spectrum_data.buffer_format() == BufferFormat.Chunk
     assert reader.wavelength_data is None
     common_checks(reader, subtests)

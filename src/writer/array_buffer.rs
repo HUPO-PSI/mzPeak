@@ -11,13 +11,9 @@ use arrow::{
 use mzdata::{prelude::BuildArrayMapFrom, spectrum::ArrayType};
 
 use crate::{
-    BufferContext, BufferName, ToMzPeakDataSeries,
-    buffer_descriptors::{BufferOverrideTable, BufferPriority, BufferTransform},
-    chunk_series::{ArrowArrayChunk, ChunkingStrategy},
-    filter::{drop_where_column_is_zero_run, nullify_at_zero_pair},
-    peak_series::{
+    BufferContext, BufferName, ToMzPeakDataSeries, buffer_descriptors::{BufferOverrideTable, BufferPriority, BufferTransform}, chunk_series::{ArrowArrayChunk, ChunkingStrategy}, filter::{drop_where_column_is_zero_run_arrays, nullify_at_zero_pair_arrays}, peak_series::{
         ArrayIndex, ArrayIndexEntry, INTENSITY_ARRAY, MZ_ARRAY, TIME_ARRAY, WAVELENGTH_ARRAY,
-    },
+    }, spectrum::AuxiliaryArray
 };
 
 pub trait ArrayBufferWriter {
@@ -39,7 +35,7 @@ pub trait ArrayBufferWriter {
     }
 
     /// Add the provided `arrays` belonging to `fields` to the buffer
-    fn add_arrays(&mut self, fields: Fields, arrays: Vec<ArrayRef>, size: usize, is_profile: bool);
+    fn add_arrays(&mut self, fields: Fields, arrays: Vec<ArrayRef>, size: usize, is_profile: bool) -> usize;
 
     /// Whether or not to use a gapped sparse encoding, filling zero-intensity points with nulls left
     /// after zero intensity runs were dropped ([`ArrayBufferWriter::drop_zero_intensity`]).
@@ -54,10 +50,10 @@ pub trait ArrayBufferWriter {
     /// This might call [`ArrayBufferWriter::add_arrays`].
     fn add<T: ToMzPeakDataSeries>(
         &mut self,
-        spectrum_index: u64,
-        spectrum_time: Option<f32>,
+        series_index: u64,
+        series_time: Option<f32>,
         peaks: &[T],
-    );
+    ) -> (Vec<AuxiliaryArray>, usize);
 
     /// The number of distinct blocks of data points buffered
     fn num_chunks(&self) -> usize;
@@ -166,11 +162,13 @@ pub trait ArrayBufferWriter {
                 }
             }
         }
-        log::trace!(
-            "{} array indices: {}",
-            self.buffer_context(),
-            array_index.to_json()
-        );
+        if log::log_enabled!(log::Level::Trace) {
+            log::trace!(
+                "{} array indices: {}",
+                self.buffer_context(),
+                array_index.to_json()
+            );
+        }
         array_index
     }
 
@@ -191,11 +189,11 @@ pub struct PointBuffers {
     /// Field name to chunks of array data for each column
     array_chunks: HashMap<String, Vec<ArrayRef>>,
     overrides: BufferOverrideTable,
-    drop_zero_column: Option<Vec<String>>,
     null_zeros: bool,
-    is_profile_buffer: Vec<bool>,
     include_time: bool,
     point_count: u64,
+    nullable_targets: Vec<usize>,
+    drop_zero_columns: Vec<usize>
 }
 
 impl PointBuffers {
@@ -239,11 +237,12 @@ impl PointBuffers {
 
     pub fn add<T: ToMzPeakDataSeries>(
         &mut self,
-        spectrum_index: u64,
-        spectrum_time: Option<f32>,
+        series_index: u64,
+        series_time: Option<f32>,
         peaks: &[T],
-    ) {
-        let (fields, chunks) = T::to_arrays(spectrum_index, spectrum_time, peaks, &self.overrides);
+    ) -> (Vec<AuxiliaryArray>, usize) {
+        let n_pts = peaks.len();
+        let (fields, chunks) = T::to_arrays(series_index, series_time, peaks, &self.overrides);
         let mut visited = HashSet::new();
         for (f, arr) in fields.iter().zip(chunks.into_iter()) {
             let name = BufferName::from_field(self.buffer_context, f.clone())
@@ -255,7 +254,7 @@ impl PointBuffers {
                 .push(arr);
             visited.insert(name);
         }
-        self.is_profile_buffer.push(false);
+
         for (f, chunk) in self.array_chunks.iter_mut() {
             if !visited.contains(f) {
                 if let Some(t) = chunk.first().map(|a| a.data_type()).or_else(|| {
@@ -264,19 +263,51 @@ impl PointBuffers {
                         .find(|a| a.name() == f)
                         .map(|a| a.data_type())
                 }) {
-                    chunk.push(new_null_array(t, peaks.len()));
+                    chunk.push(new_null_array(t, n_pts));
                 }
             }
         }
+        (Vec::new(), n_pts)
     }
 
     pub fn add_arrays(
         &mut self,
         fields: Fields,
-        arrays: Vec<ArrayRef>,
+        mut arrays: Vec<ArrayRef>,
         size: usize,
         is_profile: bool,
-    ) {
+    ) -> usize {
+
+        let mut drop_index = None;
+        if is_profile && self.drop_zero_intensity() {
+            for i in self.drop_zero_columns.iter() {
+                let drop_at = &self.fields()[*i];
+                if let Some((j, _)) = fields.find(drop_at.name()) {
+                    drop_index = Some(j);
+                }
+            }
+            if let Some(j) = drop_index {
+                arrays = drop_where_column_is_zero_run_arrays(&arrays, j).unwrap();
+                if self.null_zeros {
+                    let mut null_at_indices = Vec::new();
+                    for i in self.nullable_targets.iter() {
+                        let null_at = &self.fields()[*i];
+                        if let Some((j, _)) = fields.find(null_at.name()) {
+                            null_at_indices.push(j);
+                        }
+                    }
+                    arrays = nullify_at_zero_pair_arrays(
+                        arrays,
+                        j,
+                        &null_at_indices
+                    ).unwrap();
+                }
+            }
+
+        }
+
+        let n = arrays.iter().map(|v| v.len()).next().unwrap_or_default();
+
         let mut visited = HashSet::new();
         for (f, arr) in fields.iter().zip(arrays) {
             self.array_chunks
@@ -287,7 +318,7 @@ impl PointBuffers {
                 .push(arr);
             visited.insert(f.name());
         }
-        self.is_profile_buffer.push(is_profile);
+
         for (f, chunk) in self.array_chunks.iter_mut() {
             if !visited.contains(&f) {
                 if let Some(t) = chunk.first().map(|a| a.data_type()).or_else(|| {
@@ -300,6 +331,8 @@ impl PointBuffers {
                 }
             }
         }
+
+        n
     }
 
     pub fn drain(&mut self) -> impl Iterator<Item = RecordBatch> {
@@ -313,61 +346,15 @@ impl PointBuffers {
             }
         }
 
-        let null_zeros = self.null_zeros;
-        let is_profile = core::mem::take(&mut self.is_profile_buffer);
         let schema = SchemaRef::new(Schema::new(self.peak_array_fields.clone()));
 
-        let mut null_targets = Vec::new();
-        if null_zeros {
-            for (i, f) in schema.fields().iter().enumerate() {
-                let is_nullable =
-                    if let Some(bname) = BufferName::from_field(self.buffer_context, f.clone()) {
-                        matches!(
-                            bname.array_type,
-                            ArrayType::MZArray | ArrayType::IntensityArray
-                        )
-                    } else {
-                        false
-                    };
-                if is_nullable {
-                    null_targets.push(i);
-                }
-            }
-        }
-
-        let drop_zero_columns = self.drop_zero_column.clone();
         chunks
             .into_iter()
-            .zip(is_profile)
-            .map(move |(arrs, is_profile)| {
-                let mut batch = RecordBatch::try_new(schema.clone(), arrs.clone()).unwrap_or_else(|e| {
+            .map(move |arrs| {
+                let batch = RecordBatch::try_new(schema.clone(), arrs.clone()).unwrap_or_else(|e| {
                     let fields: Vec<_> = arrs.iter().map(|f| f.data_type()).collect();
                     panic!("Failed to convert peak buffers to record batch: {e}\n{fields:#?}\n{schema:#?}")
                 });
-                if is_profile {
-                    if let Some(cols) = drop_zero_columns.as_ref() {
-                        for (i, _f) in schema.fields().iter().enumerate().filter(|(_, f)| cols.contains(f.name())) {
-                            match drop_where_column_is_zero_run(&batch,i) {
-                                Ok(b) => {
-                                    batch = b;
-                                },
-                                Err(e) => {
-                                    log::error!("Failed to subset batch: {e}");
-                                }
-                            }
-                            if null_zeros {
-                                match nullify_at_zero_pair(&batch, i, &null_targets) {
-                                    Ok(b) => {
-                                        batch = b;
-                                    },
-                                    Err(e) => {
-                                        log::error!("Failed to nullify batch: {e}");
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
                 batch
             })
             .map(|batch| self.promote_batch(batch, self.schema.clone()))
@@ -393,19 +380,19 @@ impl ArrayBufferWriter for PointBuffers {
     }
 
     #[inline(always)]
-    fn add_arrays(&mut self, fields: Fields, arrays: Vec<ArrayRef>, size: usize, is_profile: bool) {
+    fn add_arrays(&mut self, fields: Fields, arrays: Vec<ArrayRef>, size: usize, is_profile: bool) -> usize {
         self.point_count += size as u64;
-        self.add_arrays(fields, arrays, size, is_profile);
+        self.add_arrays(fields, arrays, size, is_profile)
     }
 
     #[inline(always)]
     fn add<T: ToMzPeakDataSeries>(
         &mut self,
-        spectrum_index: u64,
-        spectrum_time: Option<f32>,
+        series_index: u64,
+        series_time: Option<f32>,
         peaks: &[T],
-    ) {
-        self.add(spectrum_index, spectrum_time, peaks);
+    ) -> (Vec<AuxiliaryArray>, usize) {
+        self.add(series_index, series_time, peaks)
     }
 
     fn num_chunks(&self) -> usize {
@@ -429,7 +416,7 @@ impl ArrayBufferWriter for PointBuffers {
     }
 
     fn drop_zero_intensity(&self) -> bool {
-        self.drop_zero_column.is_some()
+        !self.drop_zero_columns.is_empty()
     }
 
     fn point_count(&self) -> u64 {
@@ -511,61 +498,51 @@ impl ArrayBufferWriter for ChunkBuffers {
         &self.chunk_array_fields
     }
 
-    fn add_arrays(&mut self, fields: Fields, arrays: Vec<ArrayRef>, size: usize, is_profile: bool) {
+    fn add_arrays(&mut self, fields: Fields, arrays: Vec<ArrayRef>, size: usize, is_profile: bool) -> usize {
         self.chunk_buffer
             .push(StructArray::new(fields, arrays, None));
         self.is_profile_buffer.push(is_profile);
         self.point_count += size as u64;
+        size
     }
 
     fn num_chunks(&self) -> usize {
         self.chunk_buffer.len()
     }
 
-    /// Adds a peak list to the buffer using [`ChunkingStrategy::Basic`]
+    /// Adds a peak list to the buffer
     fn add<T: ToMzPeakDataSeries>(
         &mut self,
-        spectrum_index: u64,
-        spectrum_time: Option<f32>,
+        series_index: u64,
+        series_time: Option<f32>,
         peaks: &[T],
-    ) {
+    ) -> (Vec<AuxiliaryArray>, usize) {
         self.is_profile_buffer.push(false);
         let arrays = BuildArrayMapFrom::as_arrays(peaks);
-        let (chunks, _aux) = ArrowArrayChunk::from_arrays(
-            spectrum_index,
-            spectrum_time,
-            MZ_ARRAY,
+        let (chunks, aux, n_pts) = ArrowArrayChunk::build(
+            series_index,
+            series_time,
+            BufferContext::Spectrum,
             &arrays,
-            ChunkingStrategy::Basic {
-                chunk_size: self.chunking_strategy.chunk_size(),
-            },
+            self.chunking_strategy,
             self.overrides(),
             self.drop_zero_intensity(),
             self.nullify_zero_intensity(),
-            None,
-        )
-        .unwrap();
-        let (fields, arrays, _) = ArrowArrayChunk::to_struct_array(
-            &chunks,
-            self.buffer_context(),
-            self.schema().fields(),
-            &[ChunkingStrategy::Basic {
-                chunk_size: self.chunking_strategy.chunk_size(),
-            }],
-            self.include_time(),
-        )
-        .into_parts();
-        self.add_arrays(fields, arrays, peaks.len(), false);
+            self.fields()).unwrap();
+        if let Some(chunks) = chunks {
+            let (fields, arrays, _) = chunks.into_parts();
+            self.add_arrays(fields, arrays, peaks.len(), false);
+        }
+        assert_eq!(peaks.len(), n_pts);
+        (aux, n_pts)
     }
 
     fn drain(&mut self) -> impl Iterator<Item = RecordBatch> {
         let prefix = self.prefix().to_string();
         let schema = self.schema.clone();
-        let is_profile = core::mem::take(&mut self.is_profile_buffer);
         self.chunk_buffer
             .drain(..)
-            .zip(is_profile)
-            .map(move |(batch, _is_profile)| {
+            .map(move |batch| {
                 let batch = RecordBatch::from(batch);
                 Self::promote_record_batch_to_struct(&prefix, batch, schema.clone())
             })
@@ -681,21 +658,21 @@ impl ArrayBufferWriter for ArrayBufferWriterVariants {
 
     fn add<T: ToMzPeakDataSeries>(
         &mut self,
-        spectrum_index: u64,
-        spectrum_time: Option<f32>,
+        series_index: u64,
+        series_time: Option<f32>,
         peaks: &[T],
-    ) {
+    ) -> (Vec<AuxiliaryArray>, usize) {
         match self {
             ArrayBufferWriterVariants::ChunkBuffers(chunk_buffers) => {
-                chunk_buffers.add(spectrum_index, spectrum_time, peaks)
+                chunk_buffers.add(series_index, series_time, peaks)
             }
             ArrayBufferWriterVariants::PointBuffers(array_buffers) => {
-                array_buffers.add(spectrum_index, spectrum_time, peaks)
+                array_buffers.add(series_index, series_time, peaks)
             }
         }
     }
 
-    fn add_arrays(&mut self, fields: Fields, arrays: Vec<ArrayRef>, size: usize, is_profile: bool) {
+    fn add_arrays(&mut self, fields: Fields, arrays: Vec<ArrayRef>, size: usize, is_profile: bool) -> usize {
         match self {
             ArrayBufferWriterVariants::ChunkBuffers(chunk_buffers) => {
                 chunk_buffers.add_arrays(fields, arrays, size, is_profile)
@@ -858,6 +835,13 @@ impl ArrayBuffersBuilder {
     pub fn add_override(mut self, from: impl Into<BufferName>, to: impl Into<BufferName>) -> Self {
         self.overrides.insert(from.into(), to.into());
         self.apply_overrides();
+        self
+    }
+
+    pub fn extend_overrides(mut self, iter: impl Iterator<Item = (BufferName, BufferName)>) -> Self {
+        for (k, v) in iter {
+            self = self.add_override(k, v);
+        }
         self
     }
 
@@ -1131,18 +1115,30 @@ impl ArrayBuffersBuilder {
         let mut buffers: HashMap<String, Vec<ArrayRef>> =
             HashMap::with_capacity(self.array_fields.len());
         let mut drop_zero_column = Vec::new();
-        for f in self.array_fields.iter() {
+        let mut nullable_targets = Vec::new();
+        if self.null_zeros {
+             for (i, f) in self.array_fields.iter().enumerate() {
+                if let Some(buf) = BufferName::from_field(self.buffer_context, f.clone()) {
+                    if buf.transform == Some(BufferTransform::NullInterpolate) || buf.transform == Some(BufferTransform::NullZero) {
+                        nullable_targets.push(i)
+                    }
+                }
+             }
+        }
+        let mut drop_zero_columns = Vec::new();
+        for (i, f) in self.array_fields.iter().enumerate() {
             let name = f.name();
             if mask_zero_intensity_runs {
                 if let Some(bufname) = BufferName::from_field(self.buffer_context, f.clone()) {
                     if matches!(bufname.array_type, ArrayType::IntensityArray) {
                         drop_zero_column.push(name.to_string());
+                        drop_zero_columns.push(i);
                     }
                 }
             }
             buffers.insert(name.to_string(), Vec::new());
         }
-        let drop_zero_column = mask_zero_intensity_runs.then_some(drop_zero_column);
+
         PointBuffers {
             buffer_context,
             peak_array_fields: self.array_fields.clone().into(),
@@ -1150,18 +1146,19 @@ impl ArrayBuffersBuilder {
             prefix: self.prefix.clone(),
             array_chunks: buffers,
             overrides: self.overrides.clone(),
-            drop_zero_column,
-            is_profile_buffer: Vec::new(),
             null_zeros: self.null_zeros,
             include_time: self.include_time,
             point_count: 0,
+            nullable_targets,
+            drop_zero_columns,
         }
     }
 }
 
 #[cfg(test)]
 mod test {
-    use arrow::{array::AsArray, datatypes::Float64Type};
+    use std::io::{self, prelude::*};
+    use arrow::{array::{AsArray, Float32Array, Float64Array, UInt64Array}, datatypes::Float64Type};
     use mzdata::io::MZFileReader;
     use mzpeaks::CentroidPeak;
 
@@ -1201,6 +1198,66 @@ mod test {
         let arr = arr.as_primitive::<Float64Type>();
         let v = arr.value(0);
         assert_eq!(peaks[0].mz, v);
+
+
+    }
+
+    #[test_log::test]
+    fn test_build_profile_null() -> io::Result<()> {
+        let reader = io::BufReader::new(std::fs::File::open("test/data/sparse_large_gaps.txt")?);
+        let mut mzs = Vec::new();
+        let mut intensities = Vec::new();
+        for line in reader.lines().flatten() {
+            if let Some((a, b)) = line.split_once("\t") {
+                mzs.push(a.parse::<f64>().unwrap());
+                intensities.push(b.parse::<f32>().unwrap());
+            }
+        }
+
+        let builder = ArrayBuffersBuilder::default();
+        let mut builder = builder
+            .prefix("point")
+            .add_peak_type::<CentroidPeak>()
+            .null_zeros(true)
+            .build(Arc::new(Schema::empty()), BufferContext::Spectrum, true);
+
+        let fields_of = vec![
+            BufferContext::Spectrum.index_field(),
+            builder.fields()[1].clone(),
+            builder.fields()[2].clone()
+        ];
+        let n = mzs.len();
+        let indices = Arc::new(UInt64Array::from_iter_values(std::iter::repeat_n(0, n))) as ArrayRef;
+        let mzs = Arc::new(Float64Array::from(mzs)) as ArrayRef;
+        let intensities = Arc::new(Float32Array::from(intensities)) as ArrayRef;
+
+        assert_eq!(builder.len(), 0);
+        assert!(builder.is_empty());
+        let m = builder.add_arrays(fields_of.into(), vec![indices, mzs, intensities], n, true);
+        assert!(m < n);
+
+        assert!(builder.len() > 1000);
+        assert_eq!(builder.len(), m);
+
+        let batches: Vec<RecordBatch> = builder.drain().collect();
+        assert_eq!(batches.len(), 1);
+
+        let batch = batches[0].clone();
+        let root = batch.column_by_name("point").unwrap();
+        let root = root.as_struct();
+        assert!(root.column_by_name("spectrum_index").is_some());
+        assert!(root.column_by_name("mz").is_some());
+        assert!(root.column_by_name("intensity").is_some());
+
+        let mz_array = root.column_by_name("mz").unwrap();
+        assert_eq!(mz_array.len(), m);
+        assert!(mz_array.null_count() > 0);
+
+        let intensity_array = root.column_by_name("intensity").unwrap();
+        assert_eq!(intensity_array.len(), m);
+        assert!(intensity_array.null_count() > 0);
+
+        Ok(())
     }
 
     #[test_log::test]

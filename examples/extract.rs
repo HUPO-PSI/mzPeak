@@ -25,6 +25,10 @@ struct App {
     /// Use memory-mapped reader
     #[arg(short = 'a', long)]
     memory_map: bool,
+
+    /// Read pre-centroided peaks
+    #[arg(short, long)]
+    peaks: bool
 }
 
 fn main() -> io::Result<()> {
@@ -75,7 +79,11 @@ fn main() -> io::Result<()> {
     });
 
     let (it, time_index) =
-        reader.extract_peaks(time_range, Some(mz_range), im_range.take(), ms_level_range)?;
+    if args.peaks {
+        reader.query_peaks(time_range, Some(mz_range), im_range.take(), ms_level_range)?
+    } else {
+        reader.extract_signal(time_range, Some(mz_range), im_range.take(), ms_level_range)?
+    };
 
     let query_range_end = std::time::Instant::now();
     eprintln!(

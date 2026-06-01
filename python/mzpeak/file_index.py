@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from collections.abc import MutableSequence
 
+
 OTHER = "other"
 
 SPECTRUM = "spectrum"

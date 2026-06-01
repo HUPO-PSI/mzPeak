@@ -53,13 +53,12 @@
     - [Adding a new `Entity Type`](#adding-a-new-entity-type)
 - [Spectrum Signal Data File - `spectra_data.parquet`](#spectrum-signal-data-file---spectra_dataparquet)
   - [Recommendations](#recommendations)
-- [Spectrum Metadata File - `spectra_metadata.parquet`](#spectrum-metadata-file---spectra_metadataparquet)
 - [Spectrum Peak Data - `spectra_peaks.parquet`](#spectrum-peak-data---spectra_peaksparquet)
+- [Spectrum Metadata - spectra\_metadata.parquet](#spectrum-metadata---spectra_metadataparquet)
 - [Chromatogram Signal Data - `chromatograms_data.parquet`](#chromatogram-signal-data---chromatograms_dataparquet)
   - [Recommendations](#recommendations-1)
 - [Chromatogram Metadata - `chromatograms_metadata.parquet`](#chromatogram-metadata---chromatograms_metadataparquet)
-- [Wavelength Spectrum Signal Data File - `wavelength_spectra_data.parquet`](#wavelength-spectrum-signal-data-file---wavelength_spectra_dataparquet)
-  - [Recommendations](#recommendations-2)
+- [Wavelength Spectrum Signal Data - wavelength\_spectra\_data.parquet](#wavelength-spectrum-signal-data---wavelength_spectra_dataparquet)
 - [Wavelength Spectrum Metadata - `wavelength_spectra_metadata.parquet`](#wavelength-spectrum-metadata---wavelength_spectra_metadataparquet)
 
 # Introduction
@@ -1142,7 +1141,7 @@ The `data_kind` field tells the reader the semantics of the data stored in this 
 
 There are currently 5 controlled values for `data_kind`:
 
-- `data arrays`: Expected to use one of the [point](#point-layout) or [chunked](#chunked-layout) layout. These files contain the signal data, raw or processed for the `entity_type` being described.
+- `data arrays`: Expected to use one of the [point](#point-layout) or [chunked](#chunked-layout) layout. These files contain the signal data, usually in its "raw" form, for the `entity_type` being described.
 - `peaks`: This, like `data arrays`, is expected to use the [point](#point-layout) or [chunked](#chunked-layout) layout as well. Where `data arrays` might store any kind of signal data, `peaks` implies that the data are processed and that there exists an entry in `data arrays` that is less refined. This is useful when storing both profile and centroid signal for a spectrum, for example.
 - `metadata`: Expected to use the [packed parallel table](#packed-parallel-metadata-tables) layout. This describes the entity's metadata, everything but the homogenous signal arrays stored in the `data arrays` file. This file may still be large.
 - `proprietary`: The layout and schema of this file is entirely the purview of the writer which may be an instrument vendor. These files should be ignored unless the reader _is_ for that instrument vendor. It may not be a Parquet file. Instrument vendors are encouraged to use this classification on binary files or other difficult to digest contents. Text or XML configuratin files may still be of interest to the broader community in an evolving metadata landscape.
@@ -1187,11 +1186,11 @@ TODO: Expand this
 }
 ```
 
-The spectrum signal data is encoded using either [point layout](#point-layout) or [chunked layout](#chunked-layout). The `entity index` column _MUST_ be named `spectrum_index`, and if a time column is written alongside it, it _SHOULD_ be named `spectrum_time`. Non-mass spectra _MAY_ store those dimensions as either auxiliary arrays or as additional columns, depending upon the relative proportion of mass spectra to other kinds of spectra (QUESTION: Should UV, PA, etc. spectra be made separate `entity_type` from mass spectra? They'd get separate metadata and signal data tables then and be easier to distinguish, but more complicated to implement).
+The spectrum signal data is encoded using either [point layout](#point-layout) or [chunked layout](#chunked-layout). The `entity index` column _MUST_ be named `spectrum_index`, and if a time column is written alongside it, it _SHOULD_ be named `spectrum_time`. Non-mass spectra like UV or DAD spectra should be written in the [wavelength_spectra_data.parquet](#wavelength-spectrum-signal-data---wavelength_spectra_dataparquet) file.
 
 When using [null marking](#null-marking), follow the [null semantics for signal data](#null-semantics-for-signal-data) with care for profile data.
 
-When writing data of mixed continuity, write the highest data complexity representation available for each spectrum to this data file. If also writing [peak data](#spectrum-peak-data---spectra_peaksparquet), write the centroid data for the profile spectra there.
+Only profile spectra should be written to this file, centroid spectra, or processed, centroid views of profile spectra when storing both modes should be written to the [peak data](#spectrum-peak-data---spectra_peaksparquet) file. The number of points written to this file for a particular spectrum _MUST_ be written to the [`spectrum.MS_1003060_number_of_data_points`](http://purl.obolibrary.org/obo/MS_1003060) column in the [`spectra_metadata.parquet`](#spectrum-metadata---spectra_metadataparquet) file to facilitate appropriate reading operation planning.
 
 ## Recommendations
 
@@ -1202,7 +1201,23 @@ When selecting a [Parquet encoding](https://parquet.apache.org/docs/file-format/
 - m/z arrays: [byte stream split](https://parquet.apache.org/docs/file-format/data-pages/encodings/#byte-stream-split-byte_stream_split--9), also called byte shuffling, or [RLE dictionary encoding](https://parquet.apache.org/docs/file-format/data-pages/encodings/#dictionary-encoding-plain_dictionary--2-and-rle_dictionary--8) when there is ion mobility data.
 - ion mobility arrays: [RLE dictionary encoding](https://parquet.apache.org/docs/file-format/data-pages/encodings/#dictionary-encoding-plain_dictionary--2-and-rle_dictionary--8), byte shuffling tends to not be very helpful. Also consider increasing the dictionary page size.
 
-# Spectrum Metadata File - `spectra_metadata.parquet`
+
+# Spectrum Peak Data - `spectra_peaks.parquet`
+
+**File index entry:**
+
+```json
+{
+  "name": "spectra_peaks.parquet",
+  "entity_type": "spectrum",
+  "data_kind": "peaks"
+}
+```
+
+The spectrum peak lists separately stored from the raw signal stored in [`spectra_data.parquet`](#spectrum-signal-data-file---spectra_dataparquet). The `entity index` column _MUST_ be named `spectrum_index`, and if a time column is written alongside it, it _SHOULD_ be named `spectrum_time`. Any centroid spectra _MUST_ be written to this file, not [`spectra_data.parquet`](#spectrum-signal-data-file---spectra_dataparquet). The number of peaks written for a given spectrum in this file _MUST_ be written to the [`spectrum.MS_1003059_number_of_peaks`](http://purl.obolibrary.org/obo/MS_1003059) column in the [`spectra_metadata.parquet`](#spectrum-metadata---spectra_metadataparquet) file to facilitate reading operation planning.
+
+
+# Spectrum Metadata - spectra_metadata.parquet
 
 **File index entry:**
 
@@ -1245,6 +1260,8 @@ This metadata table uses the [packed parallel metadata table](#packed-parallel-m
       - [MS:1000580](http://purl.obolibrary.org/obo/MS_1000580) "MSn spectrum"
       - [MS:1000804](http://purl.obolibrary.org/obo/MS_1000804) "electromagnetic radiation spectrum"
       - [MS:1000928](http://purl.obolibrary.org/obo/MS_1000928) "calibration spectrum"
+  - [`MS_1003060_number_of_data_points`](http://purl.obolibrary.org/obo/MS_1003060) (integer): The number of profile data points stored for this spectrum in the [`spectra_data.parquet`](#spectrum-signal-data-file---spectra_dataparquet) file.
+  - [`MS_1003059_number_of_peaks`](http://purl.obolibrary.org/obo/MS_1003059) (integer): The number of discrete peaks stored for this spectrum in the [`spectra_peaks.parquet`](#spectrum-peak-data---spectra_peaksparquet) file.
   - MAY supply a *child* term of [MS:1003058](http://purl.obolibrary.org/obo/MS_1003058) (spectrum property) one or more times
     - __Examples:__
       - [`MS_1003060_number_of_data_points`](http://purl.obolibrary.org/obo/MS_1003060)
@@ -1293,20 +1310,6 @@ This metadata table uses the [packed parallel metadata table](#packed-parallel-m
 
 QUESTION: Is there a better way to make ion mobility storage generic over type ("ion mobility drift time", "inverse reduced ion mobility", "FAIMS compensation voltage")?
 
-# Spectrum Peak Data - `spectra_peaks.parquet`
-
-**File index entry:**
-
-```json
-{
-  "name": "spectra_peaks.parquet",
-  "entity_type": "spectrum",
-  "data_kind": "peaks"
-}
-```
-
-The spectrum peak lists separately stored from the raw signal stored in [`spectra_data.parquet`](#spectrum-signal-data-file---spectra_dataparquet). This _SHOULD_ be encoded using the [point layout](#point-layout). The `entity index` column _MUST_ be named `spectrum_index`, and if a time column is written alongside it, it _SHOULD_ be named `spectrum_time`. When storing peak lists separately, the writer _MUST_ store the primary data representation in [`spectra_data.parquet`](#spectrum-signal-data-file---spectra_dataparquet), even if that primary representation is already a peak list.
-
 # Chromatogram Signal Data - `chromatograms_data.parquet`
 
 **File index entry:**
@@ -1354,6 +1357,7 @@ When selecting a [Parquet encoding](https://parquet.apache.org/docs/file-format/
   - `parameters` (list): A list of controlled or uncontrolled parameters that describe this chromatogram. See [the parameter list section](#the-parameters-list) for more details.
   - `number_of_auxiliary_arrays` (integer): The number of auxiliary arrays that are stored with this row's `auxiliary_arrays` column. This is useful for quickly telling if a reader needs to go through the more expensive process of reading these and decoding them.
   - `auxiliary_arrays` (list): A list of structures that describe a data array that did not fit within the constraints as described in the [arrays and columns](#arrays-and-columns) section. These may be large and care should be used in deciding to eagerly load them (or not). They are described in the [auxiliary data arrays](#auxiliary-data-arrays)
+  - [`MS_1003060_number_of_data_points`](http://purl.obolibrary.org/obo/MS_1003060) (integer): The number of data points stored for this chromatogram in the [`chromatograms_data.parquet`](#chromatogram-signal-data---chromatograms_dataparquet) file.
   - MAY supply a *child* term of [MS:1000808]((http://purl.obolibrary.org/obo/MS_1000808)) (chromatogram attribute) one or more times
   -
 - `precursor` (group): The method of precursor ion selection and activation
@@ -1384,7 +1388,7 @@ When selecting a [Parquet encoding](https://parquet.apache.org/docs/file-format/
       - [`MS_1000042_intensity_unit_MS_1000131`](http://purl.obolibrary.org/obo/MS_1000131)
 
 
-# Wavelength Spectrum Signal Data File - `wavelength_spectra_data.parquet`
+# Wavelength Spectrum Signal Data - wavelength_spectra_data.parquet
 
 **File index entry:**
 
@@ -1400,15 +1404,6 @@ The wavelength spectrum signal data is encoded using either [point layout](#poin
 
 When using [null marking](#null-marking), follow the [null semantics for signal data](#null-semantics-for-signal-data) with care for profile data.
 
-## Recommendations
-
-When selecting a [Parquet encoding](https://parquet.apache.org/docs/file-format/data-pages/encodings/) for columns, favor:
-
-- `wavelength_spectrum_index`: [delta encoding](https://parquet.apache.org/docs/file-format/data-pages/encodings/#delta-encoding-delta_binary_packed--5). This encoding is ideal for repetitive or slowly increasing integer series.
-- `wavelength_spectrum_time`: [byte stream split](https://parquet.apache.org/docs/file-format/data-pages/encodings/#byte-stream-split-byte_stream_split--9)
-- `wavelength_array`: [byte stream split](https://parquet.apache.org/docs/file-format/data-pages/encodings/#byte-stream-split-byte_stream_split--9), also called byte shuffling.
-
-
 # Wavelength Spectrum Metadata - `wavelength_spectra_metadata.parquet`
 
 **File index entry:**
@@ -1421,7 +1416,7 @@ When selecting a [Parquet encoding](https://parquet.apache.org/docs/file-format/
 }
 ```
 
-This metadata table uses the [packed parallel metadata table](#packed-parallel-metadata-tables) schema. This should only be present if wavelength spectra are included in the mzPeak archive. The parallel schemas are shown below. The general order of columns in unspecified, but `spectrum.index` and `scan.source_index` _MUST_ be the first column of their respective schemas. Wherever these lists say _MAY_, that value may either be stored as a column or as an entry in the [parameter list](#the-parameters-list) but a column tends to make more sense if it is usually present. It mirrors the [spectrum metadata](#spectrum-metadata-file---spectra_metadataparquet) layout, but does not include a `precursor` or `selected_ion` facet because EMR spectra have not been observed with isolation and fragmentation yet.
+This metadata table uses the [packed parallel metadata table](#packed-parallel-metadata-tables) schema. This should only be present if wavelength spectra are included in the mzPeak archive. The parallel schemas are shown below. The general order of columns in unspecified, but `spectrum.index` and `scan.source_index` _MUST_ be the first column of their respective schemas. Wherever these lists say _MAY_, that value may either be stored as a column or as an entry in the [parameter list](#the-parameters-list) but a column tends to make more sense if it is usually present. It mirrors the [spectrum metadata](#spectrum-metadata---spectra_metadataparquet) layout, but does not include a `precursor` or `selected_ion` facet because EMR spectra have not been observed with isolation and fragmentation yet.
 
 This metadata is stored separately from the mass spectra, allowing the two different data modalities to have divergent schemas without inflating the number of empty columns, and for ease of searching, so the reader does not need to sort through mass spectra while looking for EMR spectra and vice-versa.
 
@@ -1436,6 +1431,7 @@ This metadata is stored separately from the mass spectra, allowing the two diffe
   - [`MS_1000559_spectrum_type`](http://purl.obolibrary.org/obo/MS_1000559) (CURIE): A child of [MS:1000559](http://purl.obolibrary.org/obo/MS_1000559):
     - __Examples:__
       - [MS:1000804](http://purl.obolibrary.org/obo/MS_1000804) "electromagnetic radiation spectrum"
+  - [`MS_1003060_number_of_data_points`](http://purl.obolibrary.org/obo/MS_1003060) (integer): The number of profile data points stored for this spectrum in the [`wavelength_spectra_data.parquet`](#wavelength-spectrum-signal-data---wavelength_spectra_dataparquet) file.
   - MAY supply a *child* term of [MS:1003058](http://purl.obolibrary.org/obo/MS_1003058) (spectrum property) one or more times
     - __Examples:__
       - [`MS_1003060_number_of_data_points`](http://purl.obolibrary.org/obo/MS_1003060)
@@ -1449,5 +1445,5 @@ This metadata is stored separately from the mass spectra, allowing the two diffe
   - `source_index` (uint64): The `index` of the spectrum this scan belongs to. This is a foreign key.
   - `instrument_configuration_ref` (integer): The identifier for `instrument_configuration` that governs this scan.
   - `parameters` (list): A list of controlled or uncontrolled parameters that describe this scan. See [the parameter list section](#the-parameters-list) for more details.
-  - `scan_windows`: See equivalent substructure for [spectra](#spectrum-metadata-file---spectra_metadataparquet)
+  - `scan_windows`: See equivalent substructure for [spectra](#spectrum-metadata---spectra_metadataparquet)
   - MAY supply a *child* term of [MS:1000503](http://purl.obolibrary.org/obo/MS_1000503) (scan attribute) one or more times

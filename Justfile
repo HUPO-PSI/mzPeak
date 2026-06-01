@@ -26,9 +26,12 @@ small_chunked:
 has_uv:
     cargo r -r --example convert -- -y -z -u "./test/data/TOFsulfasMS4GHzDualMode+DADSpectra+UVSignal272-NoProfile.mzML" -o "./has_uv.mzpeak"
 
+small_unpacked:
+    unzip -o small.mzpeak -d small.unpacked.mzpeak
+
 test:
     # cargo t --tests -- --no-capture
-    cargo nextest run
+    cargo nextest run --tests
 
 pytest:
     py.test -n auto -l -s -v python/test/ \

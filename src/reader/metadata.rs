@@ -17,7 +17,7 @@ use crate::{
     filter::RegressionDeltaModel,
     param::{MetadataColumn, MetadataColumnCollection},
     reader::{
-        index::{QueryIndex, SpectrumMetadataIndexLike, SpectrumPointIndex},
+        index::{QueryIndex, SpectrumDataIndex, SpectrumMetadataIndexLike, SpectrumPointIndex},
         utils::MaskSet,
         visitor::{
             CompoundIndexVisitor, DoubleIndexed, Indexed, MzChromatogramBuilder,
@@ -277,7 +277,7 @@ impl ReaderMetadata {
     }
 
     pub fn peak_array_indices(&self) -> Option<&ArrayIndex> {
-        self.spectra.peak_indices.as_ref().map(|v| &v.array_indices)
+        self.spectra.peak_indices.as_ref().map(|v| v.array_indices.as_ref())
     }
 
     pub fn spectrum_array_indices(&self) -> &ArrayIndex {
@@ -350,12 +350,12 @@ pub(crate) fn build_id_index<T: ArchiveSource>(
 
 #[derive(Debug, Default, Clone)]
 pub struct PeakMetadata {
-    pub array_indices: ArrayIndex,
-    pub query_index: SpectrumPointIndex,
+    pub array_indices: Arc<ArrayIndex>,
+    pub query_index: SpectrumDataIndex,
 }
 
 impl PeakMetadata {
-    pub fn new(array_indices: ArrayIndex, query_index: SpectrumPointIndex) -> Self {
+    pub fn new(array_indices: Arc<ArrayIndex>, query_index: SpectrumDataIndex) -> Self {
         Self {
             array_indices,
             query_index,
@@ -371,7 +371,7 @@ impl PeakMetadata {
                 match kv.key.as_str() {
                     "spectrum_array_index" => {
                         if let Some(data) = kv.value.as_deref() {
-                            this.array_indices = ArrayIndex::from_json(data);
+                            this.array_indices = Arc::new(ArrayIndex::from_json(data));
                             has_arrays = true;
                         }
                     }
@@ -380,7 +380,7 @@ impl PeakMetadata {
             }
         }
         if has_arrays {
-            let index = SpectrumPointIndex::from_reader(reader, &this.array_indices);
+            let index = SpectrumDataIndex::Point(SpectrumPointIndex::from_reader(reader, &this.array_indices));
             this.query_index = index;
             Some(this)
         } else {
@@ -1967,8 +1967,10 @@ impl PeakInfoDecoder {
             macro_rules! extract {
                 ($dtype:ty) => {
                     if let Some(col) = col.as_primitive_opt::<$dtype>() {
-                        for val in col.iter() {
-                            self.data_point_counts.push(val.unwrap_or_default() as u64);
+                        for (val, i) in col.iter().zip(index_array.iter()) {
+                            if let Some(i) = i {
+                                self.data_point_counts[i as usize] = (val.unwrap_or_default() as u64);
+                            }
                         }
                         true
                     } else {
@@ -1989,8 +1991,10 @@ impl PeakInfoDecoder {
             macro_rules! extract {
                 ($dtype:ty) => {
                     if let Some(col) = col.as_primitive_opt::<$dtype>() {
-                        for val in col.iter() {
-                            self.peak_counts.push(val.unwrap_or_default() as u64);
+                        for (val, i) in col.iter().zip(index_array.iter()) {
+                            if let Some(i) = i {
+                                self.peak_counts[i as usize] = (val.unwrap_or_default() as u64);
+                            }
                         }
                         true
                     } else {

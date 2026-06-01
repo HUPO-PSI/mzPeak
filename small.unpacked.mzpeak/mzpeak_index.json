@@ -6,6 +6,11 @@
       "data_kind": "data arrays"
     },
     {
+      "name": "spectra_peaks.parquet",
+      "entity_type": "spectrum",
+      "data_kind": "peaks"
+    },
+    {
       "name": "spectra_metadata.parquet",
       "entity_type": "spectrum",
       "data_kind": "metadata"

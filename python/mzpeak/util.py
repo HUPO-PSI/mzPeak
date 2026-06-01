@@ -3,8 +3,9 @@ import logging
 
 from dataclasses import dataclass, field
 from numbers import Number
-from typing import Any, Generic, Mapping, TypeVar
+from typing import Any, Generic, Mapping, TypeVar, Iterator
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 
@@ -36,6 +37,14 @@ class Span(Generic[Q]):
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.start}, {self.end})"
+
+
+DTYPES = {
+    "MS:1000519": np.int32,
+    "MS:1000521": np.float32,
+    "MS:1000522": np.int64,
+    "MS:1000523": np.float64,
+}
 
 
 def _slice_to_range(slice_val: slice, n: int) -> range:
@@ -319,10 +328,88 @@ class _NameCleaningNode:
             return (self.field, self.array)
 
 
+T = TypeVar('T')
+
+
+class _PeekableIter(Generic[T], Iterator[tuple[int, T]]):
+    _peek: tuple[int, T] | None
+    inner: Iterator[tuple[int, T]]
+
+    def __init__(self, inner: Iterator[tuple[int, T]], peek: bool=True):
+        self.inner = inner
+        self._peek = None
+        if peek:
+            self.peek()
+
+    def peek(self) -> tuple[int, T] | None:
+        if self._peek is None:
+            try:
+                self._peek = next(self.inner)
+            except StopIteration:
+                return None
+        return self._peek
+
+    def __next__(self) -> tuple[int, T]:
+        if self._peek is not None:
+            val = self._peek
+            try:
+                self._peek = next(self.inner)
+            except StopIteration:
+                self._peek = None
+            return val
+        return next(self.inner)
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.inner}, {self._peek[0] if self._peek else '<done or new>'})"
+
+
+class _SeekableMixin(Generic[T]):
+    def seek(self, index: int) -> bool:
+        n = self.peek()
+        if n is None:
+            raise StopIteration()
+        if n[0] > index:
+            raise ValueError("Cannot rewind iterator")
+        if index == n[0]:
+            return True
+        else:
+            next(self)
+            while True:
+                n = self.peek()
+                if not n:
+                    raise StopIteration()
+                if n[0] == index:
+                    return True
+                if n[0] > index:
+                    return False
+                next(self)
+
+    def index(self) -> int | None:
+        peeked = self.peek()
+        if peeked:
+            return peeked[0]
+
+    def at_or_before_index(self, index: int) -> bool:
+        at = self.index()
+        if at is not None:
+            return at <= index
+        return False
+
+    def at_index(self, index: int) -> bool:
+        return self.index() == index
+
+
+class _SeekableIter(_PeekableIter[T], _SeekableMixin[T]):
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.inner}, {self._peek[0] if self._peek else '<done>'})"
+
+
 __all__ = [
     "Span",
     "inflect_cv_name",
     "_slice_to_range",
     "parse_inflected_cv_name",
     "OntologyMapper",
+    "_SeekableIter",
+    "_PeekableIter",
 ]

@@ -1,4 +1,4 @@
-use std::{fs, io, marker::PhantomData, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, fs, io, marker::PhantomData, path::PathBuf, sync::Arc};
 
 use arrow::{
     array::{ArrayBuilder, AsArray, RecordBatch},
@@ -8,6 +8,7 @@ use mzpeaks::{CentroidPeak, DeconvolutedPeak};
 use parquet::{
     arrow::{ArrowWriter, arrow_writer::ArrowWriterOptions},
     basic::Compression,
+    encryption::encrypt::FileEncryptionProperties,
     file::metadata::KeyValue,
 };
 
@@ -55,6 +56,9 @@ pub struct UnpackedMzPeakWriterType<
 
     buffer_size: usize,
     compression: Compression,
+    shuffle_mz: bool,
+    encryption_properties: HashMap<String, Arc<FileEncryptionProperties>>,
+
     #[allow(unused)]
     write_batch_config: WriteBatchConfig,
     mz_metadata: FileMetadataConfig,
@@ -103,7 +107,7 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
         Ok(())
     }
 
-    fn separate_peak_writer(&mut self) -> Option<&mut MiniPeakWriterType<fs::File>> {
+    fn spectrum_peak_writer(&mut self) -> Option<&mut MiniPeakWriterType<fs::File>> {
         self.separate_peak_writer.as_mut()
     }
 
@@ -137,6 +141,30 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
 
     fn wavelength_entry_buffer_mut(&mut self) -> &mut WavelengthSpectrumBuilder {
         &mut self.wavelength_metadata_buffer
+    }
+
+    fn set_spectrum_peak_writer(&mut self, writer: MiniPeakWriterType<fs::File>) {
+        self.separate_peak_writer = Some(writer);
+    }
+
+    fn write_batch_config(&self) -> WriteBatchConfig {
+        self.write_batch_config
+    }
+
+    fn compression(&self) -> Compression {
+        self.compression
+    }
+
+    fn shuffle_mz(&self) -> bool {
+        self.shuffle_mz
+    }
+
+    fn buffer_size(&self) -> usize {
+        self.buffer_size
+    }
+
+    fn encryption_properties(&self) -> &HashMap<String, Arc<FileEncryptionProperties>> {
+        &self.encryption_properties
     }
 }
 
@@ -209,38 +237,26 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
             None,
         );
 
+        let encryption_properties = Default::default();
+
         let separate_peak_writer = if let Some(peak_buffer_builder) = store_peaks_and_profiles_apart
         {
             let peak_buffer_file = fs::File::create(
                 path.join(MzPeakArchiveType::SpectrumPeakDataArrays.tag_file_suffix()),
             )
             .unwrap();
-            let peak_buffer = peak_buffer_builder
-                .include_time(spectrum_buffers.include_time())
-                .build(Arc::new(Schema::empty()), BufferContext::Spectrum, false);
 
-            let data_props = Self::spectrum_data_writer_props(
-                &peak_buffer,
-                peak_buffer.index_path(),
-                shuffle_mz,
-                &None,
-                compression,
-                write_batch_config,
-                None,
-            );
-
-            let peak_writer = ArrowWriter::try_new_with_options(
+            let peak_writer = Self::make_peaks_writer(
                 peak_buffer_file,
-                peak_buffer.schema().clone(),
-                ArrowWriterOptions::new().with_properties(data_props),
-            )
-            .unwrap();
-
-            Some(MiniPeakWriterType::new(
-                peak_writer,
-                peak_buffer,
+                peak_buffer_builder,
+                write_batch_config,
+                compression,
+                spectrum_buffers.include_time(),
+                shuffle_mz,
                 buffer_size,
-            ))
+                &encryption_properties,
+            );
+            peak_writer.ok()
         } else {
             None
         };
@@ -271,7 +287,8 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
 
             use_chunked_encoding,
             use_chromatogram_chunked_encoding,
-
+            shuffle_mz,
+            encryption_properties: Default::default(),
             chromatogram_data_point_counter: 0,
             compression,
             write_batch_config,

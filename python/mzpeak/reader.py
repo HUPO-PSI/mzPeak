@@ -17,9 +17,9 @@ import pyarrow as pa
 
 from pyarrow import parquet as pq
 
-from .mz_reader import _BatchIterator, MzPeakArrayDataReader, BufferFormat
+from .mz_reader import _DataBatchIter, MzPeakArrayDataReader, _SpectrumArrays
 from .file_index import FileIndex, DataKind, EntityType
-from .util import OntologyMapper
+from .util import _SeekableIter, OntologyMapper, DTYPES
 
 try:
     has_upath = True
@@ -178,12 +178,7 @@ class _AuxiliaryArrayDecoder:
         "MS:1002312": pynumpress.decode_linear,
     }
 
-    dtypes = {
-        "MS:1000519": np.int32,
-        "MS:1000521": np.float32,
-        "MS:1000522": np.int64,
-        "MS:1000523": np.float64,
-    }
+    dtypes = DTYPES
     ascii_code = "MS:1001479"
 
     @classmethod
@@ -239,6 +234,121 @@ class AuxiliaryArray:
     values: np.ndarray
     parameters: list[dict]
     unit: Optional[str] = None
+
+
+class _DataPointCountMixin:
+    def _table(self) -> pd.DataFrame:
+        raise NotImplementedError()
+
+    def data_point_count(self, indices: int | Sequence[int] | Sequence[bool]):
+        '''Get the number of profile data points for the requested indices'''
+        series = self._table().get("number of data points")
+        if series is None:
+            return np.ones_like(indices) * np.nan
+        try:
+            return series[indices]
+        except (KeyError, IndexError):
+            return np.nan
+
+    def peak_count(self, indices: int | Sequence[int] | Sequence[bool]):
+        """Get the number of peaks for the requested indices"""
+        series = self._table().get("number of peaks")
+        if series is None:
+            return np.ones_like(indices) * pd.nan
+        try:
+            return series[indices]
+        except (KeyError, IndexError):
+            return np.nan
+
+
+class _MzPeakDataIter(Iterator[tuple[int, _SpectrumArrays, DataKind]]):
+    """
+    An iterator over two :class:`~._DataBatchIter` that dispatches based upon the
+    data in :class:`_DataPointCountMixin`
+    """
+    metadata: _DataPointCountMixin
+    data_iter: _DataBatchIter | None
+    peak_iter: _DataBatchIter | None
+    size: int
+    index: int
+    prefer_peaks: bool = False
+
+    def __init__(
+        self,
+        metadata: _DataPointCountMixin,
+        data_iter: _DataBatchIter | None,
+        peak_iter: _DataBatchIter | None,
+        size: int,
+        index: int = 0,
+        prefer_peaks: bool = False
+    ):
+        self.metadata = metadata
+        self.data_iter = data_iter
+        self.peak_iter = peak_iter
+        self.size = size
+        self.index = index
+        self.prefer_peaks = prefer_peaks
+
+    def read_data(self, i: int):
+        if (
+            not pd.isna(self.metadata.data_point_count(i))
+            and self.data_iter is not None
+        ):
+            idx = self.data_iter.index()
+            if idx is not None:
+                if idx < i:
+                    self.data_iter.seek(i)
+                if self.data_iter.at_index(i):
+                    data = next(self.data_iter)
+                    return data
+
+    def read_peaks(self, i: int):
+        if not pd.isna(self.metadata.peak_count(i)) and self.peak_iter is not None:
+            idx = self.peak_iter.index()
+            if idx is not None:
+                if idx < i:
+                    self.peak_iter.seek(i)
+                if self.peak_iter.at_index(i):
+                    data = next(self.peak_iter)
+                    return data
+
+    def empty_arrays(self) -> _SpectrumArrays | None:
+        if self.prefer_peaks and self.peak_iter:
+            return self.peak_iter.empty_arrays()
+        elif self.data_iter:
+            return self.data_iter.empty_arrays()
+        elif self.peak_iter:
+            return self.peak_iter.empty_arrays()
+
+    def __next__(self):
+        i = self.index
+        self.index += 1
+        if self.prefer_peaks:
+            peaks = self.read_peaks(i)
+            if peaks:
+                return (*peaks, DataKind.Peaks)
+            data = self.read_data(i)
+            if data:
+                return (*data, DataKind.DataArrays)
+            return i, None, None
+        else:
+            data = self.read_data(i)
+            if data:
+                return (*data, DataKind.DataArrays)
+            peaks = self.read_peaks(i)
+            if peaks:
+                return (*peaks, DataKind.Peaks)
+            return i, None, None
+
+    def __iter__(self):
+        return self
+
+    def __len__(self):
+        return self.size
+
+    def __repr__(self):
+        return (f"{self.__class__.__name__}({self.index}/{self.size}, {self.data_iter}, "
+                f"{self.peak_iter}, prefer_peaks={self.prefer_peaks})")
 
 
 class _PrecursorReadMixin:
@@ -329,7 +439,7 @@ class _PrecursorReadMixin:
         spec["precursors"] = precursors_of.to_dict("records")
 
 
-class MzPeakSpectrumMetadataReader(_PrecursorReadMixin):
+class MzPeakSpectrumMetadataReader(_PrecursorReadMixin, _DataPointCountMixin):
     """
     A reader for spectrum metadata in an mzPeak file.
 
@@ -555,6 +665,9 @@ class MzPeakSpectrumMetadataReader(_PrecursorReadMixin):
     def __repr__(self):
         return f"{self.__class__.__name__}({self.handle})"
 
+    def _table(self) -> pd.DataFrame:
+        return self.spectra
+
     def _get_mz_delta_model(self):
         if "median_delta" in self.spectra:
             return self.spectra["median_delta"].to_numpy()
@@ -563,7 +676,7 @@ class MzPeakSpectrumMetadataReader(_PrecursorReadMixin):
         return None
 
 
-class MzPeakChromatogramMetadataReader(_PrecursorReadMixin):
+class MzPeakChromatogramMetadataReader(_PrecursorReadMixin, _DataPointCountMixin):
     """
     A reader for chromatogram metadata in an mzPeak file.
 
@@ -659,6 +772,9 @@ class MzPeakChromatogramMetadataReader(_PrecursorReadMixin):
             self.chromatograms[["id"]].reset_index().set_index("id")["index"]
         )
 
+    def _table(self) -> pd.DataFrame:
+        return self.chromatograms
+
     def __getitem__(self, i: int | str):
         if isinstance(i, str):
             i = self.id_index[i]
@@ -676,118 +792,121 @@ class MzPeakChromatogramMetadataReader(_PrecursorReadMixin):
 _SpectrumType = dict[str, Any]
 
 
-class MzPeakFileIter(Iterator[_SpectrumType]):
-    """
-    An :class:`Iterator` for :class:`MzPeakFile`.
-    """
-
-    archive: "MzPeakFile"
+class MzPeakFileIter(Iterator["_SpectrumType"]):
+    data_iter: _SeekableIter
+    metadata: "MzPeakSpectrumMetadataReader"
     index: int
-    buffer_format: BufferFormat
-    data_iter: _BatchIterator
-    peeked: tuple[int, pa.StructArray] | None
+    size: int
 
-    def __init__(self, archive: "MzPeakFile"):
-        self.archive = archive
-        self.index = 0
-        self.buffer_format = archive.spectrum_data.buffer_format()
-        self.data_iter = None
-        self.peeked = None
-        self._make_data_iter()
+    @classmethod
+    def from_archive_spectra(cls, reader: "MzPeakFile") -> "MzPeakFileIter":
+        profile_iter = None
+        peak_iter = None
+        if reader.spectrum_data:
+            profile_iter = reader.spectrum_data._data_iterator(0)
+        if reader.spectrum_peak_data:
+            peak_iter = reader.spectrum_peak_data._data_iterator(0)
+        data_iter = _MzPeakDataIter(
+            reader.spectrum_metadata,
+            profile_iter,
+            peak_iter,
+            len(reader.spectrum_metadata),
+            prefer_peaks=reader.prefer_peaks
+        )
+        return cls(data_iter, reader.spectrum_metadata)
 
-    def _make_data_iter(self):
-        if self.buffer_format == BufferFormat.Point:
-            it = self.archive.spectrum_data.handle.iter_batches(columns=["point"])
-            self.data_iter = _BatchIterator(it, self.index, index_column=f"{self.archive.spectrum_data._namespace}_index")
-        elif self.buffer_format == BufferFormat.ChunkValues:
-            it = self.archive.spectrum_data.handle.iter_batches(128, columns=["chunk"])
-            self.data_iter = _BatchIterator(
-                it,
-                self.index,
-                index_column=f"{self.archive.spectrum_data._namespace}_index",
-            )
-        else:
-            raise ValueError(self.buffer_format)
+    def __init__(
+        self,
+        data_iter: _MzPeakDataIter,
+        metadata: "MzPeakSpectrumMetadataReader",
+        index: int=0,
+    ):
+        self.data_iter = _SeekableIter(data_iter)
+        self.metadata = metadata
+        self.index = index
+        self.size = len(metadata)
 
-    def _format_data_buffer(self, index: int, buffers: pa.StructArray):
-        if self.buffer_format == BufferFormat.Point:
-            return self.archive.spectrum_data._clean_point_batch(
-                buffers,
-                delta_model=self.archive.spectrum_data._delta_model_series[index]
-                if self.archive.spectrum_data._delta_model_series is not None
-                else None,
-            )
-        elif self.buffer_format == BufferFormat.ChunkValues:
-            return self.archive.spectrum_data._expand_chunks(
-                buffers,
-                delta_model=self.archive.spectrum_data._delta_model_series[index]
-                if self.archive.spectrum_data._delta_model_series is not None
-                else None,
-            )
-        else:
-            raise ValueError(self.buffer_format)
+    def __next__(self) -> "_SpectrumType":
+        i = self.index
+        self.index += 1
+        self.data_iter.seek(i)
+        _j, data, mode = next(self.data_iter)
+        meta = self.metadata[i]
+        if data is None:
+            data = self.data_iter.inner.empty_arrays()
+        meta["data_kind"] = mode
+        meta.update(data)
+        return meta
+
+    def seek(self, index: int) -> bool:
+        self.index = index
+        return self.data_iter.seek(index)
+
+    def __len__(self):
+        return self.size
 
     def __iter__(self):
         return self
 
-    def seek(self, index: int):
-        """
-        Advance the underlying iterator to the requested index.
 
-        .. note:: The iterator cannot travel backwards.
-
-        Arguments
-        ---------
-        index : int
-            The index to advance to.
-
-        Raises
-        ------
-        :class:`ValueError`
-            If `index` is less than :attr:`index`
-        """
-        self.index = index
-        self.data_iter.seek(index)
-
-    def __next__(self):
-        if self.index >= len(self.archive):
-            raise StopIteration()
-        meta = self.archive.spectrum_metadata[self.index]
-        if self.peeked:
-            if self.peeked[0] == self.index:
-                index, data = self.peeked
-                self.peeked = None
-            else:
-                index, data = next(self.data_iter)
-        else:
-            index, data = next(self.data_iter)
-        if index == self.index:
-            data = self._format_data_buffer(index, data)
-            meta.update(data)
-        else:
-            self.peeked = (index, data)
-        self.index += 1
-        return meta
-
-    def __len__(self) -> int:
-        return len(self.archive)
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}({self.index}, {self.archive})"
-
-
-class _SpectrumCollectionMixin(Sequence[_SpectrumType]):
+class _EntityCollectionMixin(Sequence[_SpectrumType]):
     spectrum_metadata: MzPeakSpectrumMetadataReader | None = None
     spectrum_data: MzPeakArrayDataReader | None = None
+    spectrum_peak_data: MzPeakArrayDataReader | None = None
+    prefer_peaks: bool = False
 
     def read_spectrum(
         self, index: int | str | Iterable[int | str] | slice
     ) -> _SpectrumType | list[_SpectrumType]:
+        """
+        Read a spectrum by its ``index`` or ``id`` attribute.
+
+        If a list is provided, each of those spectra will be
+        retrieved. If a :class:`slice` is provided, the consecutive
+        spectra will be returned.
+
+        Parameters
+        ----------
+        index : :class:`int`, :class:`str`, :class:`Iterable`, or :class:`slice`
+            The identifier or index (or plurality thereof) to retrieve.
+
+        Returns
+        -------
+        :class:`dict` or :class:`list` of :class:`dict`
+            The spectrum or spectra requested
+        """
         if isinstance(index, (int, str)):
             spec = self.spectrum_metadata[index]
             index = spec["index"]
-            data = self.spectrum_data[index]
-            spec.update(data)
+            dp = self.spectrum_metadata.data_point_count(index)
+            pk = self.spectrum_metadata.peak_count(index)
+            data = None
+            mode = None
+            if self.prefer_peaks:
+                if not pd.isna(pk) and pk > 0 and self.spectrum_peak_data is not None:
+                    data = self.spectrum_peak_data[index]
+                    mode = DataKind.Peaks
+                elif not pd.isna(dp) and dp > 0 and self.spectrum_data is not None:
+                    data = self.spectrum_data[index]
+                    mode = DataKind.DataArrays
+            else:
+                if not pd.isna(dp) and dp > 0 and self.spectrum_data is not None:
+                    data = self.spectrum_data[index]
+                    mode = DataKind.DataArrays
+                elif not pd.isna(pk) and pk > 0 and self.spectrum_peak_data is not None:
+                    data = self.spectrum_peak_data[index]
+                    mode = DataKind.Peaks
+            if not data:
+                if self.prefer_peaks and self.spectrum_peak_data:
+                    data = self.spectrum_peak_data._empty_array_map()
+                    mode = DataKind.Peaks
+                else:
+                    data = self.spectrum_data._empty_array_map()
+                    mode = DataKind.DataArrays
+            if data:
+                spec.update(data)
+            spec["data_kind"] = mode
+
         elif isinstance(index, Iterable):
             if not index:
                 return []
@@ -809,7 +928,7 @@ class _SpectrumCollectionMixin(Sequence[_SpectrumType]):
         return spec
 
     def __iter__(self) -> MzPeakFileIter:
-        return MzPeakFileIter(self)
+        return MzPeakFileIter.from_archive_spectra(self)
 
     def __len__(self):
         return len(self.spectrum_metadata)
@@ -830,7 +949,7 @@ class _SpectrumCollectionMixin(Sequence[_SpectrumType]):
         return RTLocator(self)
 
 
-class MzPeakFile(_SpectrumCollectionMixin):
+class MzPeakFile(_EntityCollectionMixin):
     """
     An mzPeak reader for mass spectra, chromatograms, and other
     data types.
@@ -839,8 +958,14 @@ class MzPeakFile(_SpectrumCollectionMixin):
     Files may be stored locally. If :mod:`universal_pathlib` (``upath``) is installed,
     any supported protocol path is also supported.
 
-    This type is an :class:`Iterable` over spectra with support
-    for point and slicing access.
+    This type is an :class:`Sequence` over mass spectra with support for point and slicing
+    access. Chromatograms are accessed via :meth:`read_chromatogram`. Wavelength spectra are
+    are exposed by the :attr:`wavelength_data`.
+
+    Mass spectra may be stored in profile mode, centroid mode AKA peaks, or both. By default,
+    this type will prefer to load the profile mode data and let the user load peaks
+    :meth:`read_peaks_for`. Setting :attr:`prefer_peaks` to :const:`True` will preferentially
+    load peaks when both modalities are available.
 
     Attributes
     ----------
@@ -852,40 +977,46 @@ class MzPeakFile(_SpectrumCollectionMixin):
         The facet of the data file for reading spectrum descriptive metadata,
         like scan time, MS level, precursor information, et cetera. Should not
         be necessary to interact with this attribute directly. Instead, see
-        :attr:`MzPeakFile.spectra`, :attr:`MzPeakFile.precursors`, :attr:`MzPeakFile.scans`
-        and :attr:`MzPeakFile.selected_ions`.
+        :attr:`spectra`, :attr:`precursors`, :attr:`scans`
+        and :attr:`selected_ions`.
     spectrum_peak_data : :class:`~.MzPeakArrayDataReader` or :const:`None`
         The facet of the data file for reading explicitly stored spectrum centroid
         data from. This will only be present if the file was written with a separate
         centroid stream to store both centroids and profile data side-by-side, as
         in some instrument vendor formats.
+    prefer_peaks : :class:`bool`
+        Whether to preferentially load peak or profile data when both are available for
+        the same spectrum.
     chromatogram_data : :class:`~.MzPeakArrayDataReader` or :const:`None`
         The facet of the data file for reading chromatogram signal data from. This
         will only be present if the writer specifically writes chromatogram data.
     chromatogram_metadata : :class:`~.MzPeakChromatogramMetadataReader`
         The facet of the data file for reading chromatogram descriptive metadata.
         Should not be necessary to interact with this attribute directly. Instead, see
-        :attr:`MzPeakFile.chromatograms`
+        :attr:`chromatograms`
     file_index : :class:`~.FileIndex`
         A listing of the recorded files within the archive, mapping names to specific
         data content types.
     file_metadata: dict[str, Any]
-        TODO: document this
+        A mapping of the run-level metadata for the archive, covering things like instrument
+        configurations, file content description, sample metadata, and the like.
     spectra : :class:`pandas.DataFrame`
         A data frame holding spectrum-level metadata like MS level, scan time, centroid status,
         and polarity.
     precursors : :class:`pandas.DataFrame`
         A data frame holding precursor-level metadata like precursor scan ID, isolation window,
-        and activation parameters. See :attr:`MzPeakFile.selected_ions` for ion-level information.
-    selected_ions : :class:`pandas.Dataframe`
+        and activation parameters. See :attr:`selected_ions` for ion-level information.
+    selected_ions : :class:`pandas.DataFrame`
         A data frame holding selected ions connected to precursors and spectra including selected
         ion m/z, charge, intensity, and possibly ion mobility.
-    scans : :class:`pandas.Dataframe`
+    scans : :class:`pandas.DataFrame`
         A data frame holding scan-level metadata like scan start time, injection time, filter strings
         and scan ranges.
     chromatograms : :class:`pandas.DataFrame` or :const:`None`
         A data frame holding chromatogram-level metadata. This will only be present if
         :attr:`chromatogram_metadata` is present.
+    wavelength_data : :class:`WavelengthFacet` or :const:`None`
+        A facet for accessing wavelength spectra if it is available.
     """
 
     _archive: zipfile.ZipFile | Path | UPath
@@ -1061,7 +1192,20 @@ class MzPeakFile(_SpectrumCollectionMixin):
                     f"Do not understand how to list files from {self._archive} of type {self._archive_storage}"
                 )
 
-    def read_peaks_for(self, index: int):
+    def read_peaks_for(self, index: int) -> _SpectrumArrays | None:
+        '''
+        Read the centroid mass spectrum peak list for ``index`` if one is available.
+
+        Parameters
+        ----------
+        index : int
+            The index to read peaks for.
+
+        Returns
+        -------
+        dict[str, np.ndarray]
+            A map of named peak dimensions as :class:`np.ndarray`
+        '''
         if self.spectrum_peak_data is not None:
             return self.spectrum_peak_data[index]
 
@@ -1105,6 +1249,23 @@ class MzPeakFile(_SpectrumCollectionMixin):
     def read_chromatogram(
         self, index: int | str | Iterable[int | str] | slice
     ) -> _SpectrumType | list[_SpectrumType]:
+        """
+        Read a chromatogram by its ``index`` or ``id`` attribute.
+
+        If a list is provided, each of those chromatograms will be
+        retrieved. If a :class:`slice` is provided, the consecutive
+        chromatograms will be returned.
+
+        Parameters
+        ----------
+        index : :class:`int`, :class:`str`, :class:`Iterable`, or :class:`slice`
+            The identifier or index (or plurality thereof) to retrieve.
+
+        Returns
+        -------
+        :class:`dict` or :class:`list` of :class:`dict`
+            The chromatogram or chromatograms requested
+        """
         if isinstance(index, (int, str)):
             chrom = self.chromatogram_metadata[index]
             index = chrom["index"]
@@ -1122,7 +1283,7 @@ class MzPeakFile(_SpectrumCollectionMixin):
         return chrom
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({self.filename!r})"
+        return f"{self.__class__.__name__}({self.filename!r}, prefer_peaks={self.prefer_peaks})"
 
     def extract_tic(self) -> tuple[np.ndarray, np.ndarray]:
         """
@@ -1200,11 +1361,12 @@ class MzPeakFile(_SpectrumCollectionMixin):
         )
 
 
-class WavelengthFacet(_SpectrumCollectionMixin):
+class WavelengthFacet(_EntityCollectionMixin):
     spectrum_metadata: MzPeakSpectrumMetadataReader | None = None
     spectrum_data: MzPeakArrayDataReader | None = None
+    spectrum_peak_data: MzPeakArrayDataReader | None = None
 
-    def __init__(self, spectrum_metadata, spectrum_data):
+    def __init__(self, spectrum_metadata: MzPeakSpectrumMetadataReader, spectrum_data: MzPeakArrayDataReader):
         self.spectrum_data = spectrum_data
         self.spectrum_metadata = spectrum_metadata
 

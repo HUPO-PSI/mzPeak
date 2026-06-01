@@ -2,11 +2,11 @@ use std::{fmt::Debug, ops::AddAssign, sync::Arc};
 
 use arrow::{
     array::{
-        Array, ArrowPrimitiveType, AsArray, BooleanArray, Float32Array, Float64Array, Int32Array,
-        Int64Array, PrimitiveArray, RecordBatch, UInt32Array, UInt64Array,
+        Array, ArrayRef, ArrowPrimitiveType, AsArray, BooleanArray, Float32Array, Float64Array,
+        Int32Array, Int64Array, PrimitiveArray, RecordBatch, UInt32Array, UInt64Array,
     },
     buffer::NullBuffer,
-    compute::{nullif, take_record_batch},
+    compute::{nullif, take_arrays, take_record_batch},
     datatypes::{
         DataType, Float32Type, Float64Type, Int32Type, Int64Type, Schema, UInt32Type, UInt64Type,
     },
@@ -676,6 +676,18 @@ pub fn find_where_not_zeros(array: &impl Array) -> Option<Vec<u64>> {
     return None;
 }
 
+pub fn drop_where_column_is_zero_run_arrays(
+    batch: &[ArrayRef],
+    column_index: usize,
+) -> Result<Vec<ArrayRef>, arrow::error::ArrowError> {
+    let target_array = &batch[column_index];
+    if let Some(indices) = find_where_not_zeros(target_array) {
+        take_arrays(&batch, &UInt64Array::from(indices), None)
+    } else {
+        Ok(batch.to_vec())
+    }
+}
+
 pub fn drop_where_column_is_zero_run(
     batch: &RecordBatch,
     column_index: usize,
@@ -720,17 +732,12 @@ where
     acc.into()
 }
 
-/// Find all positions which satisfy `is_zero_pair_mask` in the `column_index`th column in `batch`
-/// in `target_indices` columns.
-///
-/// # Panics
-/// If the array at `column_index` is a non-numeric or non-primitive array
-pub fn nullify_at_zero_pair(
-    batch: &RecordBatch,
+pub fn nullify_at_zero_pair_arrays(
+    mut batch: Vec<ArrayRef>,
     column_index: usize,
-    target_indices: &[usize],
-) -> Result<RecordBatch, arrow::error::ArrowError> {
-    let target_array = batch.column(column_index);
+    target_indices: &[usize]
+) -> Result<Vec<ArrayRef>, arrow::error::ArrowError> {
+    let target_array = &batch[column_index];
     let mask = match target_array.data_type() {
         DataType::Float32 => is_zero_pair_mask(target_array.as_primitive::<Float32Type>()),
         DataType::Float64 => is_zero_pair_mask(target_array.as_primitive::<Float64Type>()),
@@ -741,20 +748,35 @@ pub fn nullify_at_zero_pair(
         _ => panic!("Unsupported data type {:?}", target_array.data_type()),
     };
 
+    for (i, col) in batch.iter_mut().enumerate() {
+        if !target_indices.contains(&i) {
+            continue;
+        }
+        *col = nullif(col, &mask)?;
+    }
+
+    Ok(batch)
+}
+
+/// Find all positions which satisfy `is_zero_pair_mask` in the `column_index`th column in `batch`
+/// in `target_indices` columns.
+///
+/// # Panics
+/// If the array at `column_index` is a non-numeric or non-primitive array
+pub fn nullify_at_zero_pair(
+    batch: &RecordBatch,
+    column_index: usize,
+    target_indices: &[usize],
+) -> Result<RecordBatch, arrow::error::ArrowError> {
     let (schema, mut cols, _row_count) = batch.clone().into_parts();
+
+    cols = nullify_at_zero_pair_arrays(cols, column_index, target_indices)?;
 
     let schema: Vec<_> = schema
         .fields()
         .iter()
         .map(|f| Arc::new(f.as_ref().clone().with_nullable(true)))
         .collect();
-
-    for (i, col) in cols.iter_mut().enumerate() {
-        if !target_indices.contains(&i) {
-            continue;
-        }
-        *col = nullif(col, &mask)?;
-    }
 
     RecordBatch::try_new(Arc::new(Schema::new(schema)), cols)
 }
