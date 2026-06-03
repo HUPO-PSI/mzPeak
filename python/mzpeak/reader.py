@@ -254,7 +254,7 @@ class _DataPointCountMixin:
         """Get the number of peaks for the requested indices"""
         series = self._table().get("number of peaks")
         if series is None:
-            return np.ones_like(indices) * pd.nan
+            return np.ones_like(indices) * np.nan
         try:
             return series[indices]
         except (KeyError, IndexError):
