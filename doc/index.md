@@ -1274,7 +1274,7 @@ This metadata table uses the [packed parallel metadata table](#packed-parallel-m
   - `source_index` (uint64): The `index` of the spectrum this scan belongs to. This is a foreign key.
   - `instrument_configuration_ref` (integer): The identifier for `instrument_configuration` that governs this scan.
   - `parameters` (list): A list of controlled or uncontrolled parameters that describe this scan. See [the parameter list section](#the-parameters-list) for more details.
-  - `ion_mobility` (floatf64): Optional, the ion mobility measurement for this scan.
+  - `ion_mobility_value` (float64): Optional, the ion mobility measurement for this scan.
   - `ion_mobility_type` (CURIE): Optional, the kind of ion mobility being measured using a *child* of [MS:1002892](http://purl.obolibrary.org/obo/MS_1002892).
   - `scan_windows`
   - MAY supply a *child* term of [MS:1000503](http://purl.obolibrary.org/obo/MS_1000503) (scan attribute) one or more times
@@ -1299,7 +1299,7 @@ This metadata table uses the [packed parallel metadata table](#packed-parallel-m
 - `selected_ion` (group): An ion isolated for dissociation.
   - `source_index` (uint64): The `index` of the spectrum this selected ion belongs to. This is a foreign key.
   - `precursor_index` (uint64): The `index` of the spectrum that is the selected ion was created from. This is a foreign key.
-  - `ion_mobility` (float64): Optional, the ion mobility measurement for this ion.
+  - `ion_mobility_value` (float64): Optional, the ion mobility measurement for this ion.
   - `ion_mobility_type` (CURIE): Optional, the kind of ion mobility being measured using a *child* of [MS:1002892](http://purl.obolibrary.org/obo/MS_1002892).
   - `parameters` (list): A list of controlled or uncontrolled parameters that describe this selected ion. See [the parameter list section](#the-parameters-list) for more details.
   - MUST supply a *child* term of [MS:1000455](http://purl.obolibrary.org/obo/MS_1000455) (ion selection attribute) one or more times
@@ -1378,7 +1378,7 @@ When selecting a [Parquet encoding](https://parquet.apache.org/docs/file-format/
 - `selected_ion` (group): An ion isolated for dissociation.
   - `source_index` (integer): The `index` of the chromatogram this selected ion belongs to. This is a foreign key.
   - `precursor_index` (integer): The `index` of the chromatogram that is the selected ion was created from. This is a foreign key.
-  - `ion_mobility` (float): Optional, the ion mobility measurement for this ion.
+  - `ion_mobility_value` (float): Optional, the ion mobility measurement for this ion.
   - `ion_mobility_type` (CURIE): Optional, the kind of ion mobility being measured using a *child* of [MS:1002892](http://purl.obolibrary.org/obo/MS_1002892).
   - `parameters` (list): A list of controlled or uncontrolled parameters that describe this selected ion. See [the parameter list section](#the-parameters-list) for more details.
   - MUST supply a *child* term of [MS:1000455](http://purl.obolibrary.org/obo/MS_1000455) (ion selection attribute) one or more times
