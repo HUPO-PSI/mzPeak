@@ -308,6 +308,13 @@ pub trait AbstractMzPeakWriter {
     /// Append an arbitrary key bytestring with an optional value to the (current) Parquet file
     fn append_key_value_metadata(&mut self, key: String, value: Option<String>);
 
+    // mzML2mzPeak fix: data-derived sorting_rank.
+    /// AND-accumulate whether the primary (m/z) axis of the just-written spectrum was sorted
+    /// (non-decreasing). Implementations that track this demote the spectra_data MZArray column's
+    /// `sorting_rank` to null at finish if any spectrum violated. Default is a no-op so non-tracking
+    /// writers are unaffected.
+    fn note_primary_axis_sorted(&mut self, _sorted: bool) {}
+
     /// Whether or not a chunking strategy is being used for spectra
     fn use_chunked_encoding(&self) -> Option<&ChunkingStrategy>;
 
@@ -529,6 +536,11 @@ pub trait AbstractMzPeakWriter {
         binary_array_map: &BinaryArrayMap,
     ) -> Result<EntryMetadataDerivedFromData, ArrayRetrievalError> {
         let mzs = binary_array_map.mzs();
+        // mzML2mzPeak fix: data-derived sorting_rank.
+        // Fold this profile/raw spectrum's primary m/z sortedness into the per-file accumulator.
+        // This is the ONLY in-writer mzs() observation point for the spectra_data facet; the
+        // centroid peaks facet folds independently in MiniPeakWriterType::write_peaks.
+        self.note_primary_axis_sorted(mzs.as_ref().map(|v| v.is_sorted()).unwrap_or(true));
         let (_had_mzs, n_points) = if let Ok(mzs) = mzs {
             (true, mzs.len())
         } else {

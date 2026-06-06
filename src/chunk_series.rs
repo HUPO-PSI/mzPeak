@@ -931,6 +931,12 @@ impl ArrowArrayChunk {
 
         let mut auxiliary_arrays = Vec::new();
 
+        // mzML2mzPeak fix: data-derived sorting_rank.
+        // This per-chunk main-axis `sorting_rank: Some(0)` is the OPTIMISTIC default. The
+        // AUTHORITATIVE per-file declaration is set at finish() in writer.rs
+        // (add_spectrum_array_metadata demotes the spectrum_array_index MZArray column to null
+        // when the per-file accumulator saw a non-monotonic spectrum). The chunked array index is
+        // emitted through that same SPECTRUM_ARRAY_INDEX path, so leaving this provisional is safe.
         let main_axis = overrides
             .map(&main_axis)
             .with_format(BufferFormat::Chunk)

@@ -164,6 +164,12 @@ pub trait ToMzPeakDataSeries: Sized + BuildArrayMapFrom {
     ) -> (Fields, Vec<ArrayRef>);
 }
 
+// mzML2mzPeak fix: data-derived sorting_rank.
+// `sorting_rank: Some(0)` here is the OPTIMISTIC DEFAULT (sorted-until-proven-otherwise). The
+// truthful per-file declaration is DERIVED AT FINISH: the writer accumulates per-spectrum primary
+// m/z monotonicity (MiniPeakWriterType for the centroid peaks facet, MzPeakWriterType for the
+// spectra_data facet) and, when any spectrum was non-monotonic, demotes the emitted
+// spectrum_array_index MZArray column to `sorting_rank: null` (key absent). This const stays 0.
 pub const MZ_ARRAY: BufferName = BufferName::new(
     BufferContext::Spectrum,
     ArrayType::MZArray,

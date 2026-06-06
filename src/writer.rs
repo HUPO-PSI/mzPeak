@@ -482,6 +482,11 @@ pub struct MzPeakWriterType<
     #[allow(unused)]
     write_batch_config: WriteBatchConfig,
     mz_metadata: FileMetadataConfig,
+    // mzML2mzPeak fix: data-derived sorting_rank.
+    // AND-accumulated per-file monotonicity of the spectra_data (profile/point/chunked) primary
+    // m/z axis. Folded at base::write_spectrum_binary_array_map via note_primary_axis_sorted;
+    // governs the demotion of the spectrum_array_index MZArray column emitted at finish().
+    spectrum_mz_nondecreasing: bool,
     _t: PhantomData<(C, D)>,
 }
 
@@ -496,6 +501,11 @@ impl<
             .as_mut()
             .unwrap()
             .append_key_value_metadata(KeyValue::new(key, value));
+    }
+
+    // mzML2mzPeak fix: data-derived sorting_rank.
+    fn note_primary_axis_sorted(&mut self, sorted: bool) {
+        self.spectrum_mz_nondecreasing &= sorted;
     }
 
     fn use_chunked_encoding(&self) -> Option<&ChunkingStrategy> {
@@ -699,7 +709,7 @@ impl<
             None
         };
 
-        let mut this = Self {
+        let this = Self {
             archive_writer: Some(
                 ArrowWriter::try_new_with_options(
                     writer,
@@ -722,10 +732,16 @@ impl<
             write_batch_config,
             wavelength_spectrum_data_buffers: None,
             wavelength_spectrum_metadata_buffer: Default::default(),
+            // mzML2mzPeak fix: data-derived sorting_rank.
+            spectrum_mz_nondecreasing: true,
             _t: PhantomData,
             encryption_properties,
         };
-        this.add_spectrum_array_metadata();
+        // mzML2mzPeak fix: data-derived sorting_rank.
+        // The eager `add_spectrum_array_metadata()` call was REMOVED here. Emitting
+        // sorting_rank: 0 before observing any spectrum bakes in the lie; the authoritative
+        // spectrum_array_index KV is now emitted at finish_parquet_inner() once the per-file
+        // monotonicity flag is known (later KV append wins on read).
         this
     }
 
@@ -760,8 +776,16 @@ impl<
             .ok_or_else(|| io::Error::other("Cannot create peak writer"))
     }
 
+    // mzML2mzPeak fix: data-derived sorting_rank.
+    // Demotion-aware: rebuilds the ArrayIndex nulling the MZArray column's sorting_rank when the
+    // accumulated `spectrum_mz_nondecreasing` flag is false. Called from finish_parquet_inner so
+    // it reflects every observed spectrum (no longer eagerly emitted at build time).
     fn add_spectrum_array_metadata(&mut self) {
         let spectrum_array_index: ArrayIndex = self.spectrum_data_buffers.as_array_index();
+        let spectrum_array_index = crate::writer::mini_peak::demote_mz_if_unsorted(
+            spectrum_array_index,
+            self.spectrum_mz_nondecreasing,
+        );
         self.append_key_value_metadata(
             SPECTRUM_ARRAY_INDEX.into(),
             spectrum_array_index.to_json().into(),
@@ -859,6 +883,12 @@ impl<
     ) -> Result<ZipArchiveWriter<W>, parquet::errors::ParquetError> {
         if self.archive_writer.is_some() {
             self.flush_data_arrays()?;
+            // mzML2mzPeak fix: data-derived sorting_rank.
+            // Authoritative (relocated) spectrum_array_index emission: now that every spectrum's
+            // primary m/z has been observed, emit the index with the MZArray column demoted to
+            // sorting_rank: null if any spectrum was non-monotonic. (The eager build-time emission
+            // was removed; this is the single source of truth for the spectra_data facet.)
+            self.add_spectrum_array_metadata();
             self.append_key_value_metadata(
                 SPECTRUM_COUNT.into(),
                 Some(self.spectrum_counter().to_string()),
