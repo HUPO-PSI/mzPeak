@@ -1,21 +1,41 @@
-use std::{collections::HashMap, ops::Deref, str::FromStr};
+use std::{collections::HashMap, fmt, ops::Deref, str::FromStr};
 
 use serde::{Deserialize, Serialize};
-use serde_with::DeserializeFromStr;
+use serde_with::{DeserializeFromStr, SerializeDisplay};
+
+// mzML2mzPeak fix: `DataKind`/`EntityType` previously derived
+// `Serialize` while deserializing via `DeserializeFromStr`. The derived `Serialize`
+// emits the `Other(String)` tuple variant as a JSON object (`{"other": "..."}`),
+// which `DeserializeFromStr` (a plain string) cannot read back — so any archive
+// containing an `Other` file member wrote an `index.json` whose `FileEntry` failed
+// to deserialize, and the reader's `.ok()` silently dropped the ENTIRE FileIndex
+// (losing all `metadata`, including `metadata.imaging`). Fix: serialize via
+// `Display` (`SerializeDisplay`) so the wire form is a plain string symmetric with
+// `FromStr`. Unit variants are unchanged (they already serialized to their string).
+// Upstream issue to be filed; drop this fork when fixed upstream.
 
 /// The facet of the thing being described in this file
-#[derive(Debug, Serialize, DeserializeFromStr, Clone, PartialEq, Eq)]
+#[derive(Debug, SerializeDisplay, DeserializeFromStr, Clone, PartialEq, Eq)]
 pub enum DataKind {
-    #[serde(rename = "data arrays")]
+    // Wire form is driven by Display/FromStr (SerializeDisplay/DeserializeFromStr);
+    // the former #[serde(rename=...)] attrs were inert under those derives and removed.
     DataArray,
-    #[serde(rename = "peaks")]
     Peaks,
-    #[serde(rename = "metadata")]
     Metadata,
-    #[serde(rename = "proprietary")]
     Proprietary,
-    #[serde(rename = "other")]
     Other(String),
+}
+
+impl fmt::Display for DataKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::DataArray => "data arrays",
+            Self::Peaks => "peaks",
+            Self::Metadata => "metadata",
+            Self::Proprietary => "proprietary",
+            Self::Other(s) => s.as_str(),
+        })
+    }
 }
 
 impl FromStr for DataKind {
@@ -34,17 +54,25 @@ impl FromStr for DataKind {
 }
 
 /// The things being described in one facet or another by this file
-#[derive(Debug, Serialize, DeserializeFromStr, Clone, PartialEq, Eq)]
+#[derive(Debug, SerializeDisplay, DeserializeFromStr, Clone, PartialEq, Eq)]
 pub enum EntityType {
-    #[serde(rename = "spectrum")]
-    #[serde(alias = "mass spectrum")]
+    // Wire form driven by Display/FromStr; former #[serde(...)] attrs were inert and removed.
+    // ("mass spectrum" is still accepted on read via FromStr's alias arm.)
     Spectrum,
-    #[serde(rename = "chromatogram")]
     Chromatogram,
-    #[serde(rename = "wavelength spectrum")]
     WavelengthSpectrum,
-    #[serde(rename = "other")]
     Other(String),
+}
+
+impl fmt::Display for EntityType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Spectrum => "spectrum",
+            Self::Chromatogram => "chromatogram",
+            Self::WavelengthSpectrum => "wavelength spectrum",
+            Self::Other(s) => s.as_str(),
+        })
+    }
 }
 
 impl FromStr for EntityType {
@@ -208,3 +236,8 @@ impl Deref for FileIndex {
         &self.files
     }
 }
+
+// Note: `FromStr` lowercases its input, so a mixed-case `Other` payload that collides with a
+// unit-variant name (e.g. `Other("Spectrum")`) re-parses to that unit variant rather than back to
+// `Other`. This is latent in practice — the only `Other` value written today is `Other("other")`
+// — and the lowercasing is pre-existing read-time leniency, so it is left as-is.
