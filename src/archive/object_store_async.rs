@@ -6,7 +6,7 @@ use std::task::{Context, Poll, ready};
 use bytes::Bytes;
 
 use futures::{AsyncReadExt, FutureExt};
-use object_store::parse_url;
+use object_store::ObjectStoreExt;
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
 use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
 
@@ -354,6 +354,7 @@ pub struct AsyncArchiveReader<T: AsyncArchiveSource + 'static> {
     members: Arc<SchemaMetadataManager>,
 }
 
+
 impl<T: AsyncArchiveSource + 'static> AsyncArchiveReader<T> {
     pub fn file_index(&self) -> &FileIndex {
         self.archive.file_index()
@@ -428,10 +429,16 @@ impl<T: AsyncArchiveSource + 'static> AsyncArchiveReader<T> {
         Self::init_from_archive(archive).await
     }
 
-    pub async fn from_url(url: &Url) -> io::Result<Self> {
-        let (store, path) = parse_url(url)?;
-        let store = store.into();
-        Self::from_store_path(store, path).await
+    pub async fn from_url<P: AsRef<str>>(uri: P) -> io::Result<AsyncArchiveReader<T>> {
+        let parsed = Url::parse(uri.as_ref()).map_err(|e| io::Error::other(e))?;
+        let path = parsed.path();
+        let n = uri.as_ref().len() - path.len() + 1;
+        let host = &uri.as_ref()[..n];
+        let op = opendal::Operator::from_uri(host)?;
+
+        let store = Arc::new(object_store_opendal::OpendalStore::new(op));
+        let source = T::from_store_path(store, path.into()).await?;
+        AsyncArchiveReader::init_from_archive(source).await
     }
 
     pub async fn chromatograms_metadata(
@@ -585,9 +592,11 @@ mod test {
                 return Ok(())
             }
         };
-        let op = opendal::Operator::new(opendal::services::Http::default().endpoint("http://127.0.0.1:8030").root("/")).unwrap().finish();
-        let store = Arc::new(object_store_opendal::OpendalStore::new(op));
-        let handle = AsyncZipArchiveSource::new(store, "/small.mzpeak".into()).await?;
+        let handle = AsyncArchiveReader::<AsyncZipArchiveSource>::from_url("http://127.0.0.1:8030/small.mzpeak").await?;
+        let handle  = handle.archive;
+        // let op = opendal::Operator::from_uri("http://127.0.0.1:8030/").unwrap();
+        // let store = Arc::new(object_store_opendal::OpendalStore::new(op));
+        // let handle = AsyncZipArchiveSource::new(store, "/small.mzpeak".into()).await?;
 
         for (i, f) in handle.file_names().iter().enumerate() {
             if f.ends_with(MzPeakArchiveType::SpectrumMetadata.tag_file_suffix()) {

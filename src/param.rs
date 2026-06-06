@@ -3,11 +3,6 @@ use std::ops::Deref;
 use mzdata::params::{ParamDescribed, ParamLike, Unit};
 use serde::{Deserialize, Serialize, ser::SerializeSeq};
 
-/// Numerical identifier for "Proteomics Standards Initiative Mass Spectrometry Ontology"
-pub const MS_CV_ID: u8 = 1;
-/// Numerical identifier for "Unit Ontology"
-pub const UO_CV_ID: u8 = 2;
-
 /// A list of ion mobility point measures for scans
 pub const ION_MOBILITY_SCAN_TERMS: [mzdata::params::CURIE; 4] = [
     // ion mobility drift time
@@ -233,21 +228,45 @@ impl From<MetaParam> for mzdata::Param {
     }
 }
 
+
+fn value_ref_to_serde_json_value(value: mzdata::params::ValueRef<'_>) -> serde_json::Value {
+    match value {
+        mzdata::params::ValueRef::String(x) => serde_json::Value::String(x.to_string()),
+        mzdata::params::ValueRef::Float(x) => {
+            serde_json::Value::Number(serde_json::Number::from_f64(x).unwrap())
+        }
+        mzdata::params::ValueRef::Int(x) => {
+            serde_json::Value::Number(serde_json::Number::from_i128(x as i128).unwrap())
+        }
+        mzdata::params::ValueRef::Buffer(_) => unimplemented!(),
+        mzdata::params::ValueRef::Empty => serde_json::Value::Null,
+        mzdata::params::ValueRef::Boolean(x) => serde_json::Value::Bool(x),
+        mzdata::params::ValueRef::List(values) => {
+            serde_json::Value::Array(values.iter().map(|v| {
+                let v = v.clone();
+                serde_json::to_value(v).unwrap()
+            }).collect())
+        },
+    }
+}
+
+impl From<&mzdata::Param> for MetaParam {
+    fn from(value: &mzdata::Param) -> Self {
+        let curie = value.curie().map(CURIE::from);
+        let val = value_ref_to_serde_json_value(value.value());
+        Self {
+            name: Some(value.name.clone()),
+            accession: curie,
+            value: val,
+            unit: value.unit.to_curie().map(CURIE::from),
+        }
+    }
+}
+
 impl From<mzdata::Param> for MetaParam {
     fn from(value: mzdata::Param) -> Self {
         let curie = value.curie().map(CURIE::from);
-        let val = match value.value() {
-            mzdata::params::ValueRef::String(x) => serde_json::Value::String(x.to_string()),
-            mzdata::params::ValueRef::Float(x) => {
-                serde_json::Value::Number(serde_json::Number::from_f64(x).unwrap())
-            }
-            mzdata::params::ValueRef::Int(x) => {
-                serde_json::Value::Number(serde_json::Number::from_i128(x as i128).unwrap())
-            }
-            mzdata::params::ValueRef::Buffer(_) => unimplemented!(),
-            mzdata::params::ValueRef::Empty => serde_json::Value::Null,
-            mzdata::params::ValueRef::Boolean(x) => serde_json::Value::Bool(x),
-        };
+        let val = value_ref_to_serde_json_value(value.value());
         Self {
             name: Some(value.name),
             accession: curie,
@@ -320,6 +339,42 @@ impl From<SourceFile> for mzdata::meta::SourceFile {
             id_format,
             params,
         }
+    }
+}
+
+/// An adaption of [`mzdata::meta::ScanSettings`]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct ScanSettings {
+    /// A unique identifier
+    pub id: String,
+    /// List with the source files containing the acquisition settings
+    pub source_file_refs: Vec<String>,
+    /// Target list (or 'inclusion list') configured prior to the run
+    pub targets: Vec<Vec<MetaParam>>,
+    /// The controlled vocabulary and user parameters of the settings
+    pub parameters: Vec<MetaParam>,
+}
+
+impl From<&mzdata::meta::ScanSettings> for ScanSettings {
+    fn from(value: &mzdata::meta::ScanSettings) -> Self {
+        Self {
+            id: value.id.clone(),
+            source_file_refs: value.source_file_refs.clone(),
+            targets: value.targets.iter().map(|v| v.iter().map(MetaParam::from).collect()).collect(),
+            parameters: value.params.iter().map(MetaParam::from).collect()
+        }
+    }
+}
+
+impl From<ScanSettings> for mzdata::meta::ScanSettings {
+    fn from(value: ScanSettings) -> Self {
+        mzdata::meta::ScanSettings::new(
+            value.id,
+            value.parameters.into_iter().map(mzdata::Param::from).collect(),
+            value.source_file_refs,
+            value.targets.into_iter().map(|v| {
+                v.into_iter().map(mzdata::Param::from).collect()
+            }).collect())
     }
 }
 

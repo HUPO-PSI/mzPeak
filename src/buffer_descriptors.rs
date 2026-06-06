@@ -975,6 +975,13 @@ impl Display for BufferName {
                 Unit::MicrolitersPerMinute => "mlpmin",
                 Unit::Percent => "pct",
                 Unit::Dimensionless => "",
+                Unit::Micrometer => "um",
+                Unit::Millimeter => "mm",
+                Unit::Centimeter => "cm",
+                Unit::Hertz => "hz",
+                Unit::Liter => "l",
+                Unit::Milliliter => "ml",
+                Unit::Microliter => "ul",
             };
             if let BufferFormat::ChunkTransform = self.buffer_format {
                 if let Some(tfm) = self.transform {

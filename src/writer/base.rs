@@ -86,6 +86,16 @@ macro_rules! implement_mz_metadata {
                 Some(serde_json::to_string_pretty(&tmp).unwrap()),
             );
 
+            let tmp: Vec<_> = self
+                .mz_metadata
+                .scan_settings()
+                .map(|vs| vs.iter().map(|v| $crate::param::ScanSettings::from(v)).collect())
+                .unwrap_or_default();
+            self.append_key_value_metadata(
+                "scan_settings_list".to_string(),
+                Some(serde_json::to_string_pretty(&tmp).unwrap()),
+            );
+
             self.append_key_value_metadata(
                 "run".to_string(),
                 Some(

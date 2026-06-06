@@ -64,7 +64,7 @@ parquet = { version = "57.0.0", features = ["encryption"] }
 env_logger = "0.11.8"
 itertools = "0.14.0"
 log = "0.4.27"
-mzdata = { version = "0.63.3", features = ["serde", "bruker_tdf", "nalgebra", "zstd", "numpress"] }
+mzdata = { version = "0.64.0", features = ["serde", "bruker_tdf", "nalgebra", "zstd", "numpress", "imzml"] }
 serde = { version = "1.0.219", features = ["derive"] }
 mzpeaks = "1.0.9"
 num-traits = "0.2.19"
@@ -86,14 +86,14 @@ numpress-rs = "1.1.0"
 identity-hash = "0.1.0"
 
 tokio = { version = "1.47.1", optional = true }
-object_store = { version = "0.12.5", optional = true, features = ["http"] }
 futures = { version = "0.3.31", optional = true}
 async_zip = { version = "0.0.18", features = ["tokio"], optional = true }
 url = { version = "2.5.7", optional = true }
 tokio-stream = "0.1.17"
 memmap2 = "0.9.9"
-opendal = { version = "0.55.0", optional = true, features = ["services-http", "services-fs"]}
-object_store_opendal = { version = "0.55.0", optional = true }
+opendal = { version = "0.57.0", optional = true, features = ["services-http", "services-fs"]}
+object_store = { version = "0.13.2", optional = true, features = ["http"] }
+object_store_opendal = { version = "0.57.0", optional = true }
 
 [dev-dependencies]
 clap = { version = "4.5.38", features = ["derive"] }

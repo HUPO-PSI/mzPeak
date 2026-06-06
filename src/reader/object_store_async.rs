@@ -432,7 +432,7 @@ impl<
     }
 
     pub async fn from_url(url: Url) -> io::Result<Self> {
-        let handle = AsyncArchiveReader::<T>::from_url(&url).await?;
+        let handle = AsyncArchiveReader::<T>::from_url(url.to_string()).await?;
         Self::init_from_store(handle, Some(url)).await
     }
 

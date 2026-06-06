@@ -3,6 +3,7 @@ use futures::StreamExt;
 use mzdata::io::AsyncRandomAccessSpectrumIterator;
 use mzdata::mzpeaks::coordinate::{CoordinateRange, SimpleInterval, Span1D};
 use mzdata::prelude::*;
+use object_store::ObjectStoreExt;
 use std::{io, sync::Arc};
 
 

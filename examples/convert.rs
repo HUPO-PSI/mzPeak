@@ -11,7 +11,7 @@ use mzpeak_prototyping::{
     archive::make_common_encryption_properties,
     buffer_descriptors::BufferOverrideTable,
     chunk_series::ChunkingStrategy,
-    writer::{AbstractMzPeakWriter, MzPeakWriterType},
+    writer::{AbstractMzPeakWriter, ArrayBufferWriter, MzPeakWriterType},
 };
 use mzpeaks::{CentroidPeak, DeconvolutedPeak};
 use parquet::{
@@ -418,6 +418,14 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
         .sample_array_types_from_chromatograms(reader.iter_chromatograms().take(10));
 
     let mut writer = builder.build(handle, true);
+
+    // Imaging has a few specialist cvParams that we want to promote to columns all of the time
+    if matches!(reader, MZReaderType::IMzML(_)) {
+        log::info!("Input is imzML, adding imaging column presets");
+        writer.spectrum_entry_buffer_mut()
+            .add_imaging_position_visitors();
+    }
+
     writer.copy_metadata_from(&reader);
     add_processing_metadata(&mut writer);
 
@@ -478,10 +486,14 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
         let result = panic::catch_unwind(AssertUnwindSafe(|| {
             for (i, (spectrum, chromatogram)) in recv.into_iter().enumerate() {
                 if i % 5000 == 0 {
-                    log::info!("Writing batch {i} ({:0.2}%)", i as f64 / n as f64 * 100.0);
+                    let dp = writer.spectrum_data_buffer_mut().point_count();
+                    let pk = writer.spectrum_peak_writer().map(|v| v.point_count()).unwrap_or_default();
+                    log::info!("Writing batch {i} ({:0.2}%), wrote {dp} MS points and {pk} MS peaks", i as f64 / n as f64 * 100.0);
                 }
                 if i % 10 == 0 {
-                    log::debug!("Writing batch {i} ({}%)", i as f64 / n as f64 * 100.0);
+                    let dp = writer.spectrum_data_buffer_mut().point_count();
+                    let pk = writer.spectrum_peak_writer().map(|v| v.point_count()).unwrap_or_default();
+                    log::debug!("Writing batch {i} ({:0.2}%), wrote {dp} MS points and {pk} MS peaks", i as f64 / n as f64 * 100.0);
                 }
                 if let Some(spectrum) = spectrum {
                     writer.write_spectrum(&spectrum)?;

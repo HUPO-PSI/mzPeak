@@ -4,6 +4,7 @@ use clap::Parser;
 use env_logger;
 use mzdata::prelude::SpectrumLike;
 use mzpeak_prototyping::{MzPeakReader, archive::{ArchiveReader, DispatchArchiveSource, MzPeakArchiveType}};
+use mzpeaks::PeakCollection;
 use parquet::encryption::decrypt::FileDecryptionProperties;
 
 #[derive(Parser)]
@@ -62,10 +63,15 @@ fn main() -> io::Result<()> {
                 );
             }
             Err(e) => {
-                eprintln!(
-                    "Failed to retrieve arrays for spectrum {}: {e}",
-                    spec.index()
-                );
+                match spec.peaks.as_ref() {
+                    Some(p) => points += p.len(),
+                    None => {
+                        eprintln!(
+                            "Failed to retrieve arrays for spectrum {}: {e}",
+                            spec.index()
+                        );
+                    },
+                }
             }
         }
     }

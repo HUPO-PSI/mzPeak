@@ -865,7 +865,7 @@ impl<
             );
             let n_p = self
                 .spectrum_peak_writer()
-                .map(|v| v.n_points())
+                .map(|v| v.point_count())
                 .unwrap_or_default()
                 + self.spectrum_data_buffers.point_count();
             self.append_key_value_metadata(SPECTRUM_DATA_POINT_COUNT.into(), Some(n_p.to_string()));

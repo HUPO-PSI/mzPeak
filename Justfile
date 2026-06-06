@@ -29,6 +29,9 @@ has_uv:
 small_unpacked:
     unzip -o small.mzpeak -d small.unpacked.mzpeak
 
+imaging:
+    cargo r -r --example convert -- -y -z -u "test/data/imaging/Example_Processed.imzML" -o "Example_Processed.img.mzpeak"
+
 test:
     # cargo t --tests -- --no-capture
     cargo nextest run --tests

@@ -11,7 +11,7 @@ pub mod archive;
 pub mod buffer_descriptors;
 pub mod filter;
 
-pub use param::{CURIE, ION_MOBILITY_SCAN_TERMS, MS_CV_ID};
+pub use param::{CURIE, ION_MOBILITY_SCAN_TERMS};
 pub use peak_series::{BufferContext, BufferName, ToMzPeakDataSeries};
 pub use reader::MzPeakReader;
 pub use writer::MzPeakWriter;

@@ -121,7 +121,7 @@ impl<W: Write + Send + Seek> MiniPeakWriterType<W> {
         self.writer.into_inner()
     }
 
-    pub fn n_points(&self) -> u64 {
+    pub fn point_count(&self) -> u64 {
         self.n_points
     }
 

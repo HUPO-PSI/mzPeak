@@ -342,11 +342,17 @@ impl<
             _t: Default::default(),
         };
 
-        this.load_delta_models()?;
+        this.load_delta_models()
+            .inspect_err(|e| log::debug!("Failed to load spectrum delta model: {e}"))
+            .unwrap_or_default();
         this.metadata.spectra.auxiliary_array_counts =
-            this.load_spectrum_auxiliary_array_count()?;
+            this.load_spectrum_auxiliary_array_count()
+                .inspect_err(|e| log::debug!("Failed to load spectrum auxiliary array information: {e}"))
+                .unwrap_or_default();
         this.metadata.chromatograms.auxiliary_array_counts =
-            this.load_chromatogram_auxiliary_array_count()?;
+            this.load_chromatogram_auxiliary_array_count()
+                .inspect_err(|e| log::debug!("Failed to load chromatogram auxiliary array information: {e}"))
+                .unwrap_or_default();
 
         if let Ok(c) = this.load_wavelength_spectrum_auxiliary_array_count() {
             if let Some(meta) = this.metadata.wavelength_spectra.as_mut() {
