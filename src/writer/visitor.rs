@@ -1748,8 +1748,18 @@ impl SpectrumDetailsBuilder {
             v
         } else {
             match item.ms_level() {
+                // mzML2mzPeak fix: real-world imzML
+                // (e.g. the canonical ms-imaging.org Example-1 3x3 pairs) declares
+                // `MS:1000511 value="0"` with no explicit spectrum-type cvParam. Upstream
+                // panicked here, crashing forward conversion of any ms_level-0 imzML. Default
+                // ms_level 0 (no explicit type) to MS1 spectrum (MS:1000579) with a warning —
+                // the safe imaging default, symmetric with the reverse emitter's ms-level rule.
                 0 => {
-                    panic!("Couldn't infer spectrum type from MS level, no explicit type specified")
+                    log::warn!(
+                        "spectrum has ms_level 0 and no explicit spectrum-type cvParam; \
+                         defaulting to MS1 spectrum (MS:1000579)"
+                    );
+                    curie!(MS:1000579)
                 }
                 1 => curie!(MS:1000579),
                 _ => curie!(MS:1000580),
