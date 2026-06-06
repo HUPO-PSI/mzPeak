@@ -1786,14 +1786,22 @@ impl AuxiliaryArrayCountDecoder {
             ($index_array:ident, $values_array:ident, $dtype:ty) => {
                 if let Some(values) = $values_array.as_primitive_opt::<$dtype>() {
                     for (i, c) in $index_array.iter().zip(values.iter()) {
-                        if i.unwrap() as usize >= self.counts.len() {
+                        // The index column is nullable: a null row carries no bin to assign (it
+                        // arises e.g. from the empty-chromatogram placeholder a spectra-only
+                        // archive writes, surfacing as a null spectrum_index in the combined
+                        // auxiliary-array-count facet). Skip it rather than `unwrap()`-panicking —
+                        // previously any ion-mobility archive (whose aux-array facet IS read back,
+                        // unlike non-IM files) crashed the reader.
+                        let Some(idx) = i else { continue };
+                        let idx = idx as usize;
+                        if idx >= self.counts.len() {
                             panic!(
                                 "Cannot fit {} rows into {} bins",
                                 batch.num_rows(),
                                 self.counts.len()
                             );
                         }
-                        self.counts[i.unwrap() as usize] = c.unwrap_or_default() as u32;
+                        self.counts[idx] = c.unwrap_or_default() as u32;
                     }
                     true
                 } else {
