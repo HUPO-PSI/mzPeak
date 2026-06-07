@@ -967,7 +967,7 @@ impl ArrowArrayChunk {
             return Ok((Vec::new(), auxiliary_arrays, 0));
         }
 
-        for (i, (_, arr)) in arrays.iter().enumerate() {
+        for (_, arr) in arrays.iter() {
             let name = BufferName::from_data_array(main_axis.context, arr);
             let buffer_name0 = if name.array_type == main_axis.array_type {
                 main_axis.clone().with_format(BufferFormat::Chunk)
@@ -993,10 +993,12 @@ impl ArrowArrayChunk {
                     continue;
                 }
             }
+            // Index into `arrow_arrays` (the kept/filtered output), not the source map:
+            // schema-skipped arrays are spilled to auxiliary and never pushed here.
             if matches!(buffer_name.array_type, ArrayType::IntensityArray) {
-                intensity_idx = Some(i);
+                intensity_idx = Some(arrow_arrays.len());
             } else if matches!(buffer_name.array_type, ArrayType::MZArray) {
-                mz_idx = Some(i);
+                mz_idx = Some(arrow_arrays.len());
             }
             let array = data_array_to_arrow_array(&buffer_name, arr)?;
             arrow_arrays.push((buffer_name, array));
