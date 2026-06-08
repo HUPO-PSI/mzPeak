@@ -12,8 +12,8 @@ jobs:
             - uses: actions/checkout@v4
             - run: |-
                 mkdir -p pagedist/doc/
-                cp doc/index.html docdist/index.html
-                cp doc/index.html docdist/doc/index.html
+                cp doc/index.html pagedist/index.html
+                cp doc/index.html pagedist/doc/index.html
             - uses: actions/upload-pages-artifact@v3
               with:
                   path: pagedist
