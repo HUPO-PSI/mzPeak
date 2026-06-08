@@ -10,11 +10,14 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v4
+            - run: |-
+                cp doc/index.md index.md
             - uses: wranders/markdown-to-pages-action@v1
               with:
                   token: ${{ secrets.GITHUB_TOKEN }}
                   files: |-
                       doc/index.md
+                      index.md
             - run: |-
                 cp -r ./static ./dist/static/
                 cp -r ./doc/static/ ./dist/static/
