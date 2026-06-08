@@ -433,7 +433,12 @@ class _PrecursorReadMixin:
             ions["parameters"] = ions["parameters"].apply(
                 lambda x: [_format_param(v) for v in x]
             )
-            precursors_of = precursors_of.merge(ions, on="precursor_index")
+            if 'precursor_index' in precursors_of.columns:
+                ions_per_precursor = {k: v.to_dict("records") for k, v in ions.groupby('precursor_index')}
+                precursors_of['selected_ions'] = precursors_of["precursor_index"].map(ions_per_precursor)
+            else:
+                precursors_of['selected_ions'] = [ions.to_dict("records")]
+
         except KeyError:
             pass
         spec["precursors"] = precursors_of.to_dict("records")
@@ -642,7 +647,13 @@ class MzPeakSpectrumMetadataReader(_PrecursorReadMixin, _DataPointCountMixin):
             i = self.id_index[i]
         spec = self.spectra.loc[i].to_dict()
         spec["parameters"] = [_format_param(v) for v in spec["parameters"]]
-        spec["scans"] = self.scans.loc[i].to_dict()
+
+        spec["scans"] = self.scans.loc[i]
+        if isinstance(spec["scans"], pd.DataFrame):
+            spec["scans"] = spec["scans"].reset_index(drop=True).to_dict(orient='records')
+        else:
+            spec["scans"] = spec['scans'].to_dict()
+
         if isinstance(spec["scans"], dict):
             spec["scans"]["parameters"] = [
                 _format_param(v) for v in spec["scans"]["parameters"]
@@ -802,9 +813,9 @@ class MzPeakFileIter(Iterator["_SpectrumType"]):
     def from_archive_spectra(cls, reader: "MzPeakFile") -> "MzPeakFileIter":
         profile_iter = None
         peak_iter = None
-        if reader.spectrum_data:
+        if reader.spectrum_data is not None:
             profile_iter = reader.spectrum_data._data_iterator(0)
-        if reader.spectrum_peak_data:
+        if reader.spectrum_peak_data is not None:
             peak_iter = reader.spectrum_peak_data._data_iterator(0)
         data_iter = _MzPeakDataIter(
             reader.spectrum_metadata,
@@ -828,6 +839,8 @@ class MzPeakFileIter(Iterator["_SpectrumType"]):
 
     def __next__(self) -> "_SpectrumType":
         i = self.index
+        if i >= self.size:
+            raise StopIteration()
         self.index += 1
         self.data_iter.seek(i)
         _j, data, mode = next(self.data_iter)

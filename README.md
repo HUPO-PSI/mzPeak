@@ -1,5 +1,7 @@
 # mzPeak file format prototyping
 
+**The draft specification document is available <https://hupo-psi.github.io/mzPeak-specification/>** ([source](https://github.com/HUPO-PSI/mzPeak-specification))
+
 This repository contains prototype implementations of the mzPeak format initially described in https://pubs.acs.org/doi/10.1021/acs.jproteome.5c00435. The latest presentation of the results took place on November 11, 2025 at the HUPO conference in Toronto, Canada. The slides can be retrieved [here](https://zenodo.org/records/17747369).
 
 The mzPeak name is currently held in trust by the OpenMS Inc. The details of the trademark are described [here](https://doi.org/10.5281/zenodo.20054899)
@@ -37,7 +39,7 @@ Other languages are planned in the future in rough order of priority:
 
 ## High level overview
 
-**A more up-to-date writeup is in [doc/index.md](./doc/index.md)**
+
 
 mzPeak is a archive of multiple [Parquet](https://parquet.apache.org/) files, stored directly in an _uncompressed_ [ZIP](<https://en.wikipedia.org/wiki/ZIP_(file_format)>)
 archive. Each Parquet file describes a different facet of the stored mass spectrometry run. While the the data model draws on prior
@@ -72,67 +74,6 @@ For spectra with many small gaps, even zero run stripping leaves too much unhelp
 $$
     δ mz \sim β_0 + β_1 mz + β_2 mz^2 + ϵ
 $$
-
-or using the following Python code:
-<details>
-
-<summary>Python code for fitting the weighted least squares model</summary>
-
-```python
-class DeltaCurveRegressionModel:
-    beta: np.ndarray
-
-    def __init__(self, beta: np.ndarray):
-        self.beta = beta
-
-    @classmethod
-    def fit(
-        cls,
-        mz_array,
-        delta_array,
-        weights: np.ndarray | None = None,
-        threshold: float | None = None,
-        rank: int = 2,
-    ):
-        if weights is None:
-            weights = np.ones(len(mz_array))
-        else:
-            weights = weights
-
-        if threshold is None:
-            threshold = 1.0
-
-        # Drop all entries where the gap between m/z values > threshold
-        raw = mz_array[1:][delta_array <= threshold]
-        w = weights[1:][delta_array <= threshold]
-        y = delta_array[delta_array <= threshold]
-
-        # Build the design matrix
-        data = [data.append(np.ones_like(raw))]
-        for i in range(1, rank + 1):
-            data.append(raw**i)
-        data = np.stack(data, axis=-1)
-
-        # Use the QR decomposition to solve the weighted least squares problem
-        # to estimate weights predicting δ m/z.
-        # https://stats.stackexchange.com/a/490782/59613
-        chol_w = np.sqrt(w)
-        qr = np.linalg.qr(chol_w[:, None] * data)
-        v = qr.Q.T.dot(chol_w * y)
-        beta = solve_triangular(qr.R, v)
-
-        # Numerically equivalent to and more stable than the direct inversion
-        # beta = np.linalg.inv((data.T * w).dot(data)).dot(data.T * w).dot(y)
-        return cls(beta)
-
-    def predict(self, mz: float) -> float:
-        acc = self.beta[0]
-        for i in range(1, len(self.beta)):
-            acc += self.beta[i] * mz ** i
-        return acc
-```
-
-</details>
 
 Then when reading the the null-marked data, use either the local median $δ mz$ or the learned model for that spectrum to compute the m/z spacing for singleton points to achieve an very accurate reconstruction. Because the non-zero m/z points remain unchanged, the reconstructed signal's peak apex or centroid should be unaffected. If the peak is composed of only three points including the two zero intensity spots, no meaningful peak model can be fit in any case so the minute angle change this would induce are still effectively lossless.
 

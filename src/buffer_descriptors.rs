@@ -592,6 +592,8 @@ pub const fn array_type_ordering_ordinal(array_type: &ArrayType) -> u64 {
         ArrayType::PressureArray => 21,
         ArrayType::TemperatureArray => 22,
         ArrayType::FlowRateArray => 22,
+        ArrayType::ScanningQuadrupolePositionLowerBoundMZ => 23,
+        ArrayType::ScanningQuadrupolePositionUpperBoundMZ => 24,
         ArrayType::NonStandardDataArray { name } => {
             let b = name.as_bytes();
             let n = b.len();
@@ -897,8 +899,9 @@ impl Display for BufferName {
             _ => Cow::Owned(
                 self.array_type
                     .to_string()
-                    .replace(['/', ' ', '.'], "_")
                     .to_lowercase()
+                    .replace("m/z", "mz")
+                    .replace(['/', ' ', '.'], "_")
                     .replace("array", "_array"),
             ),
         };

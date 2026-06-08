@@ -231,7 +231,7 @@ class _DataIndex:
             return (
                 self.meta.row_group(self.meta.num_row_groups - 1)
                 .column(self.index_i)
-                .statistics.max
+                .statistics.max + 1
             )
         except IndexError:
             return 0

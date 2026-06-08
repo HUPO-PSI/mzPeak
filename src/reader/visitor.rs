@@ -2153,6 +2153,35 @@ impl<'a> MzScanVisitor<'a> {
         }
     }
 
+    fn visit_spectrum_reference(&mut self, spec_arr: &StructArray, index: usize) {
+        let arr = spec_arr.column(index);
+        if arr.null_count() == arr.len() {
+            return;
+        }
+        macro_rules! pack {
+            ($arr:ident) => {
+                for (i, (_, descr)) in self
+                    .offsets
+                    .iter()
+                    .copied()
+                    .zip(self.descriptions.iter_mut())
+                {
+                    if $arr.is_null(i) {
+                        continue;
+                    };
+                    descr.spectrum_reference = Some($arr.value(i).into());
+                }
+            };
+        }
+        if let Some(arr) = arr.as_string_opt::<i32>() {
+            pack!(arr);
+        } else if let Some(arr) = arr.as_string_opt::<i64>() {
+            pack!(arr);
+        } else {
+            todo!("{:?}", arr.data_type());
+        }
+    }
+
     pub(crate) fn visit(&mut self, spec_arr: &StructArray) {
         let names = spec_arr.column_names();
         let mut visited = vec![false; spec_arr.num_columns()];
@@ -2215,6 +2244,10 @@ impl<'a> MzScanVisitor<'a> {
             match colname {
                 "parameters" => {
                     self.visit_parameters(spec_arr);
+                }
+                "scan_index" => {}
+                "spectrum_reference" => {
+                    self.visit_spectrum_reference(spec_arr, index);
                 }
                 "instrument_configuration_ref" => {
                     self.visit_instrument_configuration_ref(spec_arr, index);

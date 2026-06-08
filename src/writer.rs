@@ -327,12 +327,23 @@ pub fn sample_array_types_from_spectrum_source<
         return Vec::new();
     }
 
-    let it = [0, 100.min(n - 1), n / 2]
-        .into_iter()
-        .flat_map(|i| reader.get_spectrum_by_index(i));
+    if n > 50 {
+        let pts = [0, 100.min(n - 1), n / 4, n / 2, (n / 2 + n / 4)];
+        log::trace!("{n} spectra detected, sampling arrays from control points {pts:?}");
+        let it = pts
+            .into_iter()
+            .flat_map(|i| reader.get_spectrum_by_index(i));
+        ArrayTypesSampler::new(overrides, use_chunked_encoding)
+            .sample_spectrum_array_types(it, prefer_peaks)
+    } else {
+        log::trace!("{n} spectra detected, sampling arrays from all entries");
+        let it = reader.iter();
+        let fields = ArrayTypesSampler::new(overrides, use_chunked_encoding)
+            .sample_spectrum_array_types(it, prefer_peaks);
+        reader.reset();
+        fields
+    }
 
-    ArrayTypesSampler::new(overrides, use_chunked_encoding)
-        .sample_spectrum_array_types(it, prefer_peaks)
 }
 
 /// Array type inference from inputs
@@ -587,6 +598,18 @@ impl<
     fn encryption_properties(&self) -> &HashMap<String, Arc<FileEncryptionProperties>> {
         &self.encryption_properties
     }
+
+    fn add_index_metadata(&mut self, key: &str, value: &impl serde::Serialize) -> Result<(), serde_json::Error> {
+        if let Some(v) = self.archive_writer.as_mut() {
+            v.inner_mut().add_index_metadata(key, value)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn mz_metadata(&self) -> &FileMetadataConfig {
+        &self.mz_metadata
+    }
 }
 
 impl<
@@ -730,35 +753,6 @@ impl<
     }
 
     implement_mz_metadata!();
-
-    #[allow(unused)]
-    fn get_or_create_peak_writer(&mut self) -> io::Result<&mut MiniPeakWriterType<fs::File>> {
-        if self.spectrum_peaks_writer.is_none() {
-            let peak_buffer_file = tempfile::tempfile()?;
-            let builder = ArrayBuffersBuilder::default()
-                .extend_overrides(
-                    self.spectrum_data_buffers
-                        .overrides()
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone())),
-                )
-                .with_context(BufferContext::Spectrum);
-            let writer = Self::make_peaks_writer(
-                peak_buffer_file,
-                builder,
-                self.write_batch_config,
-                self.compression,
-                self.spectrum_data_buffers.include_time(),
-                self.shuffle_mz,
-                self.buffer_size,
-                &self.encryption_properties,
-            )?;
-            self.spectrum_peaks_writer = Some(writer);
-        }
-        self.spectrum_peaks_writer
-            .as_mut()
-            .ok_or_else(|| io::Error::other("Cannot create peak writer"))
-    }
 
     fn add_spectrum_array_metadata(&mut self) {
         let spectrum_array_index: ArrayIndex = self.spectrum_data_buffers.as_array_index();
@@ -1088,9 +1082,13 @@ impl<
                     Some(self.chromatogram_data_buffers.point_count().to_string()),
                 );
                 self.append_metadata();
+                if let Err(e) = self.copy_metadata_to_index() {
+                    log::error!("Failed to copy metadata to file index: {e}");
+                }
                 writer = self.archive_writer.take().unwrap().into_inner()?;
                 writer.flush()?;
             }
+
             Ok(writer)
         } else {
             Err(parquet::errors::ParquetError::EOF(

@@ -534,6 +534,10 @@ impl ArchiveSource for ZipArchiveBytesSource {
         &self.file_index
     }
 
+    fn file_index_mut(&mut self) -> &mut FileIndex {
+        &mut self.file_index
+    }
+
     /// This creates a memory-mapped view of an existing file at `path`.
     ///
     /// A memory-mapped reader may be faster in some circumstances, but the caller **MUST** ensure the
@@ -702,6 +706,8 @@ pub trait ArchiveSource: Sized + 'static {
     /// annotate them.
     fn file_index(&self) -> &FileIndex;
 
+    fn file_index_mut(&mut self) -> &mut FileIndex;
+
     /// Create from a file system path
     fn from_path(path: PathBuf) -> io::Result<Self>;
 
@@ -786,6 +792,10 @@ impl ArchiveSource for SplittingZipArchiveSource {
         &self.file_index
     }
 
+    fn file_index_mut(&mut self) -> &mut FileIndex {
+        &mut self.file_index
+    }
+
     fn set_decryption_properties(&mut self, decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>) {
         self.decryption_properties = decryption_properties;
     }
@@ -860,6 +870,10 @@ impl ArchiveSource for DirectorySource {
 
     fn file_index(&self) -> &FileIndex {
         &self.file_index
+    }
+
+    fn file_index_mut(&mut self) -> &mut FileIndex {
+        &mut self.file_index
     }
 
     fn set_decryption_properties(&mut self, decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>) {
@@ -943,6 +957,10 @@ impl<T: ArchiveSource + 'static> ArchiveReader<T> {
 
     pub fn file_index(&self) -> &FileIndex {
         self.archive.file_index()
+    }
+
+    pub fn file_index_mut(&mut self) -> &mut FileIndex {
+        self.archive.file_index_mut()
     }
 
     pub fn from_path(archive_path: PathBuf) -> io::Result<Self> {
@@ -1104,6 +1122,10 @@ impl ArchiveSource for DispatchArchiveSource {
         dispatch!(self, src, {
             src.open_entry_by_index(index).map(|v| v.into())
         })
+    }
+
+    fn file_index_mut(&mut self) -> &mut FileIndex {
+        dispatch!(self, src, { src.file_index_mut() })
     }
 
     fn file_index(&self) -> &FileIndex {

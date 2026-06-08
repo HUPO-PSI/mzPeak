@@ -15,16 +15,12 @@ use parquet::{
 use mzdata::{meta::FileMetadataConfig, prelude::*};
 
 use crate::{
-    BufferContext, ToMzPeakDataSeries,
-    archive::MzPeakArchiveType,
-    chunk_series::ChunkingStrategy,
-    peak_series::ArrayIndex,
-    writer::{
+    BufferContext, ToMzPeakDataSeries, archive::{FileIndex, MzPeakArchiveType}, chunk_series::ChunkingStrategy, constants::SPECTRUM_ARRAY_INDEX, peak_series::ArrayIndex, writer::{
         AbstractMzPeakWriter, ArrayBufferWriter, ArrayBufferWriterVariants, ArrayBuffersBuilder,
         ChromatogramBuilder, MiniPeakWriterType, SpectrumBuilder, VisitorBase,
         WavelengthSpectrumBuilder, WriteBatchConfig, base::GenericDataArrayWriter,
         builder::SpectrumFieldVisitors, implement_mz_metadata,
-    },
+    }
 };
 
 /// Writer for the MzPeak format that writes the different data types to separate files
@@ -34,7 +30,7 @@ pub struct UnpackedMzPeakWriterType<
     D: DeconvolutedCentroidLike + ToMzPeakDataSeries = DeconvolutedPeak,
 > {
     path: PathBuf,
-
+    file_index: FileIndex,
     spectrum_data_writer: ArrowWriter<fs::File>,
     spectrum_metadata_writer: ArrowWriter<fs::File>,
 
@@ -166,6 +162,15 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
     fn encryption_properties(&self) -> &HashMap<String, Arc<FileEncryptionProperties>> {
         &self.encryption_properties
     }
+
+    fn add_index_metadata(&mut self, key: &str, value: &impl serde::Serialize) -> Result<(), serde_json::Error> {
+        self.file_index.add_metadata(key, serde_json::to_value(value)?);
+        Ok(())
+    }
+
+    fn mz_metadata(&self) -> &FileMetadataConfig {
+        &self.mz_metadata
+    }
 }
 
 impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPeakDataSeries>
@@ -265,6 +270,7 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
 
         let mut this = Self {
             path,
+            file_index: Default::default(),
             spectrum_data_writer: ArrowWriter::try_new_with_options(
                 spectrum_data_writer,
                 spectrum_buffers.schema().clone(),
@@ -296,47 +302,19 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
             mz_metadata: Default::default(),
             _t: PhantomData,
         };
-        this.add_array_metadata();
+        this.add_spectrum_array_index();
         this
     }
 
     implement_mz_metadata!();
 
-    fn add_array_metadata(&mut self) {
+    fn add_spectrum_array_index(&mut self) {
         let spectrum_array_index: ArrayIndex = self.spectrum_buffers.as_array_index();
         self.spectrum_data_writer
             .append_key_value_metadata(KeyValue::new(
-                "spectrum_array_index".to_string(),
+                SPECTRUM_ARRAY_INDEX.to_string(),
                 spectrum_array_index.to_json(),
             ));
-
-        // let mut chromatogram_array_index =
-        //     ArrayIndex::new(self.chromatogram_buffers.prefix.clone(), HashMap::new());
-        // if let Ok(sub) = self
-        //     .chromatogram_buffers
-        //     .schema
-        //     .field_with_name(&self.chromatogram_buffers.prefix)
-        //     .cloned()
-        // {
-        //     if let DataType::Struct(fields) = sub.data_type() {
-        //         for f in fields.iter() {
-        //             if f.name() == "chromatogram_index" {
-        //                 continue;
-        //             }
-        //             let buffer_name =
-        //                 BufferName::from_field(BufferContext::Chromatogram, f.clone()).unwrap();
-        //             let aie = ArrayIndexEntry::from_buffer_name(
-        //                 self.chromatogram_buffers.prefix.clone(),
-        //                 buffer_name,
-        //             );
-        //             chromatogram_array_index.insert(aie.array_type.clone(), aie);
-        //         }
-        //     }
-        // }
-        // self.append_key_value_metadata(
-        //     "chromatogram_array_index".to_string(),
-        //     chromatogram_array_index.to_json(),
-        // );
     }
 
     pub fn append_key_value_metadata(
@@ -405,12 +383,14 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
             Some(self.spectrum_data_point_counter.to_string()),
         );
         self.spectrum_data_writer.finish()?;
-
+        self.file_index.push(MzPeakArchiveType::SpectrumDataArrays.into());
+        self.file_index.push(MzPeakArchiveType::SpectrumMetadata.into());
         if let Some(peak_file_writer) = self.separate_peak_writer.take() {
             let peak_file = peak_file_writer.finish()?;
             drop(peak_file);
+            self.file_index.push(MzPeakArchiveType::SpectrumPeakDataArrays.into());
         }
-
+        let meta = self.spectrum_metadata_writer.finish()?;
         if !self.chromatogram_metadata_buffer.is_empty() {
             let metadata_fields = self.chromatogram_metadata_buffer.schema();
             let mut writer = ArrowWriter::try_new_with_options(
@@ -422,6 +402,7 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
                 ArrowWriterOptions::new()
                     .with_properties(Self::spectrum_metadata_writer_props(&metadata_fields, None)),
             )?;
+            self.file_index.push(MzPeakArchiveType::ChromatogramMetadata.into());
             self.flush_chromatogram_metadata_records(&mut writer)?;
             self.append_key_value_metadata(
                 "chromatogram_count",
@@ -459,7 +440,8 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
                 Some(self.chromatogram_data_point_counter.to_string()),
             ));
         }
-        self.spectrum_metadata_writer.finish()
+        self.file_index.push(MzPeakArchiveType::ChromatogramDataArrays.into());
+        Ok(meta)
     }
 }
 

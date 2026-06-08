@@ -15,6 +15,7 @@ pub enum DataKind {
     #[serde(rename = "proprietary")]
     Proprietary,
     #[serde(rename = "other")]
+    #[serde(untagged)]
     Other(String),
 }
 
@@ -44,6 +45,7 @@ pub enum EntityType {
     #[serde(rename = "wavelength spectrum")]
     WavelengthSpectrum,
     #[serde(rename = "other")]
+    #[serde(untagged)]
     Other(String),
 }
 
@@ -199,6 +201,18 @@ impl FileIndex {
     pub fn push(&mut self, entry: FileEntry) {
         self.files.push(entry);
     }
+
+    pub fn add_metadata(&mut self, key: &str, value: serde_json::Value) -> Option<serde_json::Value> {
+        self.metadata.insert(key.to_string(), value)
+    }
+
+    pub fn remove_metadata(&mut self, key: &str) -> Option<serde_json::Value> {
+        self.metadata.remove(key)
+    }
+
+    pub fn iter_metadata(&self) -> std::collections::hash_map::Iter<'_, String, serde_json::Value> {
+        self.metadata.iter()
+    }
 }
 
 impl Deref for FileIndex {
@@ -206,5 +220,38 @@ impl Deref for FileIndex {
 
     fn deref(&self) -> &Self::Target {
         &self.files
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_entity_type_conversion() {
+        let spec = serde_json::to_string(&EntityType::Spectrum).unwrap();
+        let dup: EntityType = serde_json::from_str(&spec).unwrap();
+        assert_eq!(spec, r#""spectrum""#);
+        assert_eq!(dup, EntityType::Spectrum);
+
+        let src = EntityType::Other("foobarbazbang".into());
+        let other = serde_json::to_string(&src).unwrap();
+        let dup: EntityType = serde_json::from_str(&other).unwrap();
+        assert_eq!(other, r#""foobarbazbang""#);
+        assert_eq!(dup, src);
+    }
+
+    #[test]
+    fn test_data_type_conversion() {
+        let spec = serde_json::to_string(&DataKind::DataArray).unwrap();
+        let dup: DataKind = serde_json::from_str(&spec).unwrap();
+        assert_eq!(spec, r#""data arrays""#);
+        assert_eq!(dup, DataKind::DataArray);
+
+        let src = DataKind::Other("foobarbazbang".into());
+        let other = serde_json::to_string(&src).unwrap();
+        let dup: DataKind = serde_json::from_str(&other).unwrap();
+        assert_eq!(other, r#""foobarbazbang""#);
+        assert_eq!(dup, src);
     }
 }

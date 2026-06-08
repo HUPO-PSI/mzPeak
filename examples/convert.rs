@@ -46,7 +46,14 @@ pub struct ConvertCli {
 fn main() -> io::Result<()> {
     env_logger::init();
     let cli = ConvertCli::parse();
-    run_convert(&cli.filename, cli.convert_args)
+    match run_convert(&cli.filename, cli.convert_args) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1)
+        }
+    }
+
 }
 
 // ============================================================================
@@ -505,9 +512,7 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
         }));
         match result {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                eprintln!("Writer thread error: {}", e);
-            }
+            Ok(Err(e)) => eprintln!("Writer thread error: {}", e),
             Err(_) => eprintln!("Writer thread panicked"),
         }
     });

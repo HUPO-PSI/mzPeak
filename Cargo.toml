@@ -64,7 +64,7 @@ parquet = { version = "57.0.0", features = ["encryption"] }
 env_logger = "0.11.8"
 itertools = "0.14.0"
 log = "0.4.27"
-mzdata = { version = "0.64.0", features = ["serde", "bruker_tdf", "nalgebra", "zstd", "numpress", "imzml"] }
+mzdata = { version = "0.64.1", features = ["serde", "bruker_tdf", "nalgebra", "zstd", "numpress", "imzml"] }
 serde = { version = "1.0.219", features = ["derive"] }
 mzpeaks = "1.0.9"
 num-traits = "0.2.19"

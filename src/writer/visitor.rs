@@ -839,6 +839,7 @@ impl ArrayBuilder for ScanWindowBuilder {
 #[derive(Default, Debug)]
 pub struct ScanBuilder {
     source_index: UInt64Builder,
+    scan_index: UInt64Builder,
     scan_start_time: Float32Builder,
     preset_scan_configuration: UInt32Builder,
     filter_string: LargeStringBuilder,
@@ -846,6 +847,7 @@ pub struct ScanBuilder {
     ion_mobility_value: Float64Builder,
     ion_mobility_type: CURIEBuilder,
     instrument_configuration_ref: UInt32Builder,
+    spectrum_reference: LargeStringBuilder,
     parameters: ParamListBuilder,
     scan_windows: LargeListBuilder<ScanWindowBuilder>,
     extra: Vec<Box<dyn StructVisitorBuilder<mzdata::spectrum::ScanEvent>>>,
@@ -865,6 +867,7 @@ impl VisitorBase for ScanBuilder {
     fn fields(&self) -> Vec<FieldRef> {
         let mut fields = vec![
             field!("source_index", DataType::UInt64),
+            field!("scan_index", DataType::UInt64),
             field!(
                 inflect_cv_term_to_column_name(
                     curie!(MS:1000016),
@@ -886,6 +889,7 @@ impl VisitorBase for ScanBuilder {
             field!("ion_mobility_value", DataType::Float64),
             field!("ion_mobility_type", self.ion_mobility_type.as_struct_type()),
             field!("instrument_configuration_ref", DataType::UInt32),
+            field!("spectrum_reference", DataType::LargeUtf8),
         ];
         fields.extend(self.parameters.fields());
         fields.push(field!(
@@ -903,6 +907,7 @@ impl VisitorBase for ScanBuilder {
 
     fn append_null(&mut self) {
         self.source_index.append_null();
+        self.scan_index.append_null();
         self.scan_start_time.append_null();
         self.preset_scan_configuration.append_null();
         self.filter_string.append_null();
@@ -910,6 +915,7 @@ impl VisitorBase for ScanBuilder {
         self.ion_mobility_value.append_null();
         self.ion_mobility_type.append_null();
         self.instrument_configuration_ref.append_null();
+        self.spectrum_reference.append_null();
         self.parameters.append_null();
         self.scan_windows.append_null();
         for e in self.extra.iter_mut() {
@@ -920,10 +926,11 @@ impl VisitorBase for ScanBuilder {
 
 const BUILTIN_SCAN_PARAMS: &[CURIE] = &[curie!(MS:1000512), curie!(MS:1000616)];
 
-impl StructVisitor<(u64, &mzdata::spectrum::ScanEvent)> for ScanBuilder {
-    fn append_value(&mut self, item: &(u64, &mzdata::spectrum::ScanEvent)) -> bool {
-        let (si, item) = item;
+impl StructVisitor<(u64, u64, &mzdata::spectrum::ScanEvent)> for ScanBuilder {
+    fn append_value(&mut self, item: &(u64, u64, &mzdata::spectrum::ScanEvent)) -> bool {
+        let (si, sci, item) = item;
         self.source_index.append_value(*si);
+        self.scan_index.append_value(*sci);
         self.scan_start_time.append_value(item.start_time as f32);
         self.preset_scan_configuration.append_option(
             item.scan_configuration()
@@ -937,6 +944,7 @@ impl StructVisitor<(u64, &mzdata::spectrum::ScanEvent)> for ScanBuilder {
             .append_option(item.ion_mobility_type().and_then(|v| v.curie()).as_ref());
         self.instrument_configuration_ref
             .append_value(item.instrument_configuration_id);
+        self.spectrum_reference.append_option(item.spectrum_reference.as_ref());
 
         let val = self.scan_windows.values();
         for window in item.scan_windows.iter() {
@@ -972,6 +980,7 @@ impl ArrayBuilder for ScanBuilder {
         let schema = self.fields();
         let mut arrays: Vec<ArrayRef> = vec![
             finish_it!(self.source_index),
+            finish_it!(self.scan_index),
             finish_it!(self.scan_start_time),
             finish_it!(self.preset_scan_configuration),
             finish_it!(self.filter_string),
@@ -979,6 +988,7 @@ impl ArrayBuilder for ScanBuilder {
             finish_it!(self.ion_mobility_value),
             self.ion_mobility_type.finish(),
             finish_it!(self.instrument_configuration_ref),
+            finish_it!(self.spectrum_reference),
             self.parameters.finish(),
             finish_it!(self.scan_windows),
         ];
@@ -990,6 +1000,7 @@ impl ArrayBuilder for ScanBuilder {
         let schema = self.fields();
         let mut arrays: Vec<ArrayRef> = vec![
             finish_cloned!(self.source_index),
+            finish_cloned!(self.scan_index),
             finish_cloned!(self.scan_start_time),
             finish_cloned!(self.preset_scan_configuration),
             finish_cloned!(self.filter_string),
@@ -997,6 +1008,7 @@ impl ArrayBuilder for ScanBuilder {
             finish_cloned!(self.ion_mobility_value),
             self.ion_mobility_type.finish_cloned(),
             finish_cloned!(self.instrument_configuration_ref),
+            finish_cloned!(self.spectrum_reference),
             self.parameters.finish_cloned(),
             finish_cloned!(self.scan_windows),
         ];
@@ -1049,9 +1061,23 @@ impl ArrayBuilder for IsolationWindowBuilder {
 
 impl StructVisitor<mzdata::spectrum::IsolationWindow> for IsolationWindowBuilder {
     fn append_value(&mut self, item: &mzdata::spectrum::IsolationWindow) -> bool {
-        self.target.append_value(item.target);
-        self.lower_bound.append_value(item.lower_bound);
-        self.upper_bound.append_value(item.upper_bound);
+        match item.flags {
+            mzdata::spectrum::IsolationWindowState::Unknown => {
+                self.lower_bound.append_null();
+                self.upper_bound.append_null();
+                self.target.append_null();
+            },
+            mzdata::spectrum::IsolationWindowState::Offset => {
+                self.target.append_value(item.target);
+                self.lower_bound.append_value(item.lower_bound);
+                self.upper_bound.append_value(item.upper_bound);
+            },
+            mzdata::spectrum::IsolationWindowState::Complete | mzdata::spectrum::IsolationWindowState::Explicit => {
+                self.target.append_value(item.target);
+                self.lower_bound.append_value(item.target - item.lower_bound);
+                self.upper_bound.append_value(item.upper_bound - item.target);
+            },
+        }
         self.parameters.append_empty();
         true
     }
@@ -1982,6 +2008,7 @@ impl ArrayBuilder for SpectrumDetailsBuilder {
 pub struct SpectrumBuilder {
     spectrum_index_counter: u64,
     precursor_index_counter: u64,
+    scan_index_counter: u64,
     pub(crate) spectrum: SpectrumDetailsBuilder,
     pub(crate) scan: ScanBuilder,
     pub(crate) precursor: PrecursorBuilder,
@@ -2024,7 +2051,8 @@ impl SpectrumBuilder {
             entry_derived_metadata,
         );
         for s in item.acquisition().scans.iter() {
-            self.scan.append_value(&(self.spectrum_index_counter, s));
+            self.scan.append_value(&(self.spectrum_index_counter, self.scan_index_counter, s));
+            self.scan_index_counter += 1;
         }
         for precursor in item.precursor_iter() {
             let precursor_index = precursor
@@ -2083,6 +2111,10 @@ impl SpectrumBuilder {
 
     pub fn precursor_index_counter(&self) -> u64 {
         self.precursor_index_counter
+    }
+
+    pub fn scan_index_counter(&self) -> u64 {
+        self.scan_index_counter
     }
 
     fn check_lengths_equal(&self) -> bool {
@@ -2771,6 +2803,7 @@ impl ArrayBuilder for WavelengthSpectrumDetailsBuilder {
 #[derive(Default, Debug)]
 pub struct WavelengthSpectrumBuilder {
     spectrum_index_counter: u64,
+    scan_index_counter: u64,
     pub(crate) spectrum: WavelengthSpectrumDetailsBuilder,
     pub(crate) scan: ScanBuilder,
     id_to_index: HashMap<String, u64>,
@@ -2797,7 +2830,8 @@ impl WavelengthSpectrumBuilder {
             .spectrum
             .append_value(self.spectrum_index_counter, item, auxiliary_arrays);
         for s in item.acquisition().scans.iter() {
-            self.scan.append_value(&(self.spectrum_index_counter, s));
+            self.scan.append_value(&(self.spectrum_index_counter, self.scan_index_counter, s));
+            self.scan_index_counter += 1;
         }
         self.spectrum_index_counter += 1;
         out

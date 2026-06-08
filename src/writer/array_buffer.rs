@@ -5,8 +5,8 @@ use std::{
 };
 
 use arrow::{
-    array::{Array, ArrayRef, RecordBatch, StructArray, new_null_array},
-    datatypes::{DataType, Field, FieldRef, Fields, Schema, SchemaRef},
+    array::{Array, ArrayRef, AsArray, RecordBatch, StructArray, new_null_array},
+    datatypes::{DataType, Field, FieldRef, Fields, Schema, SchemaRef, UInt64Type},
 };
 use mzdata::{prelude::BuildArrayMapFrom, spectrum::ArrayType};
 
@@ -306,10 +306,14 @@ impl PointBuffers {
 
         }
 
+        let index_of_insertion = arrays.first().and_then(|arr| arr.as_primitive::<UInt64Type>().iter().next()?);
         let n = arrays.iter().map(|v| v.len()).next().unwrap_or_default();
 
         let mut visited = HashSet::new();
         for (f, arr) in fields.iter().zip(arrays) {
+            if arr.len() != n {
+                log::error!("{} is length {}, expected {n}", f.name(), arr.len());
+            }
             self.array_chunks
                 .get_mut(f.name())
                 .unwrap_or_else(|| {
@@ -319,6 +323,7 @@ impl PointBuffers {
             visited.insert(f.name());
         }
 
+        let mut filled = 0;
         for (f, chunk) in self.array_chunks.iter_mut() {
             if !visited.contains(&f) {
                 if let Some(t) = chunk.first().map(|a| a.data_type()).or_else(|| {
@@ -327,11 +332,16 @@ impl PointBuffers {
                         .find(|a| a.name() == f)
                         .map(|a| a.data_type())
                 }) {
+                    filled += 1;
                     chunk.push(new_null_array(t, size));
+                } else {
+                    log::error!("Failed to store a value for {f}");
                 }
             }
         }
-
+        if filled > 0 {
+            log::trace!("Filled {filled} columns with nulls for {index_of_insertion:?}");
+        }
         n
     }
 
@@ -351,6 +361,13 @@ impl PointBuffers {
         chunks
             .into_iter()
             .map(move |arrs| {
+                let k = arrs.iter().map(|v| v.len()).max().unwrap_or_default();
+                for (i, arr) in arrs.iter().enumerate() {
+                    if arr.len() != k {
+                        let j = arrs.get(0).and_then(|v| v.as_primitive::<UInt64Type>().iter().flatten().next());
+                        log::error!("index={j:?} Array {i}/{} is of length {}, expected {k}", arrs.len(), arr.len());
+                    }
+                }
                 let batch = RecordBatch::try_new(schema.clone(), arrs.clone()).unwrap_or_else(|e| {
                     let fields: Vec<_> = arrs.iter().map(|f| f.data_type()).collect();
                     panic!("Failed to convert peak buffers to record batch: {e}\n{fields:#?}\n{schema:#?}")

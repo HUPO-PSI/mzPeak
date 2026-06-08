@@ -71,6 +71,7 @@ pub trait AsyncArchiveSource: Clone + 'static {
     }
 
     fn file_index(&self) -> &FileIndex;
+    fn file_index_mut(&mut self) -> &mut FileIndex;
 }
 
 #[derive(Clone)]
@@ -201,6 +202,10 @@ impl AsyncArchiveSource for AsyncZipArchiveSource {
 
     fn file_index(&self) -> &FileIndex {
         &self.file_index
+    }
+
+    fn file_index_mut(&mut self) -> &mut FileIndex {
+        &mut self.file_index
     }
 }
 
@@ -358,6 +363,10 @@ pub struct AsyncArchiveReader<T: AsyncArchiveSource + 'static> {
 impl<T: AsyncArchiveSource + 'static> AsyncArchiveReader<T> {
     pub fn file_index(&self) -> &FileIndex {
         self.archive.file_index()
+    }
+
+    pub fn file_index_mut(&mut self) -> &mut FileIndex {
+        self.archive.file_index_mut()
     }
 
     async fn init_from_archive(archive: T) -> io::Result<Self> {
