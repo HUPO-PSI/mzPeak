@@ -1231,6 +1231,7 @@ class MzPeakFile(_EntityCollectionMixin):
                     continue
                 v = json.loads(v)
                 metadata[k] = v
+        metadata.update(self.file_index.metadata)
         self.file_metadata = metadata
 
         if self.spectrum_data and self.spectrum_metadata:

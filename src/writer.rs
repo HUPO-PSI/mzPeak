@@ -1173,7 +1173,7 @@ mod test {
 
     use crate::{
         BufferName, MzPeakReader, archive::FileEntry, buffer_descriptors::BufferPriority,
-        peak_series::BufferFormat,
+        peak_series::BufferFormat, reader::MzPeakSpectrumFacet,
     };
 
     use super::*;
@@ -1336,6 +1336,12 @@ mod test {
         reader.reset();
         new_reader.reset();
 
+        for s in new_reader.metadata.spectrum_array_indices().iter() {
+            if matches!(s.array_type, ArrayType::MZArray) {
+                assert_eq!(s.sorting_rank, Some(0))
+            }
+        }
+
         for (a, b) in reader.iter().zip(new_reader.iter()) {
             assert_eq!(a.id(), b.id());
         }
@@ -1399,6 +1405,10 @@ mod test {
             assert_eq!(arrow::compute::max(indices).unwrap(), 519);
         }
 
+        let facet = new_reader.wavelength_facet(1).unwrap();
+        let entry = facet.metadata().array_indices.get(&ArrayType::WavelengthArray).unwrap();
+        assert_eq!(entry.sorting_rank, Some(0));
+
         let n = new_reader.len_wavelength_spectra();
         assert_eq!(n, 520);
         for spec in new_reader.iter_wavelength_spectra()? {
@@ -1449,6 +1459,11 @@ mod test {
         let mut new_reader = MzPeakReader::from_buf(buf.into_inner().into())?;
         assert_eq!(reader.len(), new_reader.len());
         assert!(new_reader.metadata.peak_array_indices().is_some());
+        for s in new_reader.metadata.spectrum_array_indices().iter() {
+            if matches!(s.array_type, ArrayType::MZArray) {
+                assert_eq!(s.sorting_rank, Some(0))
+            }
+        }
         reader.reset();
         new_reader.reset();
         for (a, b) in reader.iter().zip(new_reader.iter()) {
@@ -1522,6 +1537,7 @@ mod test {
                 assert!(matches!(arr.buffer_format, BufferFormat::ChunkTransform));
             } else if arr.path.ends_with("mz_chunk_values") {
                 assert!(matches!(arr.buffer_format, BufferFormat::Chunk));
+                assert_eq!(arr.sorting_rank, Some(0))
             }
         }
         assert_eq!(reader.len(), new_reader.len());

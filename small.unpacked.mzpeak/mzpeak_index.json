@@ -27,164 +27,8 @@
     }
   ],
   "metadata": {
-    "data_processing_method_list": [
-      {
-        "id": "pwiz_Reader_Thermo_conversion",
-        "methods": [
-          {
-            "order": 0,
-            "parameters": [
-              {
-                "accession": "MS:1000544",
-                "name": "Conversion to mzML",
-                "unit": null,
-                "value": null
-              }
-            ],
-            "software_reference": "pwiz"
-          }
-        ]
-      },
-      {
-        "id": "mzpeak_conversion1",
-        "methods": [
-          {
-            "order": 1,
-            "parameters": [
-              {
-                "accession": null,
-                "name": "conversion options",
-                "unit": null,
-                "value": "-y -z -u small.mzML -o small.mzpeak"
-              }
-            ],
-            "software_reference": "mzpeak_prototyping_convert1"
-          }
-        ]
-      }
-    ],
-    "run": {
-      "default_data_processing_id": "pwiz_Reader_Thermo_conversion",
-      "default_instrument_id": 0,
-      "default_source_file_id": "RAW1",
-      "id": "small",
-      "start_time": "2005-07-20T19:44:22Z"
-    },
-    "sample_list": [
-      {
-        "id": "_x0031_",
-        "name": "",
-        "parameters": [
-          {
-            "accession": "MS:1000002",
-            "name": "sample name",
-            "unit": null,
-            "value": 1
-          }
-        ]
-      }
-    ],
-    "software_list": [
-      {
-        "id": "Xcalibur",
-        "parameters": [
-          {
-            "accession": "MS:1000532",
-            "name": "Xcalibur",
-            "unit": null,
-            "value": null
-          }
-        ],
-        "version": "1.1 Beta 7"
-      },
-      {
-        "id": "pwiz",
-        "parameters": [
-          {
-            "accession": "MS:1000615",
-            "name": "ProteoWizard software",
-            "unit": null,
-            "value": null
-          }
-        ],
-        "version": "3.0.23307"
-      },
-      {
-        "id": "mzpeak_prototyping_convert1",
-        "parameters": [
-          {
-            "accession": "MS:1000799",
-            "name": "custom unreleased software tool",
-            "unit": null,
-            "value": "mzpeak_prototyping_convert"
-          }
-        ],
-        "version": "0.1.0"
-      }
-    ],
+    "scan_settings_list": [],
     "instrument_configuration_list": [
-      {
-        "components": [
-          {
-            "component_type": "ionsource",
-            "order": 1,
-            "parameters": [
-              {
-                "accession": "MS:1000073",
-                "name": "electrospray ionization",
-                "unit": null,
-                "value": null
-              },
-              {
-                "accession": "MS:1000057",
-                "name": "electrospray inlet",
-                "unit": null,
-                "value": null
-              }
-            ]
-          },
-          {
-            "component_type": "analyzer",
-            "order": 2,
-            "parameters": [
-              {
-                "accession": "MS:1000083",
-                "name": "radial ejection linear ion trap",
-                "unit": null,
-                "value": null
-              }
-            ]
-          },
-          {
-            "component_type": "detector",
-            "order": 3,
-            "parameters": [
-              {
-                "accession": "MS:1000253",
-                "name": "electron multiplier",
-                "unit": null,
-                "value": null
-              }
-            ]
-          }
-        ],
-        "id": 1,
-        "parameters": [
-          {
-            "accession": "MS:1000448",
-            "name": "LTQ FT",
-            "unit": null,
-            "value": null
-          },
-          {
-            "accession": "MS:1000529",
-            "name": "instrument serial number",
-            "unit": null,
-            "value": "SN06061F"
-          }
-        ],
-        "software_reference": "Xcalibur"
-      },
       {
         "components": [
           {
@@ -246,9 +90,113 @@
           }
         ],
         "software_reference": "Xcalibur"
+      },
+      {
+        "components": [
+          {
+            "component_type": "ionsource",
+            "order": 1,
+            "parameters": [
+              {
+                "accession": "MS:1000073",
+                "name": "electrospray ionization",
+                "unit": null,
+                "value": null
+              },
+              {
+                "accession": "MS:1000057",
+                "name": "electrospray inlet",
+                "unit": null,
+                "value": null
+              }
+            ]
+          },
+          {
+            "component_type": "analyzer",
+            "order": 2,
+            "parameters": [
+              {
+                "accession": "MS:1000083",
+                "name": "radial ejection linear ion trap",
+                "unit": null,
+                "value": null
+              }
+            ]
+          },
+          {
+            "component_type": "detector",
+            "order": 3,
+            "parameters": [
+              {
+                "accession": "MS:1000253",
+                "name": "electron multiplier",
+                "unit": null,
+                "value": null
+              }
+            ]
+          }
+        ],
+        "id": 1,
+        "parameters": [
+          {
+            "accession": "MS:1000448",
+            "name": "LTQ FT",
+            "unit": null,
+            "value": null
+          },
+          {
+            "accession": "MS:1000529",
+            "name": "instrument serial number",
+            "unit": null,
+            "value": "SN06061F"
+          }
+        ],
+        "software_reference": "Xcalibur"
       }
     ],
-    "scan_settings_list": [],
+    "run": {
+      "default_data_processing_id": "pwiz_Reader_Thermo_conversion",
+      "default_instrument_id": 0,
+      "default_source_file_id": "RAW1",
+      "id": "small",
+      "start_time": "2005-07-20T19:44:22Z"
+    },
+    "data_processing_method_list": [
+      {
+        "id": "pwiz_Reader_Thermo_conversion",
+        "methods": [
+          {
+            "order": 0,
+            "parameters": [
+              {
+                "accession": "MS:1000544",
+                "name": "Conversion to mzML",
+                "unit": null,
+                "value": null
+              }
+            ],
+            "software_reference": "pwiz"
+          }
+        ]
+      },
+      {
+        "id": "mzpeak_conversion1",
+        "methods": [
+          {
+            "order": 1,
+            "parameters": [
+              {
+                "accession": null,
+                "name": "conversion options",
+                "unit": null,
+                "value": "-y -z -u small.mzML -o small.mzpeak"
+              }
+            ],
+            "software_reference": "mzpeak_prototyping_convert1"
+          }
+        ]
+      }
+    ],
     "file_description": {
       "contents": [
         {
@@ -291,6 +239,58 @@
           ]
         }
       ]
-    }
+    },
+    "sample_list": [
+      {
+        "id": "_x0031_",
+        "name": "",
+        "parameters": [
+          {
+            "accession": "MS:1000002",
+            "name": "sample name",
+            "unit": null,
+            "value": 1
+          }
+        ]
+      }
+    ],
+    "software_list": [
+      {
+        "id": "Xcalibur",
+        "parameters": [
+          {
+            "accession": "MS:1000532",
+            "name": "Xcalibur",
+            "unit": null,
+            "value": null
+          }
+        ],
+        "version": "1.1 Beta 7"
+      },
+      {
+        "id": "pwiz",
+        "parameters": [
+          {
+            "accession": "MS:1000615",
+            "name": "ProteoWizard software",
+            "unit": null,
+            "value": null
+          }
+        ],
+        "version": "3.0.23307"
+      },
+      {
+        "id": "mzpeak_prototyping_convert1",
+        "parameters": [
+          {
+            "accession": "MS:1000799",
+            "name": "custom unreleased software tool",
+            "unit": null,
+            "value": "mzpeak_prototyping_convert"
+          }
+        ],
+        "version": "0.1.0"
+      }
+    ]
   }
 }
