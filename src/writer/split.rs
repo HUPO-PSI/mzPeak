@@ -12,10 +12,10 @@ use parquet::{
     file::metadata::KeyValue,
 };
 
-use mzdata::{meta::FileMetadataConfig, prelude::*};
+use mzdata::{meta::FileMetadataConfig, params::ControlledVocabulary, prelude::*};
 
 use crate::{
-    BufferContext, ToMzPeakDataSeries, archive::{FileIndex, MzPeakArchiveType}, chunk_series::ChunkingStrategy, constants::SPECTRUM_ARRAY_INDEX, peak_series::ArrayIndex, writer::{
+    BufferContext, ToMzPeakDataSeries, archive::{FileIndex, MzPeakArchiveType}, chunk_series::ChunkingStrategy, constants::SPECTRUM_ARRAY_INDEX, param::ControlledVocabularyEntry, peak_series::ArrayIndex, writer::{
         AbstractMzPeakWriter, ArrayBufferWriter, ArrayBufferWriterVariants, ArrayBuffersBuilder,
         ChromatogramBuilder, MiniPeakWriterType, SpectrumBuilder, VisitorBase,
         WavelengthSpectrumBuilder, WriteBatchConfig, base::GenericDataArrayWriter,
@@ -31,6 +31,7 @@ pub struct UnpackedMzPeakWriterType<
 > {
     path: PathBuf,
     file_index: FileIndex,
+    controlled_vocabularies: Vec<ControlledVocabularyEntry>,
     spectrum_data_writer: ArrowWriter<fs::File>,
     spectrum_metadata_writer: ArrowWriter<fs::File>,
 
@@ -171,6 +172,14 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
     fn mz_metadata(&self) -> &FileMetadataConfig {
         &self.mz_metadata
     }
+
+    fn controlled_vocabularies(&self) -> &[crate::param::ControlledVocabularyEntry] {
+        &self.controlled_vocabularies
+    }
+
+    fn controlled_vocabularies_mut(&mut self) -> &mut Vec<crate::param::ControlledVocabularyEntry> {
+        &mut self.controlled_vocabularies
+    }
 }
 
 impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPeakDataSeries>
@@ -301,6 +310,7 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
             buffer_size: buffer_size,
             mz_metadata: Default::default(),
             _t: PhantomData,
+            controlled_vocabularies: vec![ControlledVocabulary::MS.into(), ControlledVocabulary::UO.into()],
         };
         this.add_spectrum_array_index();
         this

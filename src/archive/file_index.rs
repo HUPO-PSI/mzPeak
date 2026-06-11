@@ -3,6 +3,8 @@ use std::{collections::HashMap, ops::Deref, str::FromStr};
 use serde::{Deserialize, Serialize};
 use serde_with::DeserializeFromStr;
 
+use crate::constants::{MZPEAK_VERSION, VERSION_KEY};
+
 /// The facet of the thing being described in this file
 #[derive(Debug, Serialize, DeserializeFromStr, Clone, PartialEq, Eq)]
 pub enum DataKind {
@@ -212,6 +214,10 @@ impl FileIndex {
 
     pub fn iter_metadata(&self) -> std::collections::hash_map::Iter<'_, String, serde_json::Value> {
         self.metadata.iter()
+    }
+
+    pub fn add_version(&mut self) {
+        self.add_metadata(VERSION_KEY, MZPEAK_VERSION.into());
     }
 }
 

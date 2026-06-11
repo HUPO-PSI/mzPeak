@@ -40,3 +40,16 @@ pub const CHROMATOGRAM_INDEX: &'static str = "chromatogram_index";
 
 pub const NUMBER_OF_DATA_POINTS: &'static str = "MS_1003060_number_of_data_points";
 pub const NUMBER_OF_PEAKS: &'static str = "MS_1003059_number_of_peaks";
+
+pub const ACCESSION_KEY: &'static str = "accession";
+pub const FILE_DESCRIPTION_KEY: &'static str = "file_description";
+pub const INSTRUMENT_CONFIGURATION_LIST_KEY: &'static str = "instrument_configuration_list";
+pub const DATA_PROCESSING_METHOD_LIST_KEY: &'static str = "data_processing_method_list";
+pub const SOFTWARE_LIST_KEY: &'static str = "software_list";
+pub const SAMPLE_LIST_KEY: &'static str = "sample_list";
+pub const SCAN_SETTINGS_LIST_KEY: &'static str = "scan_settings_list";
+pub const CV_LIST_KEY: &'static str = "cv_list";
+pub const MS_RUN_KEY: &'static str = "run";
+
+pub const VERSION_KEY: &'static str = "version";
+pub const MZPEAK_VERSION: &'static str = "0.9.0";

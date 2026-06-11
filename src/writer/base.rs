@@ -25,16 +25,12 @@ use parquet::{
 };
 
 use crate::{
-    BufferContext, ToMzPeakDataSeries,
-    archive::{FileEntry, MzPeakArchiveType},
-    chunk_series::{ArrowArrayChunk, ChunkingStrategy},
-    filter::select_delta_model,
-    peak_series::{INTENSITY_ARRAY, WAVELENGTH_ARRAY, array_map_to_schema_arrays_and_excess},
-    spectrum::AuxiliaryArray,
-    writer::{
+    BufferContext, ToMzPeakDataSeries, archive::{FileEntry, MzPeakArchiveType}, chunk_series::{ArrowArrayChunk, ChunkingStrategy}, constants::{
+        CV_LIST_KEY, DATA_PROCESSING_METHOD_LIST_KEY, FILE_DESCRIPTION_KEY, INSTRUMENT_CONFIGURATION_LIST_KEY, MS_RUN_KEY, MZPEAK_VERSION, SAMPLE_LIST_KEY, SCAN_SETTINGS_LIST_KEY, SOFTWARE_LIST_KEY, VERSION_KEY
+    }, filter::select_delta_model, param::ControlledVocabularyEntry, peak_series::{INTENSITY_ARRAY, WAVELENGTH_ARRAY, array_map_to_schema_arrays_and_excess}, spectrum::AuxiliaryArray, writer::{
         ArrayBufferWriter, ArrayBufferWriterVariants, ArrayBuffersBuilder, ChromatogramBuilder,
         MiniPeakWriterType, SpectrumBuilder, WavelengthSpectrumBuilder, WriteBatchConfig,
-    },
+    }
 };
 
 macro_rules! implement_mz_metadata {
@@ -375,6 +371,9 @@ pub(crate) fn is_data_array_sorted(array: &DataArray) -> Result<bool, ArrayRetri
 }
 
 pub trait AbstractMzPeakWriter {
+    fn controlled_vocabularies(&self) -> &[ControlledVocabularyEntry];
+    fn controlled_vocabularies_mut(&mut self) -> &mut Vec<ControlledVocabularyEntry>;
+
     /// Append an arbitrary key bytestring with an optional value to the (current) Parquet file
     fn append_key_value_metadata(&mut self, key: String, value: Option<String>);
 
@@ -390,19 +389,17 @@ pub trait AbstractMzPeakWriter {
     /// Copy all run-level metadata to the file index
     fn copy_metadata_to_index(&mut self) -> Result<(), serde_json::Error> {
         self.add_index_metadata(
-            "file_description",
+            FILE_DESCRIPTION_KEY,
             &crate::param::FileDescription::from(self.mz_metadata().file_description()),
         )?;
+
         let tmp: Vec<_> = self
             .mz_metadata()
             .instrument_configurations()
             .values()
             .map(|v| crate::param::InstrumentConfiguration::from(v))
             .collect();
-        self.add_index_metadata(
-            "instrument_configuration_list",
-            &tmp,
-        )?;
+        self.add_index_metadata(INSTRUMENT_CONFIGURATION_LIST_KEY, &tmp)?;
 
         let tmp: Vec<_> = self
             .mz_metadata()
@@ -410,10 +407,7 @@ pub trait AbstractMzPeakWriter {
             .iter()
             .map(|v| crate::param::DataProcessing::from(v))
             .collect();
-        self.add_index_metadata(
-            "data_processing_method_list",
-            &tmp,
-        )?;
+        self.add_index_metadata(DATA_PROCESSING_METHOD_LIST_KEY, &tmp)?;
 
         let tmp: Vec<_> = self
             .mz_metadata()
@@ -421,10 +415,7 @@ pub trait AbstractMzPeakWriter {
             .iter()
             .map(|v| crate::param::Software::from(v))
             .collect();
-        self.add_index_metadata(
-            "software_list",
-            &tmp,
-        )?;
+        self.add_index_metadata(SOFTWARE_LIST_KEY, &tmp)?;
 
         let tmp: Vec<_> = self
             .mz_metadata()
@@ -432,11 +423,7 @@ pub trait AbstractMzPeakWriter {
             .iter()
             .map(|v| crate::param::Sample::from(v))
             .collect();
-
-        self.add_index_metadata(
-            "sample_list",
-            &tmp,
-        )?;
+        self.add_index_metadata(SAMPLE_LIST_KEY, &tmp)?;
 
         let tmp: Vec<_> = self
             .mz_metadata()
@@ -447,16 +434,16 @@ pub trait AbstractMzPeakWriter {
                     .collect()
             })
             .unwrap_or_default();
-        self.add_index_metadata(
-            "scan_settings_list",
-            &tmp,
-        )?;
+        self.add_index_metadata(SCAN_SETTINGS_LIST_KEY, &tmp)?;
 
+        // We always build the run data structure
         let tmp = self.mz_metadata().run_description().unwrap().clone();
-        self.add_index_metadata(
-            "run",
-            &tmp
-        )?;
+        self.add_index_metadata(MS_RUN_KEY, &tmp)?;
+
+        self.add_index_metadata(CV_LIST_KEY, &self.controlled_vocabularies().to_vec())?;
+
+        // Add the version to the index to make sure that it is present
+        self.add_index_metadata(VERSION_KEY, &MZPEAK_VERSION)?;
         Ok(())
     }
 

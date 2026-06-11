@@ -19,23 +19,15 @@ use parquet::{
 };
 
 use mzdata::{
-    io::{RandomAccessSpectrumSource, StreamingSpectrumIterator},
-    meta::{FileMetadataConfig, MSDataFileMetadata},
-    prelude::*,
-    spectrum::{BinaryArrayMap, Chromatogram, MultiLayerSpectrum, SignalContinuity},
+    io::{RandomAccessSpectrumSource, StreamingSpectrumIterator}, meta::{FileMetadataConfig, MSDataFileMetadata}, params::ControlledVocabulary, prelude::*, spectrum::{BinaryArrayMap, Chromatogram, MultiLayerSpectrum, SignalContinuity}
 };
 
 use crate::{
-    BufferName,
-    archive::{DataKind, EntityType, FileEntry, MzPeakArchiveType, ZipArchiveWriter},
-    buffer_descriptors::BufferOverrideTable,
-    constants::{
+    BufferName, archive::{DataKind, EntityType, FileEntry, MzPeakArchiveType, ZipArchiveWriter}, buffer_descriptors::BufferOverrideTable, constants::{
         CHROMATOGRAM_COUNT, CHROMATOGRAM_DATA_POINT_COUNT, SPECTRUM_COUNT,
         SPECTRUM_DATA_POINT_COUNT, WAVELENGTH_SPECTRUM_COUNT, WAVELENGTH_SPECTRUM_DATA_ARRAYS_NAME,
         WAVELENGTH_SPECTRUM_METADATA_NAME,
-    },
-    peak_series::{ArrayIndex, BufferContext, ToMzPeakDataSeries, array_map_to_schema_arrays},
-    writer::{base::GenericDataArrayWriter, builder::SpectrumFieldVisitors},
+    }, param::ControlledVocabularyEntry, peak_series::{ArrayIndex, BufferContext, ToMzPeakDataSeries, array_map_to_schema_arrays}, writer::{base::GenericDataArrayWriter, builder::SpectrumFieldVisitors}
 };
 use crate::{
     chunk_series::{ArrowArrayChunk, ChunkingStrategy},
@@ -493,6 +485,7 @@ pub struct MzPeakWriterType<
     #[allow(unused)]
     write_batch_config: WriteBatchConfig,
     mz_metadata: FileMetadataConfig,
+    controlled_vocabularies: Vec<ControlledVocabularyEntry>,
     _t: PhantomData<(C, D)>,
 }
 
@@ -609,6 +602,14 @@ impl<
 
     fn mz_metadata(&self) -> &FileMetadataConfig {
         &self.mz_metadata
+    }
+
+    fn controlled_vocabularies(&self) -> &[ControlledVocabularyEntry] {
+        &self.controlled_vocabularies
+    }
+
+    fn controlled_vocabularies_mut(&mut self) -> &mut Vec<ControlledVocabularyEntry> {
+        &mut self.controlled_vocabularies
     }
 }
 
@@ -747,6 +748,7 @@ impl<
             wavelength_spectrum_metadata_buffer: Default::default(),
             _t: PhantomData,
             encryption_properties,
+            controlled_vocabularies: vec![ControlledVocabulary::MS.into(), ControlledVocabulary::UO.into()],
         };
         this.add_spectrum_array_metadata();
         this

@@ -228,6 +228,100 @@ impl From<MetaParam> for mzdata::Param {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlledVocabularyEntry {
+    pub id: String,
+    pub full_name: String,
+    pub uri: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+impl ControlledVocabularyEntry {
+    pub fn new(
+        id: impl ToString,
+        full_name: impl ToString,
+        uri: impl ToString,
+        version: Option<impl ToString>,
+    ) -> Self {
+        Self {
+            id: id.to_string(),
+            full_name: full_name.to_string(),
+            uri: uri.to_string(),
+            version: version.map(|v| v.to_string()),
+        }
+    }
+}
+
+impl From<mzdata::params::ControlledVocabulary> for ControlledVocabularyEntry {
+    fn from(value: mzdata::params::ControlledVocabulary) -> Self {
+        match value {
+            mzdata::params::ControlledVocabulary::MS => ControlledVocabularyEntry::new(
+                "MS",
+                "Proteomics Standards Initiative Mass Spectrometry Ontology",
+                "http://purl.obolibrary.org/obo/ms/4.1.248/ms.obo",
+                Some("4.1.248"),
+            ),
+            mzdata::params::ControlledVocabulary::UO => ControlledVocabularyEntry::new(
+                "UO",
+                "Units of measurement ontology",
+                "http://purl.obolibrary.org/obo/uo/releases/2026-01-16/uo.obo",
+                Some("2026-01-16"),
+            ),
+            mzdata::params::ControlledVocabulary::EFO => ControlledVocabularyEntry::new(
+                "EFO",
+                "Experimental Factor Ontology",
+                "http://www.ebi.ac.uk/efo/releases/v3.90.0/efo.obo",
+                Some("v3.90.0"),
+            ),
+            mzdata::params::ControlledVocabulary::OBI => ControlledVocabularyEntry::new(
+                "OBI",
+                "Ontology for Biomedical Investigations",
+                "http://purl.obolibrary.org/obo/obi/2026-05-08/obi.obo",
+                Some("2026-05-08"),
+            ),
+            mzdata::params::ControlledVocabulary::HANCESTRO => {
+                ControlledVocabularyEntry::new(
+                    "HANCESTRO",
+                    "Human Ancestry Ontology",
+                    "http://purl.obolibrary.org/obo/hancestro/releases/2025-10-14/hancestro.obo",
+                    Some("2025-10-14")
+                )
+            }
+            mzdata::params::ControlledVocabulary::BFO => ControlledVocabularyEntry::new(
+                "BFO",
+                "Basic Formal Ontology",
+                "http://purl.obolibrary.org/obo/bfo/2019-08-26/bfo.obo",
+                Some("2019-08-26"),
+            ),
+            mzdata::params::ControlledVocabulary::NCIT => ControlledVocabularyEntry::new(
+                "NCIT",
+                "NCI Thesaurus OBO Edition",
+                "http://purl.obolibrary.org/obo/ncit/releases/2026-03-19/ncit.obo",
+                Some("26.02d"),
+            ),
+            mzdata::params::ControlledVocabulary::BTO => ControlledVocabularyEntry::new(
+                "BTO",
+                "The BRENDA Tissue Ontology (BTO)",
+                "http://purl.obolibrary.org/obo/bto/releases/2021-10-26/bto.owl",
+                Some("2021-10-26"),
+            ),
+            mzdata::params::ControlledVocabulary::PRIDE => ControlledVocabularyEntry::new(
+                "PRIDE",
+                "Proteomics Identification Database Ontology",
+                "http://purl.obolibrary.org/obo/pride/releases/2026-06-01/pride.obo",
+                Some("2026-06-01"),
+            ),
+            mzdata::params::ControlledVocabulary::IMS => ControlledVocabularyEntry::new(
+                "IMS",
+                "Imaging Mass Spectrometry Ontology",
+                "https://raw.githubusercontent.com/imzML/imzML/refs/heads/master/imagingMS.obo",
+                Some("1.1.0"),
+            ),
+            mzdata::params::ControlledVocabulary::Unknown => todo!(),
+        }
+    }
+}
 
 fn value_ref_to_serde_json_value(value: mzdata::params::ValueRef<'_>) -> serde_json::Value {
     match value {
@@ -241,12 +335,15 @@ fn value_ref_to_serde_json_value(value: mzdata::params::ValueRef<'_>) -> serde_j
         mzdata::params::ValueRef::Buffer(_) => unimplemented!(),
         mzdata::params::ValueRef::Empty => serde_json::Value::Null,
         mzdata::params::ValueRef::Boolean(x) => serde_json::Value::Bool(x),
-        mzdata::params::ValueRef::List(values) => {
-            serde_json::Value::Array(values.iter().map(|v| {
-                let v = v.clone();
-                serde_json::to_value(v).unwrap()
-            }).collect())
-        },
+        mzdata::params::ValueRef::List(values) => serde_json::Value::Array(
+            values
+                .iter()
+                .map(|v| {
+                    let v = v.clone();
+                    serde_json::to_value(v).unwrap()
+                })
+                .collect(),
+        ),
     }
 }
 
@@ -360,8 +457,12 @@ impl From<&mzdata::meta::ScanSettings> for ScanSettings {
         Self {
             id: value.id.clone(),
             source_file_refs: value.source_file_refs.clone(),
-            targets: value.targets.iter().map(|v| v.iter().map(MetaParam::from).collect()).collect(),
-            parameters: value.params.iter().map(MetaParam::from).collect()
+            targets: value
+                .targets
+                .iter()
+                .map(|v| v.iter().map(MetaParam::from).collect())
+                .collect(),
+            parameters: value.params.iter().map(MetaParam::from).collect(),
         }
     }
 }
@@ -370,11 +471,18 @@ impl From<ScanSettings> for mzdata::meta::ScanSettings {
     fn from(value: ScanSettings) -> Self {
         mzdata::meta::ScanSettings::new(
             value.id,
-            value.parameters.into_iter().map(mzdata::Param::from).collect(),
+            value
+                .parameters
+                .into_iter()
+                .map(mzdata::Param::from)
+                .collect(),
             value.source_file_refs,
-            value.targets.into_iter().map(|v| {
-                v.into_iter().map(mzdata::Param::from).collect()
-            }).collect())
+            value
+                .targets
+                .into_iter()
+                .map(|v| v.into_iter().map(mzdata::Param::from).collect())
+                .collect(),
+        )
     }
 }
 
