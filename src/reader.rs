@@ -345,14 +345,18 @@ impl<
         this.load_delta_models()
             .inspect_err(|e| log::debug!("Failed to load spectrum delta model: {e}"))
             .unwrap_or_default();
-        this.metadata.spectra.auxiliary_array_counts =
-            this.load_spectrum_auxiliary_array_count()
-                .inspect_err(|e| log::debug!("Failed to load spectrum auxiliary array information: {e}"))
-                .unwrap_or_default();
-        this.metadata.chromatograms.auxiliary_array_counts =
-            this.load_chromatogram_auxiliary_array_count()
-                .inspect_err(|e| log::debug!("Failed to load chromatogram auxiliary array information: {e}"))
-                .unwrap_or_default();
+        this.metadata.spectra.auxiliary_array_counts = this
+            .load_spectrum_auxiliary_array_count()
+            .inspect_err(|e| {
+                log::debug!("Failed to load spectrum auxiliary array information: {e}")
+            })
+            .unwrap_or_default();
+        this.metadata.chromatograms.auxiliary_array_counts = this
+            .load_chromatogram_auxiliary_array_count()
+            .inspect_err(|e| {
+                log::debug!("Failed to load chromatogram auxiliary array information: {e}")
+            })
+            .unwrap_or_default();
 
         if let Ok(c) = this.load_wavelength_spectrum_auxiliary_array_count() {
             if let Some(meta) = this.metadata.wavelength_spectra.as_mut() {
@@ -848,10 +852,21 @@ impl<
                 self.spectrum_peak_cache
                     .slice_to_arrays_of(row_group_index, index, None)?
             } else {
-                let reader = PointDataReader(builder, BufferContext::Spectrum);
-                let block = reader
-                    .load_cache_block_into(row_group_index, meta_index.array_indices.clone())?;
-                self.spectrum_peak_cache.accept(block.into());
+                let block = match DataCacheBlock::load_data_from_parts(
+                    builder,
+                    &meta_index.query_index,
+                    meta_index.array_indices.clone(),
+                    row_group_index,
+                    index,
+                    BufferContext::Spectrum,
+                )? {
+                    Some(block) => block,
+                    None => {
+                        log::trace!("No peak cache block retrieved for {index} @ {row_group_index}");
+                        return Ok(None)
+                    }
+                };
+                self.spectrum_peak_cache.accept(block);
                 self.spectrum_peak_cache
                     .slice_to_arrays_of(row_group_index, index, None)?
             };
@@ -863,7 +878,20 @@ impl<
                 None => Ok(None),
             }
         } else {
-            PointDataReader(builder, BufferContext::Spectrum).get_peak_list_for(index, meta_index)
+            match meta_index.query_index {
+                index::GenericDataIndex::Point(ref _query_index) => {
+                    PointDataReader(builder, BufferContext::Spectrum).get_peak_list_for(index, meta_index)
+                }
+                index::GenericDataIndex::Chunk(ref query_index) => {
+                    let reader = ChunkDataReader::new(builder, BufferContext::Spectrum);
+                    let out = reader.read_chunks_for(index, query_index, &meta_index.array_indices, None, None)?;
+                    match PeakDataLevel::try_from(&out) {
+                        Ok(val) => return Ok(Some(val)),
+                        Err(e) => return Err(e.into()),
+                    }
+                },
+            }
+
         }
     }
 
@@ -910,16 +938,133 @@ impl<
         let (time_index, index_range) =
             self.get_spectrum_index_range_for_time_range(time_range, ms_level_range)?;
 
-        let iter = PointDataReader(builder, BufferContext::Spectrum).query_points(
-            index_range,
-            mz_range,
-            ion_mobility_range,
-            &meta_index.query_index,
-            &meta_index.array_indices,
-            &self.metadata,
-            None,
-        )?;
-        Ok((iter, time_index))
+        match meta_index.query_index {
+            index::GenericDataIndex::Point(ref query_index) => {
+                let reader = PointDataReader(builder, BufferContext::Spectrum);
+                let query = query_index.query_pages_overlaps(&index_range);
+
+                if query.can_split() && self.handle.can_split() {
+                    let mut index_range1 = index_range.clone();
+                    if let Some(index_range2) = index_range1.split() {
+                        log::trace!("Splitting point query");
+                        {
+                            let builder2 = self.handle.spectrum_peaks()?;
+                            let reader2 = PointDataReader(builder2, BufferContext::Spectrum);
+
+                            let reader = std::thread::scope(|ctx| -> io::Result<_> {
+                                let handle = ctx.spawn(|| {
+                                    reader.query_points(
+                                        index_range1,
+                                        mz_range,
+                                        ion_mobility_range,
+                                        query_index,
+                                        &meta_index.array_indices,
+                                        &self.metadata,
+                                        None,
+                                    )
+                                });
+                                let handle2 = ctx.spawn(|| {
+                                    reader2.query_points(
+                                        index_range2,
+                                        mz_range,
+                                        ion_mobility_range,
+                                        query_index,
+                                        &meta_index.array_indices,
+                                        &self.metadata,
+                                        None,
+                                    )
+                                });
+                                let reader = handle.join().unwrap()?;
+                                let reader2 = handle2.join().unwrap()?;
+                                Ok(Box::new(reader.chain(reader2)))
+                            });
+
+                            return Ok((reader?, time_index));
+                        }
+                    }
+                }
+                {
+
+                    let reader = reader.query_points(
+                        index_range,
+                        mz_range,
+                        ion_mobility_range,
+                        &meta_index.query_index,
+                        &meta_index.array_indices,
+                        &self.metadata,
+                        Some(query),
+                    )?;
+                    return Ok((reader, time_index));
+                }
+            }
+            index::GenericDataIndex::Chunk(ref query_index) => {
+                let reader = ChunkDataReader::new(builder, BufferContext::Spectrum);
+                let query = query_index.query_pages_overlaps(&index_range);
+                let it: BatchIterator<'_> = if query.can_split() && self.handle.can_split() {
+                    let mut index_range1 = index_range.clone();
+                    if let Some(index_range2) = index_range1.split() {
+                        log::trace!("Splitting chunk query");
+                        let builder2 = self.handle.spectrum_peaks()?;
+                        let reader2 = ChunkDataReader::new(builder2, BufferContext::Spectrum);
+                        std::thread::scope(|ctx| -> io::Result<_> {
+                            let handle = ctx.spawn(|| {
+                                reader.scan_chunks_for(
+                                    index_range1,
+                                    mz_range,
+                                    &self.metadata,
+                                    &meta_index.array_indices,
+                                    query_index,
+                                )
+                            });
+                            let handle2 = ctx.spawn(|| {
+                                reader2.scan_chunks_for(
+                                    index_range2,
+                                    mz_range,
+                                    &self.metadata,
+                                    &meta_index.array_indices,
+                                    query_index,
+                                )
+                            });
+                            let reader = handle.join().unwrap()?;
+                            let reader2 = handle2.join().unwrap()?;
+                            Ok(Box::new(reader.chain(reader2)))
+                        })?
+                    } else {
+                        Box::new(reader.scan_chunks_for(
+                            index_range,
+                            mz_range,
+                            &self.metadata,
+                            &meta_index.array_indices,
+                            query_index,
+                        )?)
+                    }
+                } else {
+                    Box::new(reader.scan_chunks_for(
+                        index_range,
+                        mz_range,
+                        &self.metadata,
+                        &meta_index.array_indices,
+                        query_index,
+                    )?)
+                };
+
+                let it: BatchIterator<'_> = if let Some(ion_mobility_range) = ion_mobility_range {
+                    // If there is an ion mobility array constraint, the chunked encoding doesn't support filtering on this
+                    // dimension directly.
+                    if let Some(im_name) = meta_index.array_indices
+                        .iter()
+                        .find(|v| v.is_ion_mobility())
+                    {
+                        chunk::make_ion_mobility_filter(it, ion_mobility_range, im_name)
+                    } else {
+                        it
+                    }
+                } else {
+                    it
+                };
+                return Ok((it, time_index));
+            },
+        }
     }
 
     /// Read load descriptive metadata for the mass spectrum at `index`
@@ -1258,16 +1403,15 @@ impl<
                 match self.prefer_spectra_peaks {
                     SignalLoadingPreference::Profiles => {
                         read_peaks = false;
-                    },
+                    }
                     SignalLoadingPreference::Centroids => {
                         read_profiles = false;
-                    },
-                    SignalLoadingPreference::ProfilesAndCentroids => {},
+                    }
+                    SignalLoadingPreference::ProfilesAndCentroids => {}
                 }
             }
 
-            let arrays = if read_profiles
-            {
+            let arrays = if read_profiles {
                 self.get_spectrum_arrays(index as u64)
                     .inspect_err(|e| log::error!("Failed to read spectrum data for {index}: {e}"))
                     .ok()??
@@ -1275,8 +1419,7 @@ impl<
                 BinaryArrayMap::new()
             };
 
-            let peaks = if read_peaks
-            {
+            let peaks = if read_peaks {
                 self.get_spectrum_peaks_for(index as u64)
                     .inspect_err(|e| {
                         log::error!("Failed to read spectrum peak data for {index}: {e}")

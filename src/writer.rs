@@ -397,7 +397,7 @@ impl MzPeakWriterBuilder {
     ) -> Self {
         let mut point_builder = self.take_or_initialize_peak_builder();
         for f in
-            sample_array_types_from_spectrum_source(reader, &self.spectrum_overrides(), None, true)
+            sample_array_types_from_spectrum_source(reader, &self.spectrum_overrides(), self.peaks_chunked_encoding.clone(), true)
         {
             point_builder = point_builder.add_field(f);
         }

@@ -1352,13 +1352,14 @@ mod async_impl {
 
     use crate::reader::chunk::ChunkQuerySource;
 
-    pub struct AsyncSpectrumChunkReader<T: AsyncFileReader + 'static + Unpin + Send> {
+    pub struct AsyncChunkReader<T: AsyncFileReader + 'static + Unpin + Send> {
         builder: ParquetRecordBatchStreamBuilder<T>,
+        buffer_context: BufferContext
     }
 
-    impl<T: AsyncFileReader + 'static + Unpin + Send> AsyncSpectrumChunkReader<T> {
-        pub fn new(builder: ParquetRecordBatchStreamBuilder<T>) -> Self {
-            Self { builder }
+    impl<T: AsyncFileReader + 'static + Unpin + Send> AsyncChunkReader<T> {
+        pub fn new(builder: ParquetRecordBatchStreamBuilder<T>, buffer_context: BufferContext) -> Self {
+            Self { builder, buffer_context }
         }
 
         pub fn scan_chunks_for<'a>(
@@ -1391,7 +1392,7 @@ mod async_impl {
             Ok(it.boxed())
         }
 
-        pub async fn read_chunks_for_entity(
+        pub async fn read_chunks_for(
             self,
             query: u64,
             query_indices: &impl BasicChunkQueryIndex,
@@ -1463,19 +1464,19 @@ mod async_impl {
         }
     }
 
-    impl<T: AsyncFileReader + 'static + Unpin + Send> ChunkQuerySource for AsyncSpectrumChunkReader<T> {
+    impl<T: AsyncFileReader + 'static + Unpin + Send> ChunkQuerySource for AsyncChunkReader<T> {
         fn metadata(&self) -> &parquet::file::metadata::ParquetMetaData {
             self.builder.metadata()
         }
 
         fn buffer_context(&self) -> BufferContext {
-            BufferContext::Spectrum
+            self.buffer_context
         }
     }
 }
 
 #[cfg(feature = "async")]
-pub use async_impl::AsyncSpectrumChunkReader;
+pub use async_impl::AsyncChunkReader;
 
 pub(crate) fn make_ion_mobility_filter<'a>(
     it: Box<dyn Iterator<Item = Result<RecordBatch, ArrowError>> + 'a>,

@@ -202,27 +202,6 @@ pub(crate) trait PointDataArrayReader {
 
         batch
     }
-
-    /// Read a specific Parquet row group into memory as a single [`RecordBatch`]
-    ///
-    /// This may potentially use a lot of memory if row groups are large.
-    fn load_cache_block<T: ChunkReader + 'static>(
-        &self,
-        builder: ParquetRecordBatchReaderBuilder<T>,
-        row_group: usize,
-    ) -> io::Result<RecordBatch> {
-        let builder = Self::configure_cache_block_reader(builder, row_group);
-
-        let batch = builder.build()?.flatten().next();
-        if let Some(batch) = batch {
-            Ok(batch)
-        } else {
-            Err(parquet::errors::ParquetError::General(format!(
-                "Couldn't read row group {row_group}"
-            ))
-            .into())
-        }
-    }
 }
 
 /// An internal data structure for caching a [`RecordBatch`] corresponding to a complete

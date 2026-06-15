@@ -53,7 +53,6 @@ fn main() -> io::Result<()> {
             std::process::exit(1)
         }
     }
-
 }
 
 // ============================================================================
@@ -77,6 +76,14 @@ fn chunk_encoding_parser(method_str: &str) -> Result<ChunkingStrategy, String> {
         Ok(ChunkingStrategy::Delta { chunk_size: 50.0 })
     } else {
         Err(format!("Failed to parse {method_str}"))
+    }
+}
+
+fn encoding_parser_opt(method_str: &str) -> Result<Option<ChunkingStrategy>, String> {
+    if method_str.is_empty() {
+        Ok(None)
+    } else {
+        chunk_encoding_parser(method_str).map(Some).or(Ok(None))
     }
 }
 
@@ -221,6 +228,14 @@ You can also specify a chunk size like 'delta:50'. Defaults to 'delta:50'",
 
     #[arg(
         long,
+        help="Whether to use chunked encoding or not for peaks. Defaults to the point layout otherwise. \
+See `--chunked-encoding` for more information",
+        value_parser=encoding_parser_opt
+    )]
+    pub peak_encoding: Option<ChunkingStrategy>,
+
+    #[arg(
+        long,
         help = "Use the chunked encoding instead of the flat point array layout, valid options are 'delta', 'basic', 'numpress'. \
 You can also specify a chunk size like 'delta:50'. Defaults to 'delta:50'. It will default to `chunked-encoding`",
         value_parser=chunk_encoding_parser,
@@ -302,6 +317,7 @@ pub fn configure_writer_builder(
         .include_time_with_spectrum_data(args.include_time_with_spectrum_data)
         .shuffle_mz(args.shuffle_mz)
         .chunked_encoding(args.chunked_encoding)
+        .peaks_chunked_encoding(args.peak_encoding)
         .chromatogram_chunked_encoding(args.chromatogram_chunked_encoding())
         .null_zeros(args.null_zeros)
         .write_batch_size(args.write_batch_size.map(usize::from))
@@ -398,8 +414,8 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
                 .with_aad_prefix_storage(true)
                 .build()
                 .unwrap();
-            log::debug!("key {:?}", encryption_props.footer_key());
-            log::debug!("key metadata {:?}", encryption_props.footer_key_metadata());
+        log::debug!("key {:?}", encryption_props.footer_key());
+        log::debug!("key metadata {:?}", encryption_props.footer_key_metadata());
         let encryptor = make_common_encryption_properties(encryption_props.clone());
         builder = builder.encryption_properties(encryptor);
     }
@@ -429,7 +445,8 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
     // Imaging has a few specialist cvParams that we want to promote to columns all of the time
     if matches!(reader, MZReaderType::IMzML(_)) {
         log::info!("Input is imzML, adding imaging column presets");
-        writer.spectrum_entry_buffer_mut()
+        writer
+            .spectrum_entry_buffer_mut()
             .add_imaging_position_visitors();
     }
 
@@ -494,13 +511,25 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
             for (i, (spectrum, chromatogram)) in recv.into_iter().enumerate() {
                 if i % 5000 == 0 {
                     let dp = writer.spectrum_data_buffer_mut().point_count();
-                    let pk = writer.spectrum_peak_writer().map(|v| v.point_count()).unwrap_or_default();
-                    log::info!("Writing batch {i} ({:0.2}%), wrote {dp} MS points and {pk} MS peaks", i as f64 / n as f64 * 100.0);
+                    let pk = writer
+                        .spectrum_peak_writer()
+                        .map(|v| v.point_count())
+                        .unwrap_or_default();
+                    log::info!(
+                        "Writing batch {i} ({:0.2}%), wrote {dp} MS points and {pk} MS peaks",
+                        i as f64 / n as f64 * 100.0
+                    );
                 }
                 if i % 10 == 0 {
                     let dp = writer.spectrum_data_buffer_mut().point_count();
-                    let pk = writer.spectrum_peak_writer().map(|v| v.point_count()).unwrap_or_default();
-                    log::debug!("Writing batch {i} ({:0.2}%), wrote {dp} MS points and {pk} MS peaks", i as f64 / n as f64 * 100.0);
+                    let pk = writer
+                        .spectrum_peak_writer()
+                        .map(|v| v.point_count())
+                        .unwrap_or_default();
+                    log::debug!(
+                        "Writing batch {i} ({:0.2}%), wrote {dp} MS points and {pk} MS peaks",
+                        i as f64 / n as f64 * 100.0
+                    );
                 }
                 if let Some(spectrum) = spectrum {
                     writer.write_spectrum(&spectrum)?;

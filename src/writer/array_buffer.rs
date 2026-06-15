@@ -1048,6 +1048,10 @@ impl ArrayBuffersBuilder {
         }
     }
 
+    pub fn use_chunked_encoding(&self) -> Option<&ChunkingStrategy> {
+        self.chunking_strategy.as_ref()
+    }
+
     /// Build a [`ChunkBuffer`], configuring the underlying schema
     pub fn build_chunked(
         mut self,

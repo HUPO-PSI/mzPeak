@@ -981,11 +981,19 @@ pub trait AbstractMzPeakWriter {
         buffer_size: usize,
         encryption_properties: &HashMap<String, Arc<FileEncryptionProperties>>,
     ) -> io::Result<MiniPeakWriterType<S>> {
-        let peak_buffer = peak_buffer_builder.include_time(include_time).build(
-            Arc::new(Schema::empty()),
-            BufferContext::Spectrum,
-            false,
-        );
+        let peak_buffer: ArrayBufferWriterVariants = if peak_buffer_builder.use_chunked_encoding().is_some() {
+            peak_buffer_builder.include_time(include_time).build_chunked(
+                Arc::new(Schema::empty()),
+                BufferContext::Spectrum,
+                false,
+            ).into()
+        } else {
+            peak_buffer_builder.include_time(include_time).build(
+                Arc::new(Schema::empty()),
+                BufferContext::Spectrum,
+                false,
+            ).into()
+        };
 
         let peak_encrytion_props = encryption_properties
             .get(&FileEntry::from(MzPeakArchiveType::SpectrumPeakDataArrays).name)
@@ -1009,7 +1017,7 @@ pub trait AbstractMzPeakWriter {
 
         Ok(MiniPeakWriterType::new(
             peak_writer,
-            peak_buffer.into(),
+            peak_buffer,
             buffer_size,
         ))
     }

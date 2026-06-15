@@ -27,7 +27,21 @@
     }
   ],
   "metadata": {
-    "scan_settings_list": [],
+    "version": "0.9.0",
+    "sample_list": [
+      {
+        "id": "_x0031_",
+        "name": "",
+        "parameters": [
+          {
+            "accession": "MS:1000002",
+            "name": "sample name",
+            "unit": null,
+            "value": 1
+          }
+        ]
+      }
+    ],
     "instrument_configuration_list": [
       {
         "components": [
@@ -154,49 +168,7 @@
         "software_reference": "Xcalibur"
       }
     ],
-    "run": {
-      "default_data_processing_id": "pwiz_Reader_Thermo_conversion",
-      "default_instrument_id": 0,
-      "default_source_file_id": "RAW1",
-      "id": "small",
-      "start_time": "2005-07-20T19:44:22Z"
-    },
-    "data_processing_method_list": [
-      {
-        "id": "pwiz_Reader_Thermo_conversion",
-        "methods": [
-          {
-            "order": 0,
-            "parameters": [
-              {
-                "accession": "MS:1000544",
-                "name": "Conversion to mzML",
-                "unit": null,
-                "value": null
-              }
-            ],
-            "software_reference": "pwiz"
-          }
-        ]
-      },
-      {
-        "id": "mzpeak_conversion1",
-        "methods": [
-          {
-            "order": 1,
-            "parameters": [
-              {
-                "accession": null,
-                "name": "conversion options",
-                "unit": null,
-                "value": "-y -z -u small.mzML -o small.mzpeak"
-              }
-            ],
-            "software_reference": "mzpeak_prototyping_convert1"
-          }
-        ]
-      }
-    ],
+    "scan_settings_list": [],
     "file_description": {
       "contents": [
         {
@@ -240,16 +212,59 @@
         }
       ]
     },
-    "sample_list": [
+    "run": {
+      "default_data_processing_id": "pwiz_Reader_Thermo_conversion",
+      "default_instrument_id": 0,
+      "default_source_file_id": "RAW1",
+      "id": "small",
+      "start_time": "2005-07-20T19:44:22Z"
+    },
+    "cv_list": [
       {
-        "id": "_x0031_",
-        "name": "",
-        "parameters": [
+        "full_name": "Proteomics Standards Initiative Mass Spectrometry Ontology",
+        "id": "MS",
+        "uri": "http://purl.obolibrary.org/obo/ms/4.1.249/psi-ms.obo",
+        "version": "4.1.249"
+      },
+      {
+        "full_name": "Units of measurement ontology",
+        "id": "UO",
+        "uri": "http://purl.obolibrary.org/obo/uo/releases/2026-01-16/uo.obo",
+        "version": "2026-01-16"
+      }
+    ],
+    "data_processing_method_list": [
+      {
+        "id": "pwiz_Reader_Thermo_conversion",
+        "methods": [
           {
-            "accession": "MS:1000002",
-            "name": "sample name",
-            "unit": null,
-            "value": 1
+            "order": 0,
+            "parameters": [
+              {
+                "accession": "MS:1000544",
+                "name": "Conversion to mzML",
+                "unit": null,
+                "value": null
+              }
+            ],
+            "software_reference": "pwiz"
+          }
+        ]
+      },
+      {
+        "id": "mzpeak_conversion1",
+        "methods": [
+          {
+            "order": 1,
+            "parameters": [
+              {
+                "accession": null,
+                "name": "conversion options",
+                "unit": null,
+                "value": "-y -z -u small.mzML -o small.mzpeak"
+              }
+            ],
+            "software_reference": "mzpeak_prototyping_convert1"
           }
         ]
       }

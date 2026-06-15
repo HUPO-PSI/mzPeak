@@ -259,8 +259,8 @@ impl From<mzdata::params::ControlledVocabulary> for ControlledVocabularyEntry {
             mzdata::params::ControlledVocabulary::MS => ControlledVocabularyEntry::new(
                 "MS",
                 "Proteomics Standards Initiative Mass Spectrometry Ontology",
-                "http://purl.obolibrary.org/obo/ms/4.1.248/ms.obo",
-                Some("4.1.248"),
+                "http://purl.obolibrary.org/obo/ms/4.1.249/psi-ms.obo",
+                Some("4.1.249"),
             ),
             mzdata::params::ControlledVocabulary::UO => ControlledVocabularyEntry::new(
                 "UO",
@@ -486,11 +486,27 @@ impl From<ScanSettings> for mzdata::meta::ScanSettings {
     }
 }
 
+/// Represents a contact person for a file
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct Contact {
+    /// The name of the contact person. This is equivalent to `MS:1000586|contact name` (http://purl.obolibrary.org/obo/MS_1000586)
+    #[serde(default)]
+    pub contact_name: Option<String>,
+    /// The home institute of the contact person. This is equivalent to `MS:1000590|contact affiliation` (http://purl.obolibrary.org/obo/MS_1000590)
+    #[serde(default)]
+    pub contact_affiliation: Option<String>,
+    #[serde(default)]
+    pub parameters: Vec<MetaParam>
+}
+
 /// An adaptation of [`mzdata::meta::FileDescription`]
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct FileDescription {
     pub contents: Vec<MetaParam>,
     pub source_files: Vec<SourceFile>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
+    pub contacts: Vec<Contact>,
 }
 
 impl From<FileDescription> for mzdata::meta::FileDescription {
@@ -514,6 +530,7 @@ impl From<&mzdata::meta::FileDescription> for FileDescription {
         Self {
             contents,
             source_files,
+            contacts: Vec::new(),
         }
     }
 }

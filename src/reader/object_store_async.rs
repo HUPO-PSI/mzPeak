@@ -41,8 +41,8 @@ use crate::{
     reader::{
         ReaderMetadata,
         cache::CHUNK_CACHE_BLOCK_SIZE,
-        chunk::{AsyncSpectrumChunkReader, ChunkDataCacheBlock},
-        index::{PageQuery, QueryIndex, SpanDynNumeric},
+        chunk::{AsyncChunkReader, ChunkDataCacheBlock},
+        index::{self, PageQuery, QueryIndex, SpanDynNumeric},
         metadata::{
             AuxiliaryArrayCountDecoder, BaseMetadataQuerySource, ChromatogramMetadataDecoder,
             ChromatogramMetadataQuerySource, ParquetIndexExtractor, PeakInfoDecoder,
@@ -259,7 +259,7 @@ impl AsyncSpectrumDataCache {
             Ok(Some(Self::Point(cache)))
         } else if let Some(query_index) = reader.query_indices.spectrum.data_index.as_chunked() {
             let builder = reader.handle.spectra_data().await?;
-            let builder = AsyncSpectrumChunkReader::new(builder);
+            let builder = AsyncChunkReader::new(builder, BufferContext::Spectrum);
             let cache = builder
                 .load_cache_block(
                     SimpleInterval::new(spectrum_index, spectrum_index + CHUNK_CACHE_BLOCK_SIZE),
@@ -623,9 +623,19 @@ impl<
                 "peak data index was not found",
             ))?;
 
-        return AsyncPointDataReader(builder, BufferContext::Spectrum)
-            .get_peak_list_for(index, meta_index)
-            .await;
+        return match meta_index.query_index {
+            index::GenericDataIndex::Point(ref _query_index) => {
+                AsyncPointDataReader(builder, BufferContext::Spectrum).get_peak_list_for(index, meta_index).await
+            }
+            index::GenericDataIndex::Chunk(ref query_index) => {
+                let reader = AsyncChunkReader::new(builder, BufferContext::Spectrum);
+                let out = reader.read_chunks_for(index, query_index, &meta_index.array_indices, None, None).await?;
+                match PeakDataLevel::try_from(&out) {
+                    Ok(val) => return Ok(Some(val)),
+                    Err(e) => return Err(e.into()),
+                }
+            },
+        };
     }
 
     /// Read all signal data within the specified `time_range`, optionally constrained to `mz_range` m/z values and/or
@@ -661,7 +671,7 @@ impl<
         };
 
         if let Some(query_index) = self.query_indices.spectrum.data_index.as_chunked() {
-            let it = AsyncSpectrumChunkReader::new(builder).scan_chunks_for(
+            let it = AsyncChunkReader::new(builder, BufferContext::Spectrum).scan_chunks_for(
                 index_range,
                 mz_range,
                 &self.metadata,
@@ -1108,8 +1118,8 @@ impl<
 
         if let Some(query_index) = self.query_indices.spectrum.data_index.as_chunked() {
             log::trace!("Using chunk strategy for reading spectrum {index}");
-            let mut out = AsyncSpectrumChunkReader::new(builder)
-                .read_chunks_for_entity(
+            let mut out = AsyncChunkReader::new(builder, BufferContext::Spectrum)
+                .read_chunks_for(
                     index,
                     query_index,
                     &self.metadata.spectra.array_indices,

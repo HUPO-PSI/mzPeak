@@ -1620,7 +1620,6 @@ pub struct SpectrumMetadataIndex {
     pub selected_ion_index: PageIndex<u64>,
 
     pub data_index: SpectrumDataIndex,
-    pub peak_point_index: Option<SpectrumPointIndex>,
 }
 
 pub trait SpectrumMetadataIndexLike {

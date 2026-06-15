@@ -10,9 +10,7 @@ use crate::{
     archive::{ArchiveReader, ArchiveSource},
     buffer_descriptors::{ArrayIndex, SerializedArrayIndex, arrow_to_array_type},
     constants::{
-        CHROMATOGRAM, CHROMATOGRAM_ARRAY_INDEX, INDEX, NUMBER_OF_DATA_POINTS, NUMBER_OF_PEAKS,
-        PRECURSOR, SCAN, SELECTED_ION, SOURCE_INDEX, SPECTRUM, SPECTRUM_ARRAY_INDEX,
-        SPECTRUM_INDEX, WAVELENGTH_SPECTRUM_ARRAY_INDEX,
+        CHROMATOGRAM, CHROMATOGRAM_ARRAY_INDEX, DATA_PROCESSING_METHOD_LIST_KEY, FILE_DESCRIPTION_KEY, INDEX, INSTRUMENT_CONFIGURATION_LIST_KEY, MS_RUN_KEY, NUMBER_OF_DATA_POINTS, NUMBER_OF_PEAKS, PRECURSOR, SAMPLE_LIST_KEY, SCAN, SCAN_SETTINGS_LIST_KEY, SELECTED_ION, SOFTWARE_LIST_KEY, SOURCE_INDEX, SPECTRUM, SPECTRUM_ARRAY_INDEX, SPECTRUM_INDEX, WAVELENGTH_SPECTRUM_ARRAY_INDEX
     },
     filter::RegressionDeltaModel,
     param::{MetadataColumn, MetadataColumnCollection},
@@ -277,7 +275,10 @@ impl ReaderMetadata {
     }
 
     pub fn peak_array_indices(&self) -> Option<&ArrayIndex> {
-        self.spectra.peak_indices.as_ref().map(|v| v.array_indices.as_ref())
+        self.spectra
+            .peak_indices
+            .as_ref()
+            .map(|v| v.array_indices.as_ref())
     }
 
     pub fn spectrum_array_indices(&self) -> &ArrayIndex {
@@ -380,7 +381,10 @@ impl PeakMetadata {
             }
         }
         if has_arrays {
-            let index = SpectrumDataIndex::Point(SpectrumPointIndex::from_reader(reader, &this.array_indices));
+            let index = SpectrumDataIndex::Point(SpectrumPointIndex::from_reader(
+                reader,
+                &this.array_indices,
+            ));
             this.query_index = index;
             Some(this)
         } else {
@@ -407,7 +411,7 @@ impl ParquetIndexExtractor {
     ) -> io::Result<()> {
         for kv in iter {
             match kv.key.as_str() {
-                "file_description" => {
+                FILE_DESCRIPTION_KEY => {
                     if let Some(val) = kv.value.as_ref() {
                         let file_description: crate::param::FileDescription =
                             serde_json::from_str(&val)?;
@@ -416,7 +420,7 @@ impl ParquetIndexExtractor {
                         log::warn!("file description was empty");
                     }
                 }
-                "instrument_configuration_list" => {
+                INSTRUMENT_CONFIGURATION_LIST_KEY => {
                     if let Some(val) = kv.value.as_ref() {
                         let instrument_configurations: Vec<crate::param::InstrumentConfiguration> =
                             serde_json::from_str(&val)?;
@@ -429,7 +433,7 @@ impl ParquetIndexExtractor {
                         log::warn!("instrument configurations list was empty for",);
                     }
                 }
-                "data_processing_method_list" => {
+                DATA_PROCESSING_METHOD_LIST_KEY => {
                     if let Some(val) = kv.value.as_ref() {
                         let data_processing_list: Vec<crate::param::DataProcessing> =
                             serde_json::from_str(&val)?;
@@ -440,7 +444,7 @@ impl ParquetIndexExtractor {
                         log::warn!("data processing method list was empty");
                     }
                 }
-                "sample_list" => {
+                SAMPLE_LIST_KEY => {
                     if let Some(val) = kv.value.as_ref() {
                         let meta_list: Vec<crate::param::Sample> = serde_json::from_str(&val)?;
                         for sw in meta_list {
@@ -450,7 +454,7 @@ impl ParquetIndexExtractor {
                         log::warn!("sample list was empty");
                     }
                 }
-                "software_list" => {
+                SOFTWARE_LIST_KEY => {
                     if let Some(val) = kv.value.as_ref() {
                         let software_list: Vec<crate::param::Software> =
                             serde_json::from_str(&val)?;
@@ -461,11 +465,11 @@ impl ParquetIndexExtractor {
                         log::warn!("software list was empty");
                     }
                 }
-                "scan_settings" => {
+                SCAN_SETTINGS_LIST_KEY => {
                     if let Some(val) = kv.value.as_ref() {
-                        let settings: crate::param::ScanSettings = serde_json::from_str(&val)?;
+                        let settings: Vec<crate::param::ScanSettings> = serde_json::from_str(&val)?;
                         match self.mz_metadata.scan_settings_mut() {
-                            Some(confs) => confs.push(settings.into()),
+                            Some(confs) => confs.extend(settings.into_iter().map(|v| v.into())),
                             None => {
                                 panic!("Cannot inject scan settings. This should never happen");
                             }
@@ -474,7 +478,7 @@ impl ParquetIndexExtractor {
                         log::warn!("scan_settings was empty")
                     }
                 }
-                "run" => {
+                MS_RUN_KEY => {
                     if let Some(val) = kv.value.as_ref() {
                         let run: meta::MassSpectrometryRun = serde_json::from_str(&val)?;
                         *self.mz_metadata.run_description_mut().unwrap() = run;
@@ -657,8 +661,6 @@ impl ParquetIndexExtractor {
             }
         }
 
-
-
         for kv in chromatogram_metadata_reader
             .metadata()
             .file_metadata()
@@ -735,7 +737,8 @@ pub(crate) fn load_indices_from<T: ArchiveSource>(
     if let Ok(chromatogram_metadata_reader) = handle.chromatograms_metadata() {
         log::trace!("Loading chromatogram metadata indices");
         this.visit_chromatogram_metadata_reader(chromatogram_metadata_reader)?;
-        this.chromatograms.id_index = build_id_index::<T>(handle.chromatograms_metadata()?, CHROMATOGRAM, CHROMATOGRAM)?;
+        this.chromatograms.id_index =
+            build_id_index::<T>(handle.chromatograms_metadata()?, CHROMATOGRAM, CHROMATOGRAM)?;
     }
     if let Ok(chromatogram_data_reader) = handle.chromatograms_data() {
         log::trace!("Loading chromatogram indices");
@@ -1477,7 +1480,8 @@ impl<'a> ChromatogramMetadataDecoder<'a> {
             &mut local_descr,
             &self
                 .metadata
-                .chromatograms.primary_metadata_map()
+                .chromatograms
+                .primary_metadata_map()
                 .unwrap_or(&EMPTY_FIELDS),
             0,
         );
@@ -1886,6 +1890,10 @@ impl PeakInfoDecoder {
                     .iter()
                     .zip([SPECTRUM, "mz_delta_model"])
                     .all(|(a, b)| a == b)
+                || parts
+                    .iter()
+                    .zip([SPECTRUM, "MS_1003820_coordinate_spacing_model"])
+                    .all(|(a, b)| a == b)
             {
                 median_i = Some(i);
                 self.has_models = true;
@@ -1923,6 +1931,7 @@ impl PeakInfoDecoder {
             if let Some(col) = root
                 .column_by_name("mz_delta_model")
                 .or_else(|| root.column_by_name("median_delta"))
+                .or_else(|| root.column_by_name("MS_1003820_coordinate_spacing_model"))
             {
                 macro_rules! process_list {
                     ($val_array:expr) => {
@@ -1987,7 +1996,8 @@ impl PeakInfoDecoder {
                     if let Some(col) = col.as_primitive_opt::<$dtype>() {
                         for (val, i) in col.iter().zip(index_array.iter()) {
                             if let Some(i) = i {
-                                self.data_point_counts[i as usize] = (val.unwrap_or_default() as u64);
+                                self.data_point_counts[i as usize] =
+                                    (val.unwrap_or_default() as u64);
                             }
                         }
                         true

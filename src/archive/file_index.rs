@@ -1,9 +1,14 @@
 use std::{collections::HashMap, ops::Deref, str::FromStr};
 
+use mzdata::meta::{FileMetadataConfig, MSDataFileMetadata, MassSpectrometryRun};
 use serde::{Deserialize, Serialize};
 use serde_with::DeserializeFromStr;
 
-use crate::constants::{MZPEAK_VERSION, VERSION_KEY};
+use crate::constants::{
+    DATA_PROCESSING_METHOD_LIST_KEY, FILE_DESCRIPTION_KEY, INSTRUMENT_CONFIGURATION_LIST_KEY,
+    MS_RUN_KEY, MZPEAK_VERSION, SAMPLE_LIST_KEY, SCAN_SETTINGS_LIST_KEY, SOFTWARE_LIST_KEY,
+    VERSION_KEY,
+};
 
 /// The facet of the thing being described in this file
 #[derive(Debug, Serialize, DeserializeFromStr, Clone, PartialEq, Eq)]
@@ -108,8 +113,7 @@ impl FileEntry {
             (_, _) => {
                 if matches!(self.data_kind, DataKind::Proprietary) {
                     log::debug!("Could not map {self:?} to an archive type");
-                }
-                else {
+                } else {
                     log::warn!("Could not map {self:?} to an archive type");
                 }
                 super::MzPeakArchiveType::Other
@@ -204,7 +208,11 @@ impl FileIndex {
         self.files.push(entry);
     }
 
-    pub fn add_metadata(&mut self, key: &str, value: serde_json::Value) -> Option<serde_json::Value> {
+    pub fn add_metadata(
+        &mut self,
+        key: &str,
+        value: serde_json::Value,
+    ) -> Option<serde_json::Value> {
         self.metadata.insert(key.to_string(), value)
     }
 
@@ -218,6 +226,67 @@ impl FileIndex {
 
     pub fn add_version(&mut self) {
         self.add_metadata(VERSION_KEY, MZPEAK_VERSION.into());
+    }
+
+    pub fn version(&self) -> Option<&str> {
+        self.metadata.get(VERSION_KEY).and_then(|v| v.as_str())
+    }
+
+    pub fn as_file_metadata(&self) -> Result<FileMetadataConfig, serde_json::Error> {
+        let mut mz_metadata = FileMetadataConfig::default();
+        for (k, val) in self.metadata.iter() {
+            match k.as_str() {
+                FILE_DESCRIPTION_KEY => {
+                    let file_description: crate::param::FileDescription =
+                        serde_json::from_value(val.clone())?;
+                    *mz_metadata.file_description_mut() = file_description.into();
+                }
+                INSTRUMENT_CONFIGURATION_LIST_KEY => {
+                    let instrument_configurations: Vec<crate::param::InstrumentConfiguration> =
+                        serde_json::from_value(val.clone())?;
+                    for ic in instrument_configurations {
+                        mz_metadata
+                            .instrument_configurations_mut()
+                            .insert(ic.id, ic.into());
+                    }
+                }
+                DATA_PROCESSING_METHOD_LIST_KEY => {
+                    let data_processing_list: Vec<crate::param::DataProcessing> =
+                        serde_json::from_value(val.clone())?;
+                    for dp in data_processing_list {
+                        mz_metadata.data_processings_mut().push(dp.into());
+                    }
+                }
+                SAMPLE_LIST_KEY => {
+                    let meta_list: Vec<crate::param::Sample> = serde_json::from_value(val.clone())?;
+                    for sw in meta_list {
+                        mz_metadata.samples_mut().push(sw.into());
+                    }
+                }
+                SOFTWARE_LIST_KEY => {
+                    let software_list: Vec<crate::param::Software> =
+                        serde_json::from_value(val.clone())?;
+                    for sw in software_list {
+                        mz_metadata.softwares_mut().push(sw.into());
+                    }
+                }
+                SCAN_SETTINGS_LIST_KEY => {
+                    let settings: Vec<crate::param::ScanSettings> = serde_json::from_value(val.clone())?;
+                    match mz_metadata.scan_settings_mut() {
+                        Some(confs) => confs.extend(settings.into_iter().map(|v| v.into())),
+                        None => {
+                            panic!("Cannot inject scan settings. This should never happen");
+                        }
+                    }
+                }
+                MS_RUN_KEY => {
+                    let run: MassSpectrometryRun = serde_json::from_value(val.clone())?;
+                    *mz_metadata.run_description_mut().unwrap() = run;
+                }
+                _ => {}
+            }
+        }
+        Ok(mz_metadata)
     }
 }
 

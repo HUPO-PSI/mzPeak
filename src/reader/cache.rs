@@ -1,25 +1,33 @@
 use std::collections::VecDeque;
 use std::io;
+use std::sync::Arc;
 
 use mzdata::prelude::*;
 use mzdata::spectrum::BinaryArrayMap;
 use mzpeaks::coordinate::SimpleInterval;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::file::reader::ChunkReader;
 
 use crate::BufferContext;
 use crate::archive::ArchiveSource;
 use crate::filter::RegressionDeltaModel;
+use crate::peak_series::ArrayIndex;
 use crate::reader::chunk::ChunkDataReader;
-use crate::reader::index::SpectrumMetadataIndexLike;
+use crate::reader::index::{
+    BasicChunkQueryIndex, BasicQueryIndex, GenericDataIndex, SpectrumMetadataIndexLike,
+};
 use crate::reader::metadata::ReaderFacetMetadataLike;
-use crate::reader::point::{PointDataArrayReader, PointDataReader};
+use crate::reader::point::PointDataReader;
 use crate::reader::{MzPeakReaderTypeOfSource, MzPeakSpectrumFacet};
 
 use super::chunk::ChunkDataCacheBlock;
 use super::point::PointDataCacheBlock;
 
 #[cfg(feature = "async")]
-use crate::{archive::AsyncArchiveSource, reader::{AsyncMzPeakReaderType, point::AsyncPointDataReader, chunk::AsyncSpectrumChunkReader}};
-
+use crate::{
+    archive::AsyncArchiveSource,
+    reader::{AsyncMzPeakReaderType, chunk::AsyncChunkReader, point::AsyncPointDataReader},
+};
 
 // This value can be made larger for a modest (<10%) improvement in linear reading performance
 // but the trade-off in memory load makes this impractical, especially if spectra are very,
@@ -49,7 +57,6 @@ impl From<PointDataCacheBlock> for DataCacheBlock {
 }
 
 impl DataCacheBlock {
-
     /// Get the last index that was queried in this block which might hint to which half to search for
     /// another index.
     pub fn last_query_index(&self) -> Option<u64> {
@@ -118,7 +125,10 @@ impl DataCacheBlock {
         if let Some(_query_index) = reader.query_indices.spectrum.data_index.as_point() {
             let builder = reader.handle.spectrum_data()?;
             let builder = PointDataReader::new(builder, BufferContext::Spectrum);
-            let cache = builder.load_cache_block_into(row_group_index, reader.metadata.spectra.array_indices.clone())?;
+            let cache = builder.load_cache_block_into(
+                row_group_index,
+                reader.metadata.spectra.array_indices.clone(),
+            )?;
             Ok(Some(Self::Point(cache)))
         } else if let Some(query_index) = reader.query_indices.spectrum.data_index.as_chunked() {
             let builder = reader.handle.spectrum_data()?;
@@ -148,11 +158,16 @@ impl DataCacheBlock {
         if reader.query_indices.spectrum.data_index.is_point() {
             let builder = reader.handle.spectra_data().await?;
             let builder = AsyncPointDataReader(builder, BufferContext::Spectrum);
-            let cache = builder.load_cache_block_into(row_group_index, reader.metadata.spectra.array_indices.clone()).await?;
+            let cache = builder
+                .load_cache_block_into(
+                    row_group_index,
+                    reader.metadata.spectra.array_indices.clone(),
+                )
+                .await?;
             Ok(Some(Self::Point(cache)))
         } else if let Some(query_index) = reader.query_indices.spectrum.data_index.as_chunked() {
             let builder = reader.handle.spectra_data().await?;
-            let builder = AsyncSpectrumChunkReader::new(builder);
+            let builder = AsyncChunkReader::new(builder, BufferContext::Spectrum);
             let cache = builder
                 .load_cache_block(
                     SimpleInterval::new(spectrum_index, spectrum_index + CHUNK_CACHE_BLOCK_SIZE),
@@ -166,37 +181,49 @@ impl DataCacheBlock {
         }
     }
 
-    /// Load a cache block for a [`MzPeakSpectrumFacet`]
-    pub fn load_data_for_facet<T: MzPeakSpectrumFacet>(
-        reader: &T,
+    pub fn load_data_from_parts<
+        T: ChunkReader + 'static,
+        P: BasicQueryIndex + Default,
+        C: BasicQueryIndex + BasicChunkQueryIndex + Default,
+    >(
+        reader: ParquetRecordBatchReaderBuilder<T>,
+        query_index: &GenericDataIndex<P, C>,
+        array_index: Arc<ArrayIndex>,
         row_group_index: usize,
         index: u64,
+        buffer_context: BufferContext,
     ) -> io::Result<Option<Self>> {
-        if let Some(_query_index) = reader.metadata_index().data_index().as_point() {
-            let builder = PointDataReader(reader.data_reader()?, reader.buffer_context());
-            let rg = builder.load_cache_block(reader.data_reader()?, row_group_index)?;
-            let cache = PointDataCacheBlock::new(
-                rg,
-                reader.metadata().array_indices().clone(),
-                row_group_index,
-                None,
-                None,
-                reader.buffer_context(),
-            );
-
+        if let Some(_) = query_index.as_point() {
+            let builder = PointDataReader(reader, buffer_context);
+            let cache = builder.load_cache_block_into(row_group_index, array_index)?;
             Ok(Some(Self::Point(cache)))
-        } else if let Some(query_index) = reader.metadata_index().data_index().as_chunked() {
-            let builder = reader.data_reader()?;
-            let builder = ChunkDataReader::new(builder, reader.buffer_context());
+        } else if let Some(query_index) = query_index.as_chunked() {
+            let builder = ChunkDataReader::new(reader, buffer_context);
             let cache = builder.load_cache_block(
                 SimpleInterval::new(index, index + CHUNK_CACHE_BLOCK_SIZE),
-                reader.metadata().array_indices().clone(),
+                array_index,
                 query_index,
             )?;
             Ok(Some(Self::Chunk(cache)))
         } else {
             Ok(None)
         }
+    }
+
+    /// Load a cache block for a [`MzPeakSpectrumFacet`]
+    pub fn load_data_for_facet<T: MzPeakSpectrumFacet>(
+        reader: &T,
+        row_group_index: usize,
+        index: u64,
+    ) -> io::Result<Option<Self>> {
+        return Self::load_data_from_parts(
+            reader.data_reader()?,
+            reader.metadata_index().data_index(),
+            reader.metadata().array_indices().clone(),
+            row_group_index,
+            index,
+            reader.buffer_context(),
+        );
     }
 }
 
@@ -313,7 +340,11 @@ impl CacheBuffer {
     ///
     /// This will count as "using" the cache block, moving it to the front of the LRU queue
     pub fn get_mut(&mut self, row_group_index: usize, index: u64) -> Option<&mut DataCacheBlock> {
-        if let Some(i) = self.blocks.iter().position(|b| b.contains(row_group_index, index)) {
+        if let Some(i) = self
+            .blocks
+            .iter()
+            .position(|b| b.contains(row_group_index, index))
+        {
             self.move_to_front(i);
             self.blocks.front_mut()
         } else {
@@ -387,7 +418,6 @@ impl CacheBuffer {
     }
 }
 
-
 #[allow(unused)]
 pub trait DataCacheFrontend {
     fn contains(&self, row_group_index: usize, index: u64) -> bool;
@@ -411,7 +441,6 @@ pub trait DataCacheFrontend {
         delta_model: Option<&RegressionDeltaModel<f64>>,
     ) -> io::Result<Option<BinaryArrayMap>>;
 }
-
 
 impl DataCacheFrontend for OneCache {
     fn contains(&self, row_group_index: usize, index: u64) -> bool {
