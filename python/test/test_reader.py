@@ -29,6 +29,8 @@ def common_checks(reader: MzPeakFile, subtests: pytest.Subtests):
         assert len(reader.precursors) == 34
 
         assert reader.file_metadata.keys() == {
+            "cv_list",
+            "version",
             "data_processing_method_list",
             "file_description",
             "instrument_configuration_list",

@@ -430,7 +430,7 @@ MZPeakFile <- R6::R6Class(
       self$spectrum_peak_data <- NULL
 
       spectrum_data_name <- (
-        self$file_index$files |> filter(entity_type == "spectrum", data_kind == "data arrays") |> select(name) |> pull() |> first()
+        self$file_index$files |> filter(entity_type == "spectrum", (data_kind == "data arrays") | (data_kind == "data_arrays")) |> select(name) |> pull() |> first()
       )
       if (!is.na(spectrum_data_name) &&
           self$handle$has_file(spectrum_data_name)) {
@@ -460,7 +460,7 @@ MZPeakFile <- R6::R6Class(
       }
 
       chromatogram_data_name <- (
-        self$file_index$files |> filter(entity_type == "chromatogram", data_kind == "data arrays") |> select(name) |> pull() |> first()
+        self$file_index$files |> filter(entity_type == "chromatogram", (data_kind == "data arrays") | (data_kind == "data_arrays")) |> select(name) |> pull() |> first()
       )
       if (!is.na(chromatogram_data_name) &&
           self$handle$has_file(chromatogram_data_name)) {
@@ -477,7 +477,7 @@ MZPeakFile <- R6::R6Class(
       }
 
       wl_spectrum_data_name <- (
-        self$file_index$files |> filter(entity_type == "wavelength spectrum", data_kind == "data arrays") |> select(name) |> pull() |> first()
+        self$file_index$files |> filter(entity_type == "wavelength spectrum", (data_kind == "data arrays") | (data_kind == "data_arrays")) |> select(name) |> pull() |> first()
       )
       if (!is.na(wl_spectrum_data_name) &&
           self$handle$has_file(wl_spectrum_data_name)) {
@@ -526,7 +526,7 @@ MZPeakFile <- R6::R6Class(
       } else {
         self$spectrum_data$read_spectrum(index)
       }
-    }
+    },
 
     #' @description
     #' Read a spectrum's peaks, if the peak data volume is present, and are stored separately

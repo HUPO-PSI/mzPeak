@@ -14,6 +14,7 @@ use crate::constants::{
 #[derive(Debug, Serialize, DeserializeFromStr, Clone, PartialEq, Eq)]
 pub enum DataKind {
     #[serde(rename = "data arrays")]
+    #[serde(alias = "data_arrays")]
     DataArray,
     #[serde(rename = "peaks")]
     Peaks,

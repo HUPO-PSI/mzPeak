@@ -81,7 +81,7 @@ class DataKindTag(StrEnum):
     @classmethod
     def get(cls, value: str):
         try:
-            return cls(value)
+            return cls(value.replace("_", " "))
         except ValueError:
             return cls.Other
 
