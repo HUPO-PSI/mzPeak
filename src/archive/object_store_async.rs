@@ -399,30 +399,7 @@ impl<T: AsyncArchiveSource + 'static> AsyncArchiveReader<T> {
                 name: name.clone(),
                 entry_type: tp,
             };
-            match tp {
-                MzPeakArchiveType::SpectrumMetadata => {
-                    members.spectrum_metadata = Some(entry);
-                }
-                MzPeakArchiveType::SpectrumDataArrays => {
-                    members.spectrum_data_arrays = Some(entry);
-                }
-                MzPeakArchiveType::SpectrumPeakDataArrays => {
-                    members.peaks_data_arrays = Some(entry)
-                }
-                MzPeakArchiveType::ChromatogramMetadata => {
-                    members.chromatogram_metadata = Some(entry)
-                }
-                MzPeakArchiveType::ChromatogramDataArrays => {
-                    members.chromatogram_data_arrays = Some(entry)
-                }
-                MzPeakArchiveType::WavelengthSpectrumMetadata => {
-                    members.wavelength_metadata = Some(entry);
-                }
-                MzPeakArchiveType::WavelengthSpectrumDataArrays => {
-                    members.wavelength_data_arrays = Some(entry);
-                }
-                MzPeakArchiveType::Other | MzPeakArchiveType::Proprietary => {}
-            }
+            members.add_entry(entry);
         }
         Ok(Self {
             archive,
@@ -454,6 +431,32 @@ impl<T: AsyncArchiveSource + 'static> AsyncArchiveReader<T> {
         &self,
     ) -> io::Result<ParquetRecordBatchStreamBuilder<T::File>> {
         if let Some(meta) = self.members.chromatogram_metadata.as_ref() {
+            self.archive
+                .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap()))
+                .await
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Chromatogram metadata entry not found",
+            ))
+        }
+    }
+
+    pub async fn chromatograms_metadata_precursors(&self) -> io::Result<ParquetRecordBatchStreamBuilder<T::File>> {
+        if let Some(meta) = self.members.chromatogram_precursor_metadata.as_ref() {
+            self.archive
+                .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap()))
+                .await
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Chromatogram metadata entry not found",
+            ))
+        }
+    }
+
+    pub async fn chromatograms_metadata_selected_ions(&self) -> io::Result<ParquetRecordBatchStreamBuilder<T::File>> {
+        if let Some(meta) = self.members.chromatogram_selected_ion_metadata.as_ref() {
             self.archive
                 .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap()))
                 .await
@@ -517,6 +520,42 @@ impl<T: AsyncArchiveSource + 'static> AsyncArchiveReader<T> {
         }
     }
 
+    pub async fn spectrum_metadata_scans(&self) -> io::Result<ParquetRecordBatchStreamBuilder<T::File>> {
+        if let Some(meta) = self.members.spectrum_scan_metadata.as_ref() {
+            self.archive
+                .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap())).await
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Spectrum metadata entry not found",
+            ))
+        }
+    }
+
+    pub async fn spectrum_metadata_precursors(&self) -> io::Result<ParquetRecordBatchStreamBuilder<T::File>> {
+        if let Some(meta) = self.members.spectrum_precursor_metadata.as_ref() {
+            self.archive
+                .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap())).await
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Spectrum metadata entry not found",
+            ))
+        }
+    }
+
+    pub async fn spectrum_metadata_selected_ions(&self) -> io::Result<ParquetRecordBatchStreamBuilder<T::File>> {
+        if let Some(meta) = self.members.spectrum_selected_ion_metadata.as_ref() {
+            self.archive
+                .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap())).await
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Spectrum metadata entry not found",
+            ))
+        }
+    }
+
     pub async fn wavelength_spectrum_data(
         &self,
     ) -> Option<io::Result<ParquetRecordBatchStreamBuilder<T::File>>> {
@@ -540,6 +579,17 @@ impl<T: AsyncArchiveSource + 'static> AsyncArchiveReader<T> {
                     .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap()))
                     .await,
             )
+        } else {
+            None
+        }
+    }
+
+    pub async fn wavelength_spectrum_metadata_scans(&self) -> Option<io::Result<ParquetRecordBatchStreamBuilder<T::File>>> {
+        if let Some(meta) = self.members.wavelength_scan_metadata.as_ref() {
+            Some(self.archive
+                 .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap()))
+                 .await)
+
         } else {
             None
         }
@@ -581,7 +631,7 @@ mod test {
             }
         }
 
-        assert_eq!(handle.file_index().len(), 5);
+        assert_eq!(handle.file_index().len(), 10);
 
         let mut buf = String::new();
         let mut reader = handle.open_stream("mzpeak_index.json").await?;
@@ -616,7 +666,7 @@ mod test {
             }
         }
 
-        assert_eq!(handle.file_index().len(), 5);
+        assert_eq!(handle.file_index().len(), 10);
 
         let mut buf = String::new();
         let mut reader = handle.open_stream("mzpeak_index.json").await?;

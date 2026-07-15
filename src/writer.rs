@@ -19,15 +19,24 @@ use parquet::{
 };
 
 use mzdata::{
-    io::{RandomAccessSpectrumSource, StreamingSpectrumIterator}, meta::{FileMetadataConfig, MSDataFileMetadata}, params::ControlledVocabulary, prelude::*, spectrum::{BinaryArrayMap, Chromatogram, MultiLayerSpectrum, SignalContinuity}
+    io::{RandomAccessSpectrumSource, StreamingSpectrumIterator},
+    meta::{FileMetadataConfig, MSDataFileMetadata},
+    params::ControlledVocabulary,
+    prelude::*,
+    spectrum::{BinaryArrayMap, Chromatogram, MultiLayerSpectrum, SignalContinuity},
 };
 
 use crate::{
-    BufferName, archive::{DataKind, EntityType, FileEntry, MzPeakArchiveType, ZipArchiveWriter}, buffer_descriptors::BufferOverrideTable, constants::{
+    BufferName,
+    archive::{DataKind, EntityType, FileEntry, MzPeakArchiveType, ZipArchiveWriter},
+    buffer_descriptors::BufferOverrideTable,
+    constants::{
         CHROMATOGRAM_COUNT, CHROMATOGRAM_DATA_POINT_COUNT, SPECTRUM_COUNT,
         SPECTRUM_DATA_POINT_COUNT, WAVELENGTH_SPECTRUM_COUNT, WAVELENGTH_SPECTRUM_DATA_ARRAYS_NAME,
-        WAVELENGTH_SPECTRUM_METADATA_NAME,
-    }, param::ControlledVocabularyEntry, peak_series::{ArrayIndex, BufferContext, ToMzPeakDataSeries, array_map_to_schema_arrays}, writer::{base::GenericDataArrayWriter, builder::SpectrumFieldVisitors}
+    },
+    param::ControlledVocabularyEntry,
+    peak_series::{ArrayIndex, BufferContext, ToMzPeakDataSeries, array_map_to_schema_arrays},
+    writer::{base::GenericDataArrayWriter, builder::SpectrumFieldVisitors},
 };
 use crate::{
     chunk_series::{ArrowArrayChunk, ChunkingStrategy},
@@ -335,7 +344,6 @@ pub fn sample_array_types_from_spectrum_source<
         reader.reset();
         fields
     }
-
 }
 
 /// Array type inference from inputs
@@ -396,9 +404,12 @@ impl MzPeakWriterBuilder {
         reader: &mut R,
     ) -> Self {
         let mut point_builder = self.take_or_initialize_peak_builder();
-        for f in
-            sample_array_types_from_spectrum_source(reader, &self.spectrum_overrides(), self.peaks_chunked_encoding.clone(), true)
-        {
+        for f in sample_array_types_from_spectrum_source(
+            reader,
+            &self.spectrum_overrides(),
+            self.peaks_chunked_encoding.clone(),
+            true,
+        ) {
             point_builder = point_builder.add_field(f);
         }
         self.store_peaks_and_profiles_apart(Some(point_builder))
@@ -592,7 +603,11 @@ impl<
         &self.encryption_properties
     }
 
-    fn add_index_metadata(&mut self, key: &str, value: &impl serde::Serialize) -> Result<(), serde_json::Error> {
+    fn add_index_metadata(
+        &mut self,
+        key: &str,
+        value: &impl serde::Serialize,
+    ) -> Result<(), serde_json::Error> {
         if let Some(v) = self.archive_writer.as_mut() {
             v.inner_mut().add_index_metadata(key, value)
         } else {
@@ -748,7 +763,10 @@ impl<
             wavelength_spectrum_metadata_buffer: Default::default(),
             _t: PhantomData,
             encryption_properties,
-            controlled_vocabularies: vec![ControlledVocabulary::MS.into(), ControlledVocabulary::UO.into()],
+            controlled_vocabularies: vec![
+                ControlledVocabulary::MS.into(),
+                ControlledVocabulary::UO.into(),
+            ],
         };
         this.add_spectrum_array_metadata();
         this
@@ -809,13 +827,6 @@ impl<
         Ok(())
     }
 
-    fn flush_spectrum_metadata_records(&mut self) -> io::Result<()> {
-        let arrays = self.spectrum_metadata_buffer.finish();
-        let batch = RecordBatch::from(arrays.as_struct());
-        self.archive_writer.as_mut().unwrap().write(&batch)?;
-        Ok(())
-    }
-
     /// Get the count of waiting spectrum data rows
     pub fn buffered_spectrum_data(&self) -> usize {
         self.spectrum_data_buffers.len()
@@ -825,11 +836,6 @@ impl<
         let batch = RecordBatch::from(arrays.as_struct());
         self.archive_writer.as_mut().unwrap().write(&batch)?;
         Ok(())
-    }
-
-    fn flush_chromatogram_metadata_records(&mut self) -> io::Result<()> {
-        let arrays = self.chromatogram_metadata_buffer.finish();
-        self.write_struct_arrays(arrays)
     }
 
     fn flush_chromatogram_data_records(&mut self) -> io::Result<()> {
@@ -848,6 +854,16 @@ impl<
             }
         }
         Ok(())
+    }
+
+    fn wrap_writer(writer: ZipArchiveWriter<W>, metadata_fields: Arc<Schema>, encryption_props: Option<Arc<FileEncryptionProperties>> ) -> io::Result<ArrowWriter<ZipArchiveWriter<W>>> {
+        Ok(ArrowWriter::try_new_with_options(
+            writer,
+            metadata_fields.clone(),
+            ArrowWriterOptions::new().with_properties(
+                Self::spectrum_metadata_writer_props(&metadata_fields, encryption_props),
+            ),
+        )?)
     }
 
     fn finish_parquet_inner(
@@ -879,55 +895,123 @@ impl<
                 )?;
             }
 
+            // ----------------------------------------------
+
             writer.start_spectrum_metadata().unwrap();
-            let metadata_fields = self.spectrum_metadata_buffer.schema();
-            let encryption_props = self
-                .encryption_properties
-                .get(
-                    FileEntry::from(MzPeakArchiveType::SpectrumMetadata)
-                        .name
-                        .as_str(),
-                )
+            let metadata_fields = self.spectrum_metadata_buffer.spectrum().schema();
+            let encryption_props = writer
+                .current_entry()
+                .and_then(|v| self.encryption_properties.get(&v.name))
                 .cloned();
-            self.archive_writer = Some(ArrowWriter::try_new_with_options(
-                writer,
-                metadata_fields.clone(),
-                ArrowWriterOptions::new().with_properties(Self::spectrum_metadata_writer_props(
-                    &metadata_fields,
-                    encryption_props,
-                )),
-            )?);
-            self.flush_spectrum_metadata_records()?;
+
+            writer.current_entry_mut().unwrap().column_mapping = self
+                .spectrum_metadata_buffer
+                .spectrum_metadata_columns()
+                .into();
+            self.archive_writer = Some(Self::wrap_writer(writer, metadata_fields, encryption_props)?);
+            let s = self.spectrum_metadata_buffer.finish_spectrum();
+            self.write_struct_arrays(s)?;
             self.append_metadata();
             self.append_key_value_metadata(
                 SPECTRUM_COUNT.into(),
                 Some(self.spectrum_counter().to_string()),
             );
-            self.append_key_value_metadata(
-                SPECTRUM_DATA_POINT_COUNT.into(),
-                Some(self.spectrum_data_buffers.point_count().to_string()),
-            );
-
             writer = self.archive_writer.take().unwrap().into_inner()?;
 
+            // ----------------------------------------------
+
+            writer
+                .start_for_entry(FileEntry::from(MzPeakArchiveType::SpectrumMetadataScans))
+                .unwrap();
+            writer.current_entry_mut().unwrap().column_mapping =
+                self.spectrum_metadata_buffer.scan_metadata_columns().into();
+
+            let metadata_fields = self.spectrum_metadata_buffer.scan().schema();
+
+            let encryption_props = writer
+                .current_entry()
+                .and_then(|v| self.encryption_properties.get(&v.name))
+                .cloned();
+
+            self.archive_writer = Some(Self::wrap_writer(writer, metadata_fields, encryption_props)?);
+
+            let s = self.spectrum_metadata_buffer.finish_scan();
+            self.write_struct_arrays(s)?;
+            self.append_metadata();
+            self.append_key_value_metadata(
+                SPECTRUM_COUNT.into(),
+                Some(self.spectrum_counter().to_string()),
+            );
+            writer = self.archive_writer.take().unwrap().into_inner()?;
+
+            // ----------------------------------------------
+
+            writer
+                .start_for_entry(FileEntry::from(MzPeakArchiveType::SpectrumMetadataPrecursors))
+                .unwrap();
+            writer.current_entry_mut().unwrap().column_mapping =
+                self.spectrum_metadata_buffer.precursor_metadata_columns().into();
+
+            let metadata_fields = self.spectrum_metadata_buffer.precursor().schema();
+
+            let encryption_props = writer
+                .current_entry()
+                .and_then(|v| self.encryption_properties.get(&v.name))
+                .cloned();
+            self.archive_writer = Some(Self::wrap_writer(writer, metadata_fields, encryption_props)?);
+
+            let s = self.spectrum_metadata_buffer.finish_precursor();
+            self.write_struct_arrays(s)?;
+            self.append_metadata();
+            self.append_key_value_metadata(
+                SPECTRUM_COUNT.into(),
+                Some(self.spectrum_counter().to_string()),
+            );
+            writer = self.archive_writer.take().unwrap().into_inner()?;
+
+            // ----------------------------------------------
+
+            writer
+                .start_for_entry(FileEntry::from(MzPeakArchiveType::SpectrumMetadataSelectedIons))
+                .unwrap();
+            writer.current_entry_mut().unwrap().column_mapping =
+                self.spectrum_metadata_buffer.selected_ion_metadata_columns().into();
+
+            let metadata_fields = self.spectrum_metadata_buffer.selected_ion().schema();
+
+            let encryption_props = writer
+                .current_entry()
+                .and_then(|v| self.encryption_properties.get(&v.name))
+                .cloned();
+            self.archive_writer = Some(Self::wrap_writer(writer, metadata_fields, encryption_props)?);
+
+            let s = self.spectrum_metadata_buffer.finish_selected_ion();
+            self.write_struct_arrays(s)?;
+            self.append_metadata();
+            self.append_key_value_metadata(
+                SPECTRUM_COUNT.into(),
+                Some(self.spectrum_counter().to_string()),
+            );
+            writer = self.archive_writer.take().unwrap().into_inner()?;
+
+            // ----------------------------------------------
+
             if !self.wavelength_spectrum_metadata_buffer.is_empty() {
+
+                // ----------------------------------------------
+
+                let mut entry = FileEntry::from(MzPeakArchiveType::WavelengthSpectrumMetadata);
+                entry.column_mapping = self.wavelength_spectrum_metadata_buffer.spectrum_metadata_columns().into();
+
                 let encryption_props = self
                     .encryption_properties
-                    .get(
-                        FileEntry::from(MzPeakArchiveType::WavelengthSpectrumMetadata)
-                            .name
-                            .as_str(),
-                    )
+                    .get(entry.name.as_str())
                     .cloned();
-                let entry = FileEntry::new(
-                    WAVELENGTH_SPECTRUM_METADATA_NAME.into(),
-                    EntityType::WavelengthSpectrum,
-                    DataKind::Metadata,
-                );
+
                 writer
                     .start_for_entry(entry)
                     .map_err(|e| io::Error::other(e))?;
-                let metadata_fields = self.wavelength_spectrum_metadata_buffer.schema();
+                let metadata_fields = self.wavelength_spectrum_metadata_buffer.spectrum().schema();
                 self.archive_writer = Some(ArrowWriter::try_new_with_options(
                     writer,
                     metadata_fields.clone(),
@@ -954,9 +1038,44 @@ impl<
 
                 self.append_metadata();
 
-                let arrays = self.wavelength_spectrum_metadata_buffer.finish();
+                let arrays = self.wavelength_spectrum_metadata_buffer.finish_spectrum();
                 self.write_struct_arrays(arrays)?;
                 writer = self.archive_writer.take().unwrap().into_inner()?;
+
+                // ----------------------------------------------
+
+                let mut entry = FileEntry::from(MzPeakArchiveType::WavelengthSpectrumMetadataScans);
+                entry.column_mapping = self.wavelength_spectrum_metadata_buffer.scan_metadata_columns().into();
+
+                let encryption_props = self
+                    .encryption_properties
+                    .get(entry.name.as_str())
+                    .cloned();
+
+                writer
+                    .start_for_entry(entry)
+                    .map_err(|e| io::Error::other(e))?;
+                let metadata_fields = self.wavelength_spectrum_metadata_buffer.scan().schema();
+                self.archive_writer = Some(ArrowWriter::try_new_with_options(
+                    writer,
+                    metadata_fields.clone(),
+                    ArrowWriterOptions::new().with_properties(
+                        Self::spectrum_metadata_writer_props(&metadata_fields, encryption_props),
+                    ),
+                )?);
+
+                self.append_key_value_metadata(
+                    WAVELENGTH_SPECTRUM_COUNT.into(),
+                    Some(self.wavelength_spectrum_metadata_buffer.len().to_string()),
+                );
+
+                self.append_metadata();
+
+                let arrays = self.wavelength_spectrum_metadata_buffer.finish_scan();
+                self.write_struct_arrays(arrays)?;
+                writer = self.archive_writer.take().unwrap().into_inner()?;
+
+                // ----------------------------------------------
 
                 let entry = FileEntry::new(
                     WAVELENGTH_SPECTRUM_DATA_ARRAYS_NAME.into(),
@@ -1028,24 +1147,21 @@ impl<
             }
 
             if !self.chromatogram_metadata_buffer.is_empty() {
+
+                // ----------------------------------------------
+
                 writer.start_chromatogram_metadata().unwrap();
-                let metadata_fields = self.chromatogram_metadata_buffer.schema();
-                let encryption_props = self
-                    .encryption_properties
-                    .get(
-                        FileEntry::from(MzPeakArchiveType::ChromatogramMetadata)
-                            .name
-                            .as_str(),
-                    )
-                    .cloned();
-                self.archive_writer = Some(ArrowWriter::try_new_with_options(
-                    writer,
-                    metadata_fields.clone(),
-                    ArrowWriterOptions::new().with_properties(
-                        Self::spectrum_metadata_writer_props(&metadata_fields, encryption_props),
-                    ),
-                )?);
-                self.flush_chromatogram_metadata_records()?;
+                let metadata_fields = self.chromatogram_metadata_buffer.chromatogram().schema();
+                writer.current_entry_mut().unwrap().column_mapping = self.chromatogram_metadata_buffer.chromatogram_metadata_columns().into();
+                let encryption_props = writer
+                    .current_entry()
+                    .and_then(|v| self.encryption_properties.get(&v.name).cloned());
+
+                self.archive_writer = Some(Self::wrap_writer(writer, metadata_fields, encryption_props)?);
+
+                let s = self.chromatogram_metadata_buffer.finish_chromatogram();
+                self.write_struct_arrays(s)?;
+
                 self.append_key_value_metadata(
                     CHROMATOGRAM_COUNT.into(),
                     Some(self.chromatogram_counter().to_string()),
@@ -1055,15 +1171,51 @@ impl<
                     Some(self.chromatogram_data_buffers.point_count().to_string()),
                 );
                 writer = self.archive_writer.take().unwrap().into_inner()?;
-                let encryption_props = self
-                    .encryption_properties
-                    .get(
-                        FileEntry::from(MzPeakArchiveType::ChromatogramDataArrays)
-                            .name
-                            .as_str(),
-                    )
-                    .cloned();
+
+                // ----------------------------------------------
+
+                let mut entry = FileEntry::from(MzPeakArchiveType::ChromatogramMetadataPrecursors);
+                entry.column_mapping = self.chromatogram_metadata_buffer.precursor_metadata_columns().into();
+                let encryption_props = self.encryption_properties.get(&entry.name).cloned();
+
+                writer.start_for_entry(entry).unwrap();
+
+                let metadata_fields = self.chromatogram_metadata_buffer.precursor().schema();
+                self.archive_writer = Some(Self::wrap_writer(writer, metadata_fields, encryption_props)?);
+                let s = self.chromatogram_metadata_buffer.finish_precursor();
+                self.write_struct_arrays(s)?;
+
+                self.append_key_value_metadata(
+                    CHROMATOGRAM_COUNT.into(),
+                    Some(self.chromatogram_counter().to_string()),
+                );
+                writer = self.archive_writer.take().unwrap().into_inner()?;
+
+                // ----------------------------------------------
+
+                let mut entry = FileEntry::from(MzPeakArchiveType::ChromatogramMetadataSelectedIons);
+                entry.column_mapping = self.chromatogram_metadata_buffer.selected_ion_metadata_columns().into();
+                let encryption_props = self.encryption_properties.get(&entry.name).cloned();
+
+                writer.start_for_entry(entry).unwrap();
+
+                let metadata_fields = self.chromatogram_metadata_buffer.selected_ion().schema();
+                self.archive_writer = Some(Self::wrap_writer(writer, metadata_fields, encryption_props)?);
+
+                let s = self.chromatogram_metadata_buffer.finish_selected_ion();
+                self.write_struct_arrays(s)?;
+
+                self.append_key_value_metadata(
+                    CHROMATOGRAM_COUNT.into(),
+                    Some(self.chromatogram_counter().to_string()),
+                );
+                writer = self.archive_writer.take().unwrap().into_inner()?;
+
+                // ----------------------------------------------
+
                 writer.start_chromatogram_data().unwrap();
+                let encryption_props = writer.current_entry().and_then(|v| self.encryption_properties.get(&v.name).cloned());
+
                 self.archive_writer = Some(ArrowWriter::try_new_with_options(
                     writer,
                     self.chromatogram_data_buffers.schema().clone(),
@@ -1329,7 +1481,7 @@ mod test {
                 .iter()
                 .all(|z| *z == 0)
         );
-        assert_eq!(new_reader.list_all_files_in_archive().len(), 8);
+        assert_eq!(new_reader.list_all_files_in_archive().len(), 13);
         let mut buf = Vec::new();
         new_reader
             .open_stream("example.config")?
@@ -1393,14 +1545,7 @@ mod test {
         let wl_meta_entry = wl_meta_entry.unwrap();
         let batches = new_reader.open_parquet(&wl_meta_entry.name)?.build()?;
         for batch in batches {
-            let batch = batch.unwrap();
-            let spectra = batch.column(0).as_struct();
-            let indices = spectra.column(0).as_primitive::<UInt64Type>();
-            assert_eq!(indices.len(), 520);
-            assert_eq!(arrow::compute::min(indices).unwrap(), 0);
-            assert_eq!(arrow::compute::max(indices).unwrap(), 519);
-
-            let spectra = batch.column(1).as_struct();
+            let spectra = batch.unwrap();
             let indices = spectra.column(0).as_primitive::<UInt64Type>();
             assert_eq!(indices.len(), 520);
             assert_eq!(arrow::compute::min(indices).unwrap(), 0);
@@ -1408,7 +1553,11 @@ mod test {
         }
 
         let facet = new_reader.wavelength_facet(1).unwrap();
-        let entry = facet.metadata().array_indices.get(&ArrayType::WavelengthArray).unwrap();
+        let entry = facet
+            .metadata()
+            .array_indices
+            .get(&ArrayType::WavelengthArray)
+            .unwrap();
         assert_eq!(entry.sorting_rank, Some(0));
 
         let n = new_reader.len_wavelength_spectra();

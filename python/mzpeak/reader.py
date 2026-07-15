@@ -3,10 +3,10 @@ import json
 import zipfile
 import zlib
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Iterable, Sequence
-from typing import IO, Any, Iterator, Optional, TYPE_CHECKING
+from typing import IO, Any, Iterator, Optional, TYPE_CHECKING, Callable
 from enum import Enum, auto
 
 import numpy as np
@@ -18,8 +18,8 @@ import pyarrow as pa
 from pyarrow import parquet as pq
 
 from .mz_reader import _DataBatchIter, MzPeakArrayDataReader, _SpectrumArrays
-from .file_index import FileIndex, DataKind, EntityType
-from .util import _SeekableIter, OntologyMapper, DTYPES
+from .file_index import FileEntry, FileIndex, DataKind, EntityType
+from .util import _SeekableIter, OntologyMapper, DTYPES, _NameCleaningNode
 
 try:
     has_upath = True
@@ -158,10 +158,11 @@ def _format_param(param: dict):
     return param
 
 
-def _clean_frame(df: pd.DataFrame):
+def _clean_frame(df: pd.DataFrame, clean_columns: bool = True):
     columns = df.columns[~df.isna().all(axis=0)]
     df = df[columns]
-    df = CV_MAPPER.clean_column_names(df)
+    if clean_columns:
+        df = CV_MAPPER.clean_column_names(df)
     return df
 
 
@@ -360,7 +361,6 @@ class _PrecursorReadMixin:
     precursors: pd.DataFrame
     selected_ions: pd.DataFrame
 
-
     def _read_precursors(self):
         blocks = []
         if self.precursor_index_i is not None:
@@ -444,6 +444,367 @@ class _PrecursorReadMixin:
         spec["precursors"] = precursors_of.to_dict("records")
 
 
+@dataclass
+class MzPeakNamespaceAggregation:
+    entity_type: EntityType
+    metadata: pq.ParquetFile | None = None
+    scans: pq.ParquetFile | None = None
+    precursors: pq.ParquetFile | None = None
+    selected_ions: pq.ParquetFile | None = None
+    products: pq.ParquetFile | None = None
+    file_index: FileIndex | None = field(default=None, repr=False)
+
+    @property
+    def parquet_metadata(self) -> pq.FileMetaData | None:
+        if self.metadata is None:
+            return None
+        return self.metadata.metadata
+
+    def is_concatenated_storage(self):
+        """
+        Test if all the tables are all together in a single Parquet file.
+        """
+        has_main = self.metadata is not None
+        not_has_support = not (self.scans is not None or
+                               self.precursors is not None or
+                               self.selected_ions is not None or
+                               self.products is not None)
+        return has_main and not_has_support
+
+    def storage_reader(self):
+        if self.is_concatenated_storage():
+            return ConcatenatedStorage(self.metadata)
+        else:
+            return MultiFileStorage(self, self.entity_type)
+
+
+class StorageStrategyBase:
+    def _read_spectra(self) -> tuple[pd.DataFrame, pd.Series]:
+        raise NotImplementedError()
+
+    def _read_chromatograms(self) -> tuple[pd.DataFrame, pd.Series]:
+        raise NotImplementedError()
+
+    def _read_scans(self) -> pd.DataFrame:
+        raise NotImplementedError()
+
+    def _read_precursors(self) -> pd.DataFrame:
+        raise NotImplementedError()
+
+    def _read_selected_ions(self) -> pd.DataFrame:
+        raise NotImplementedError()
+
+    def _read_products(self) -> pd.DataFrame:
+        raise NotImplementedError()
+
+
+class MultiFileStorage(StorageStrategyBase):
+    namespaces: MzPeakNamespaceAggregation
+    entity_type: EntityType
+
+    def __init__(self, namespaces: MzPeakNamespaceAggregation, entity_type: EntityType):
+        self.namespaces = namespaces
+        self.entity_type = entity_type
+
+    def find_file_index_entry(self, entity_type: EntityType, data_kind: DataKind) -> FileEntry | None:
+        return self.namespaces.file_index.find(entity_type, data_kind)
+
+    def _read_spectra(self):
+        if self.namespaces.metadata is None:
+            df = pd.DataFrame(
+                [],
+                columns=[
+                    "index",
+                    "id",
+                ],
+            )
+            id_index = pd.Series()
+            return (df, id_index)
+
+        bat = self.namespaces.metadata.read()
+        index_entry = self.find_file_index_entry(self.entity_type, DataKind.Metadata)
+
+        name_map = index_entry.renaming_map()
+        bat = _NameCleaningNode.clean_table(bat, mapper=lambda x: name_map.get(x, x))
+
+        spectra = _clean_frame(
+            bat.to_pandas(types_mapper=pd.ArrowDtype).set_index("index"),
+            clean_columns=False,
+        )
+
+        if (np.diff(spectra.index) == 1).all():
+            spectra.index = pd.RangeIndex(
+                spectra.index[0],
+                spectra.index[-1] + 1,
+                name="index",
+            )
+        if "id" in spectra.columns:
+            id_index = spectra[["id"]].reset_index().set_index("id")["index"]
+        else:
+            id_index = pd.Series()
+        return spectra, id_index
+
+    def _read_scans(self):
+        if self.namespaces.scans is None:
+            return pd.DataFrame(
+                [],
+                columns=[
+                    "source_index",
+                ],
+            )
+        bat = self.namespaces.scans.read()
+        if "spectrum_index" in bat.column_names:
+            index_col = "spectrum_index"
+        else:
+            index_col = "source_index"
+
+        index_entry = self.find_file_index_entry(self.entity_type, DataKind.Scans)
+        name_map = index_entry.renaming_map()
+        bat = _NameCleaningNode.clean_table(bat, mapper=lambda x: name_map.get(x, x))
+
+        scans = _clean_frame(
+            bat.to_pandas(types_mapper=pd.ArrowDtype).set_index(index_col),
+            clean_columns=False,
+        )
+        if (np.diff(scans.index) == 1).all():
+            scans.index = pd.RangeIndex(
+                scans.index[0],
+                scans.index[-1] + 1,
+            )
+            scans.index.name = "source_index"
+        return scans
+
+    def _read_precursors(self):
+        if self.namespaces.precursors:
+            bat = self.namespaces.precursors.read()
+            if "spectrum_index" in bat.column_names:
+                index_col = "spectrum_index"
+            else:
+                index_col = "source_index"
+
+            index_entry = self.find_file_index_entry(self.entity_type, DataKind.Precursors)
+            name_map = index_entry.renaming_map()
+            bat = _NameCleaningNode.clean_table(bat, mapper=lambda x: name_map.get(x, x))
+
+            precursors = _clean_frame(
+                bat.to_pandas(types_mapper=pd.ArrowDtype).set_index(index_col),
+                clean_columns=False,
+            )
+
+            return precursors
+        else:
+            return pd.DataFrame(
+                [],
+                columns=[
+                    "source_index",
+                    "precursor_index",
+                ],
+            )
+
+    def _read_selected_ions(self):
+        if self.namespaces.selected_ions:
+            bat = self.namespaces.selected_ions.read()
+            if "spectrum_index" in bat.column_names:
+                index_col = "spectrum_index"
+            else:
+                index_col = "source_index"
+
+            index_entry = self.find_file_index_entry(self.entity_type, DataKind.SelectedIons)
+            name_map = index_entry.renaming_map()
+            bat = _NameCleaningNode.clean_table(
+                bat, mapper=lambda x: name_map.get(x, x)
+            )
+
+            selected_ions = _clean_frame(
+                bat.to_pandas(types_mapper=pd.ArrowDtype).set_index(index_col),
+                clean_columns=False,
+            )
+            return selected_ions
+        else:
+            return pd.DataFrame(
+                [],
+                columns=[
+                    "source_index",
+                    "precursor_index",
+                ],
+            )
+
+    def _read_chromatograms(self):
+        return self._read_spectra()
+
+
+class ConcatenatedStorage(_PrecursorReadMixin, StorageStrategyBase):
+    spectrum_index_i: int
+    chromatogram_index_i : int
+    scan_index_i: int
+    precursor_index_i: int
+    selected_ion_i: int
+
+    handle: pq.ParquetFile
+    meta: pq.FileMetaData
+
+    def __init__(self, handle: pq.ParquetFile):
+        self.handle = handle
+        self.meta = handle.metadata
+        self._infer_schema_idx()
+
+    def _infer_schema_idx(self):
+        self.selected_ion_i = None
+        self.precursor_index_i = None
+        self.scan_index_i = None
+        self.spectrum_index_i = None
+        self.chromatogram_index_i = None
+        if self.meta.num_row_groups:
+            rg = self.meta.row_group(0)
+            for i in range(rg.num_columns):
+                col = rg.column(i)
+                if col.path_in_schema == "spectrum.index":
+                    self.spectrum_index_i = i
+                elif col.path_in_schema in ("scan.spectrum_index", "scan.source_index"):
+                    self.scan_index_i = i
+                elif col.path_in_schema in (
+                    "precursor.spectrum_index",
+                    "precursor.source_index",
+                ):
+                    self.precursor_index_i = i
+                elif col.path_in_schema in (
+                    "selected_ion.spectrum_index",
+                    "selected_ion.source_index",
+                ):
+                    self.selected_ion_i = i
+                elif col.path_in_schema == "chromataogram.index":
+                    self.chromatogram_index_i = i
+
+    def _read_spectra(self):
+        blocks = []
+        if self.spectrum_index_i is not None:
+            for i in range(self.meta.num_row_groups):
+                rg = self.meta.row_group(i)
+                col_idx = rg.column(self.spectrum_index_i)
+                if col_idx.statistics and col_idx.statistics.has_min_max:
+                    table = self.handle.read_row_group(i, columns=["spectrum"])
+                    bats = table["spectrum"].chunks
+                    for bat in bats:
+                        # TODO: filter or slice this if there *are* nulls, otherwise avoid copying
+                        blocks.append(bat.filter(bat.field(0).is_valid()))
+
+        if not blocks:
+            spectra = pd.DataFrame(
+                [],
+                columns=[
+                    "index",
+                    "id",
+                ],
+            )
+        else:
+            bat = pa.Table.from_struct_array(pa.chunked_array(blocks))
+            bat = CV_MAPPER.clean_schema(bat)
+            spectra = _clean_frame(
+                bat.to_pandas(types_mapper=pd.ArrowDtype).set_index("index")
+            )
+            if (np.diff(spectra.index) == 1).all():
+                spectra.index = pd.RangeIndex(
+                    spectra.index[0],
+                    spectra.index[-1] + 1,
+                    name="index",
+                )
+        if "id" in spectra.columns:
+            id_index = spectra[["id"]].reset_index().set_index("id")["index"]
+        else:
+            id_index = pd.Series()
+        return spectra, id_index
+
+    def _read_scans(self):
+        blocks = []
+        if self.scan_index_i is not None:
+            for i in range(self.meta.num_row_groups):
+                rg = self.meta.row_group(i)
+                col_idx = rg.column(self.scan_index_i)
+                if col_idx.statistics and col_idx.statistics.has_min_max:
+                    table = self.handle.read_row_group(i, columns=["scan"])
+                    bats = table["scan"].chunks
+                    for bat in bats:
+                        blocks.append(bat.filter(bat.field(0).is_valid()))
+
+        if blocks:
+            bat = pa.Table.from_struct_array(pa.chunked_array(blocks))
+            if "spectrum_index" in bat.column_names:
+                index_col = "spectrum_index"
+            else:
+                index_col = "source_index"
+            bat = CV_MAPPER.clean_schema(bat)
+            scans = _clean_frame(
+                bat.to_pandas(types_mapper=pd.ArrowDtype).set_index(index_col)
+            )
+            if (np.diff(scans.index) == 1).all():
+                scans.index = pd.RangeIndex(
+                    scans.index[0],
+                    scans.index[-1] + 1,
+                )
+                scans.index.name = "source_index"
+        else:
+            scans = pd.DataFrame(
+                [],
+                columns=[
+                    "source_index",
+                ],
+            )
+        return scans
+
+    def _read_chromatograms(self):
+        if self.chromatogram_index_i is None:
+            chromatograms = pd.DataFrame(
+                [],
+                columns=[
+                    "index",
+                    "id",
+                ],
+            )
+            id_index = pd.Series()
+            return chromatograms, id_index
+
+        chromatograms = []
+        for i in range(self.meta.num_row_groups):
+            rg = self.meta.row_group(i)
+            col_idx = rg.column(self.chromatogram_index_i)
+            if col_idx.statistics and col_idx.statistics.has_min_max:
+                table = self.handle.read_row_group(i, columns=["chromatogram"])
+                bats = table["chromatogram"].chunks
+                for bat in bats:
+                    chromatograms.append(bat.filter(bat.field(0).is_valid()))
+
+        if not chromatograms:
+            chromatograms = pd.DataFrame(
+                [],
+                columns=[
+                    "index",
+                    "id",
+                ],
+            )
+        else:
+            bat = pa.Table.from_struct_array(pa.chunked_array(chromatograms))
+            bat = CV_MAPPER.clean_schema(bat)
+            chromatograms = _clean_frame(
+                bat.to_pandas(types_mapper=pd.ArrowDtype).set_index("index")
+            )
+
+        if "id" in chromatograms.columns:
+            id_index = (
+                chromatograms[["id"]].reset_index().set_index("id")["index"]
+            )
+        else:
+            id_index = pd.Series()
+        return chromatograms, id_index
+
+    def _read_precursors(self):
+        super()._read_precursors()
+        return self.precursors
+
+    def _read_selected_ions(self):
+        super()._read_selected_ions()
+        return self.selected_ions
+
+
 class MzPeakSpectrumMetadataReader(_PrecursorReadMixin, _DataPointCountMixin):
     """
     A reader for spectrum metadata in an mzPeak file.
@@ -471,15 +832,7 @@ class MzPeakSpectrumMetadataReader(_PrecursorReadMixin, _DataPointCountMixin):
         A data frame holding scan-level metadata like scan start time, injection time, filter strings
         and scan ranges.
     """
-    handle: pq.ParquetFile
-    meta: pq.FileMetaData
-    num_spectra: int
-    num_spectrum_points: int
-
-    spectrum_index_i: int
-    scan_index_i: int
-    precursor_index_i: int
-    selected_ion_i: int
+    namespace: MzPeakNamespaceAggregation
 
     id_index: pd.Series
     spectra: pd.DataFrame
@@ -487,33 +840,17 @@ class MzPeakSpectrumMetadataReader(_PrecursorReadMixin, _DataPointCountMixin):
     precursors: pd.DataFrame
     selected_ions: pd.DataFrame
 
-    def __init__(self, handle: pq.ParquetFile):
-        if not isinstance(handle, pq.ParquetFile):
-            handle = pq.ParquetFile(handle)
-        self.handle = handle
-        self.meta = handle.metadata
+    def __init__(self, namespace: MzPeakNamespaceAggregation):
+        self.namespace = namespace
+        storage = self.namespace.storage_reader()
+        self.spectra, self.id_index = storage._read_spectra()
+        self.scans = storage._read_scans()
+        self.precursors = storage._read_precursors()
+        self.selected_ions = storage._read_selected_ions()
 
-        self.num_spectra = int(
-            [
-                v
-                for k, v in handle.metadata.metadata.items()
-                if k.endswith(b"spectrum_count")
-            ][0]
-        )
-
-        self.num_spectrum_points = int(
-            [
-                v
-                for k, v in handle.metadata.metadata.items()
-                if k.endswith(b"spectrum_data_point_count")
-            ][0]
-        )
-
-        self._infer_schema_idx()
-        self._read_spectra()
-        self._read_scans()
-        self._read_precursors()
-        self._read_selected_ions()
+    @property
+    def meta(self) -> pq.FileMetaData:
+        return self.namespace.parquet_metadata
 
     def extract_tic(self):
         """
@@ -549,99 +886,6 @@ class MzPeakSpectrumMetadataReader(_PrecursorReadMixin, _DataPointCountMixin):
             self.spectra["base peak intensity"]
         )
 
-    def _infer_schema_idx(self):
-        self.selected_ion_i = None
-        self.precursor_index_i = None
-        self.scan_index_i = None
-        self.spectrum_index_i = None
-        if self.meta.num_row_groups:
-            rg = self.meta.row_group(0)
-            for i in range(rg.num_columns):
-                col = rg.column(i)
-                if col.path_in_schema == "spectrum.index":
-                    self.spectrum_index_i = i
-                elif col.path_in_schema in ("scan.spectrum_index", "scan.source_index"):
-                    self.scan_index_i = i
-                elif col.path_in_schema in (
-                    "precursor.spectrum_index",
-                    "precursor.source_index",
-                ):
-                    self.precursor_index_i = i
-                elif col.path_in_schema in (
-                    "selected_ion.spectrum_index",
-                    "selected_ion.source_index",
-                ):
-                    self.selected_ion_i = i
-
-    def _read_spectra(self):
-        blocks = []
-        if self.spectrum_index_i is not None:
-            for i in range(self.meta.num_row_groups):
-                rg = self.meta.row_group(i)
-                col_idx = rg.column(self.spectrum_index_i)
-                if col_idx.statistics and col_idx.statistics.has_min_max:
-                    table = self.handle.read_row_group(i, columns=["spectrum"])
-                    bats = table["spectrum"].chunks
-                    for bat in bats:
-                        # TODO: filter or slice this if there *are* nulls, otherwise avoid copying
-                        blocks.append(bat.filter(bat.field(0).is_valid()))
-
-        if not blocks:
-            self.spectra = pd.DataFrame(
-                [],
-                columns=[
-                    "index",
-                    "id",
-                ],
-            )
-        else:
-            bat = pa.Table.from_struct_array(pa.chunked_array(blocks))
-            bat = CV_MAPPER.clean_schema(bat)
-            self.spectra = _clean_frame(
-                bat.to_pandas(types_mapper=pd.ArrowDtype).set_index("index")
-            )
-            if (np.diff(self.spectra.index) == 1).all():
-                self.spectra.index = pd.RangeIndex(
-                    self.spectra.index[0],
-                    self.spectra.index[-1] + 1,
-                    name="index",
-                )
-        self.id_index = self.spectra[["id"]].reset_index().set_index("id")["index"]
-
-    def _read_scans(self):
-        blocks = []
-        if self.scan_index_i is not None:
-            for i in range(self.meta.num_row_groups):
-                rg = self.meta.row_group(i)
-                col_idx = rg.column(self.scan_index_i)
-                if col_idx.statistics and col_idx.statistics.has_min_max:
-                    table = self.handle.read_row_group(i, columns=["scan"])
-                    bats = table["scan"].chunks
-                    for bat in bats:
-                        blocks.append(bat.filter(bat.field(0).is_valid()))
-
-        if blocks:
-            bat = pa.Table.from_struct_array(pa.chunked_array(blocks))
-            if "spectrum_index" in bat.column_names:
-                index_col = "spectrum_index"
-            else:
-                index_col = "source_index"
-            bat = CV_MAPPER.clean_schema(bat)
-            self.scans = _clean_frame(bat.to_pandas(types_mapper=pd.ArrowDtype).set_index(index_col))
-            if (np.diff(self.scans.index) == 1).all():
-                self.scans.index = pd.RangeIndex(
-                    self.scans.index[0],
-                    self.scans.index[-1] + 1,
-                )
-                self.scans.index.name = "source_index"
-        else:
-            self.scans = pd.DataFrame(
-                [],
-                columns=[
-                    "source_index",
-                ],
-            )
-
     def __getitem__(self, i: int | str):
         if isinstance(i, str):
             i = self.id_index[i]
@@ -674,7 +918,7 @@ class MzPeakSpectrumMetadataReader(_PrecursorReadMixin, _DataPointCountMixin):
         return self.spectra.index.size
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({self.handle})"
+        return f"{self.__class__.__name__}({self.namespace})"
 
     def _table(self) -> pd.DataFrame:
         return self.spectra
@@ -711,33 +955,19 @@ class MzPeakChromatogramMetadataReader(_PrecursorReadMixin, _DataPointCountMixin
         A data frame holding selected ions connected to precursors and chromatograms including selected
         ion m/z, charge, intensity, and possibly ion mobility.
     """
-    handle: pq.ParquetFile
-    meta: pq.FileMetaData
-    num_chromatograms: int
-    num_chromatogram_points: int
-
-    chromatogram_index_i: int
-    precursor_index_i: int
-    selected_ion_i: int
+    namespace: MzPeakNamespaceAggregation
 
     id_index: pd.Series
     chromatograms: pd.DataFrame
     precursors: pd.DataFrame
     selected_ions: pd.DataFrame
 
-    def __init__(self, handle: pq.ParquetFile):
-        if not isinstance(handle, pq.ParquetFile):
-            handle = pq.ParquetFile(handle)
-        self.handle = handle
-        self.meta = handle.metadata
-        self.num_chromatograms = int(handle.metadata.metadata[b"chromatogram_count"])
-        self.num_chromatogram_points = int(
-            handle.metadata.metadata[b"chromatogram_data_point_count"]
-        )
-        self._infer_schema_idx()
-        self._read_chromatograms()
-        self._read_precursors()
-        self._read_selected_ions()
+    def __init__(self, namespace: MzPeakNamespaceAggregation):
+        self.namespace = namespace
+        storage = self.namespace.storage_reader()
+        self.chromatograms, self.id_index = storage._read_chromatograms()
+        self.precursors = storage._read_precursors()
+        self.selected_ions = storage._read_selected_ions()
 
     def _infer_schema_idx(self):
         rg = self.meta.row_group(0)
@@ -779,9 +1009,12 @@ class MzPeakChromatogramMetadataReader(_PrecursorReadMixin, _DataPointCountMixin
             bat = pa.Table.from_struct_array(pa.chunked_array(chromatograms))
             bat = CV_MAPPER.clean_schema(bat)
             self.chromatograms = _clean_frame(bat.to_pandas(types_mapper=pd.ArrowDtype).set_index("index"))
-        self.id_index = (
-            self.chromatograms[["id"]].reset_index().set_index("id")["index"]
-        )
+        if 'id' in self.chromatograms.columns:
+            self.id_index = (
+                self.chromatograms[["id"]].reset_index().set_index("id")["index"]
+            )
+        else:
+            self.id_index = pd.Series()
 
     def _table(self) -> pd.DataFrame:
         return self.chromatograms
@@ -1033,15 +1266,27 @@ class MzPeakFile(_EntityCollectionMixin):
     """
 
     _archive: zipfile.ZipFile | Path | UPath
+    """The actual storage backend that routes file opening and I/O operations"""
     _archive_storage: ArchiveStorage
-    _source: zipfile.ZipFile | Path | UPath
+    """The kind of storage being used that differentiates between local and remote and zip archive vs. unpacked directory"""
+    _source: Any
+    """The object provided to open the file"""
+
+    _spectrum_namespace_aggregator: MzPeakNamespaceAggregation
+    """The collection of files that compose spectrum metadata. :attr:`spectrum_metadata` is an in-memory view of it."""
 
     spectrum_metadata: MzPeakSpectrumMetadataReader | None = None
     spectrum_data: MzPeakArrayDataReader | None = None
     spectrum_peak_data: MzPeakArrayDataReader | None = None
 
+    _chromatogram_namespace_aggregator: MzPeakNamespaceAggregation
+    """The collection of files that compose chromatogram metadata. :attr:`chromatogram_metadata` is an in-memory view of it."""
+
     chromatogram_metadata: MzPeakChromatogramMetadataReader | None = None
     chromatogram_data: MzPeakArrayDataReader | None = None
+
+    _wavelength_spectrum_namespace_aggregator: MzPeakNamespaceAggregation
+    """The collection of files that compose wavelength spectrum metadata. :attr:`_wavelength_spectrum_metadata` is an in-memory view of it."""
 
     _wavelength_spectrum_metadata: MzPeakSpectrumMetadataReader | None = None
     _wavelength_spectrum_data: MzPeakArrayDataReader | None = None
@@ -1058,15 +1303,27 @@ class MzPeakFile(_EntityCollectionMixin):
         elif isinstance(self._source, zipfile.ZipFile):
             return self._source.filename
 
+    def _upath_opener(self, f: UPath) -> pq.ParquetFile:
+        """Open a UPath-based file using the :class:`Path`-like API"""
+        return pq.ParquetFile(pa.PythonFile(f.open("rb")))
+
+    def _path_opener(self, f: Path) -> pq.ParquetFile:
+        """Open a native file system file using :class:`pa.OSFile` with less Python overhead"""
+        return pq.ParquetFile(pa.OSFile(str(f)))
+
+    def _zip_opener(self, f: zipfile.ZipExtFile) -> pq.ParquetFile:
+        """Open a :class:`zipfile.ZipExtFile` file-like object"""
+        return pq.ParquetFile(pa.PythonFile(f))
+
     def _from_directory(self, path: Path):
         self._archive_storage = ArchiveStorage.Directory
         self._archive = path
         index_path = path / FileIndex.FILE_NAME
         visited = set()
         if has_upath and isinstance(path, UPath):
-            is_upath = True
+            opener = self._upath_opener
         else:
-            is_upath = False
+            opener = self._path_opener
         if index_path.exists():
             self.file_index = FileIndex.from_json(json.load(index_path.open()))
             for e in self.file_index:
@@ -1074,45 +1331,50 @@ class MzPeakFile(_EntityCollectionMixin):
                 if f in visited:
                     continue
                 visited.add(f)
-                match e.entry_type():
-                    case (EntityType.Spectrum, DataKind.DataArrays):
-                        self.spectrum_data = MzPeakArrayDataReader(
-                            pa.OSFile(str(f)) if not is_upath else pa.PythonFile(f.open('rb')),
-                            namespace="spectrum",
-                        )
-                    case (EntityType.Spectrum, DataKind.Metadata):
-                        self.spectrum_metadata = MzPeakSpectrumMetadataReader(
-                            pa.OSFile(str(f)) if not is_upath else pa.PythonFile(f.open('rb')),
-                        )
-                    case (EntityType.Spectrum, DataKind.Peaks):
-                        self.spectrum_peak_data = MzPeakArrayDataReader(
-                            pa.OSFile(str(f)) if not is_upath else pa.PythonFile(f.open('rb')),
-                            namespace="spectrum",
-                        )
-                    case (EntityType.Chromatogram, DataKind.DataArrays):
-                        self.chromatogram_data = MzPeakArrayDataReader(
-                            pa.OSFile(str(f)) if not is_upath else pa.PythonFile(f.open('rb')),
-                            namespace="chromatogram",
-                        )
-                    case (EntityType.Chromatogram, DataKind.Metadata):
-                        self.chromatogram_metadata = MzPeakChromatogramMetadataReader(
-                            pa.OSFile(str(f))
-                            if not is_upath
-                            else pa.PythonFile(f.open("rb")),
-                        )
-                    case (EntityType.WavelengthSpectrum, DataKind.DataArrays):
-                        self._wavelength_spectrum_data = MzPeakArrayDataReader(
-                            pa.OSFile(str(f)) if not is_upath else pa.PythonFile(f.open('rb')),
-                            namespace="wavelength_spectrum",
-                        )
-                    case (EntityType.WavelengthSpectrum, DataKind.Metadata):
-                        self._wavelength_spectrum_data = MzPeakSpectrumMetadataReader(
-                            pa.OSFile(str(f)) if not is_upath else pa.PythonFile(f.open('rb')),
-                        )
-                    case _:
-                        pass
+                self._receive_entry(e, f, opener=opener)
         else:
             raise FileNotFoundError(f"Failed to find {FileIndex.FILE_NAME} in unpacked mzPeak archive {path}")
+
+    def _receive_entry(self, e: FileEntry, f, opener: Callable[[Any], pq.ParquetFile]):
+        match e.entry_type():
+            # receive mass spectra
+            case (EntityType.Spectrum, DataKind.DataArrays):
+                self.spectrum_data = MzPeakArrayDataReader(opener(f), namespace="spectrum")
+            case (EntityType.Spectrum, DataKind.Metadata):
+                self._spectrum_namespace_aggregator.metadata = opener(f)
+            case (EntityType.Spectrum, DataKind.Scans):
+                self._spectrum_namespace_aggregator.scans = opener(f)
+            case (EntityType.Spectrum, DataKind.Precursors):
+                self._spectrum_namespace_aggregator.precursors = opener(f)
+            case (EntityType.Spectrum, DataKind.SelectedIons):
+                self._spectrum_namespace_aggregator.selected_ions = opener(f)
+            case (EntityType.Spectrum, DataKind.Peaks):
+                self.spectrum_peak_data = MzPeakArrayDataReader(opener(f), namespace="spectrum")
+
+            # receive chromatograms
+            case (EntityType.Chromatogram, DataKind.DataArrays):
+                self.chromatogram_data = MzPeakArrayDataReader(opener(f), namespace="chromatogram")
+            case (EntityType.Chromatogram, DataKind.Metadata):
+                self._chromatogram_namespace_aggregator.metadata = opener(f)
+            case (EntityType.Chromatogram, DataKind.Precursors):
+                self._chromatogram_namespace_aggregator.precursors = opener(f)
+            case (EntityType.Chromatogram, DataKind.SelectedIons):
+                self._chromatogram_namespace_aggregator.selected_ions = opener(f)
+            case (EntityType.Chromatogram, DataKind.Products):
+                self._chromatogram_namespace_aggregator.products = opener(f)
+
+            # receive wavelength spectra
+            case (EntityType.WavelengthSpectrum, DataKind.DataArrays):
+                self._wavelength_spectrum_data = MzPeakArrayDataReader(opener(f), namespace="wavelength_spectrum",
+                )
+            case (EntityType.WavelengthSpectrum, DataKind.Metadata):
+                self._wavelength_spectrum_namespace_aggregator.metadata = opener(f)
+            case (EntityType.WavelengthSpectrum, DataKind.Scans):
+                self._wavelength_spectrum_namespace_aggregator.scans = opener(f)
+
+            # Something else
+            case _:
+                pass
 
     def _from_zip_archive(self, archive: zipfile.ZipFile):
         self._archive_storage = ArchiveStorage.Zip
@@ -1132,47 +1394,12 @@ class MzPeakFile(_EntityCollectionMixin):
                 continue
             visited.add(e.name)
             f = archive.open(e.name)
-            match e.entry_type():
-                case (EntityType.Spectrum, DataKind.DataArrays):
-                    self.spectrum_data = MzPeakArrayDataReader(
-                        pa.PythonFile(f),
-                        namespace="spectrum",
-                    )
-                case (EntityType.Spectrum, DataKind.Metadata):
-                    self.spectrum_metadata = MzPeakSpectrumMetadataReader(
-                        pa.PythonFile(f),
-                    )
-                case (EntityType.Spectrum, DataKind.Peaks):
-                    self.spectrum_peak_data = MzPeakArrayDataReader(
-                        pa.PythonFile(f),
-                        namespace="spectrum",
-                    )
-                case (EntityType.Chromatogram, DataKind.DataArrays):
-                    self.chromatogram_data = MzPeakArrayDataReader(
-                        pa.PythonFile(f),
-                        namespace="chromatogram",
-                    )
-                case (EntityType.Chromatogram, DataKind.Metadata):
-                    self.chromatogram_metadata = MzPeakChromatogramMetadataReader(
-                        pa.PythonFile(f)
-                    )
-                case (EntityType.WavelengthSpectrum, DataKind.DataArrays):
-                    self._wavelength_spectrum_data = MzPeakArrayDataReader(
-                        pa.PythonFile(f),
-                        namespace="wavelength_spectrum",
-                    )
-                case (EntityType.WavelengthSpectrum, DataKind.Metadata):
-                    self._wavelength_spectrum_metadata = MzPeakSpectrumMetadataReader(
-                        pa.PythonFile(f),
-                    )
-                case _:
-                    pass
+            self._receive_entry(e, f, self._zip_opener)
 
     def _from_path(self, path: Path):
         if path.is_dir():
             if path.is_file():
                 try:
-                    archive = zipfile.ZipFile(path.open('rb'))
                     archive = zipfile.ZipFile(path.open('rb'))
                     self._from_zip_archive(archive)
                     return
@@ -1229,7 +1456,10 @@ class MzPeakFile(_EntityCollectionMixin):
                 k = k.decode("utf8")
                 if k == "ARROW:schema":
                     continue
-                v = json.loads(v)
+                try:
+                    v = json.loads(v)
+                except json.JSONDecodeError:
+                    pass
                 metadata[k] = v
         metadata.update(self.file_index.metadata)
         self.file_metadata = metadata
@@ -1239,8 +1469,25 @@ class MzPeakFile(_EntityCollectionMixin):
                 self.spectrum_metadata._get_mz_delta_model()
             )
 
+    def _unpack_namespaces(self):
+        # Provide the file index
+        self._spectrum_namespace_aggregator.file_index = self.file_index
+        self._chromatogram_namespace_aggregator.file_index = self.file_index
+        self._wavelength_spectrum_namespace_aggregator.file_index = self.file_index
+
+        self.spectrum_metadata = MzPeakSpectrumMetadataReader(self._spectrum_namespace_aggregator)
+        self.chromatogram_metadata = MzPeakChromatogramMetadataReader(self._chromatogram_namespace_aggregator)
+        if self._wavelength_spectrum_namespace_aggregator.metadata is not None:
+            self._wavelength_spectrum_metadata = MzPeakSpectrumMetadataReader(self._wavelength_spectrum_namespace_aggregator)
+        else:
+            self._wavelength_spectrum_metadata = None
+
     def __init__(self, path: str | Path | UPath | zipfile.ZipFile | IO[bytes]):
         self.file_index = FileIndex()
+        self._spectrum_namespace_aggregator = MzPeakNamespaceAggregation(EntityType.Spectrum)
+        self._chromatogram_namespace_aggregator = MzPeakNamespaceAggregation(EntityType.Chromatogram)
+        self._wavelength_spectrum_namespace_aggregator = MzPeakNamespaceAggregation(EntityType.WavelengthSpectrum)
+
         if isinstance(path, zipfile.ZipFile):
             self._source = path
             self._from_zip_archive(path)
@@ -1258,6 +1505,7 @@ class MzPeakFile(_EntityCollectionMixin):
             self._source = path
             self._from_zip_archive(zipfile.ZipFile(path))
 
+        self._unpack_namespaces()
         self._init_metadata()
 
     def read_chromatogram(

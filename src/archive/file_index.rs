@@ -1,25 +1,39 @@
 use std::{collections::HashMap, ops::Deref, str::FromStr};
 
-use mzdata::meta::{FileMetadataConfig, MSDataFileMetadata, MassSpectrometryRun};
+use mzdata::{
+    meta::{FileMetadataConfig, MSDataFileMetadata, MassSpectrometryRun},
+    params::CURIE,
+};
 use serde::{Deserialize, Serialize};
 use serde_with::DeserializeFromStr;
 
-use crate::constants::{
-    DATA_PROCESSING_METHOD_LIST_KEY, FILE_DESCRIPTION_KEY, INSTRUMENT_CONFIGURATION_LIST_KEY,
-    MS_RUN_KEY, MZPEAK_VERSION, SAMPLE_LIST_KEY, SCAN_SETTINGS_LIST_KEY, SOFTWARE_LIST_KEY,
-    VERSION_KEY,
+use crate::{
+    constants::{
+        DATA_PROCESSING_METHOD_LIST_KEY, FILE_DESCRIPTION_KEY, INSTRUMENT_CONFIGURATION_LIST_KEY,
+        MS_RUN_KEY, MZPEAK_VERSION, SAMPLE_LIST_KEY, SCAN_SETTINGS_LIST_KEY, SOFTWARE_LIST_KEY,
+        VERSION_KEY,
+    },
+    param::{MetaParam, MetadataColumn, MetadataColumnCollection},
 };
 
 /// The facet of the thing being described in this file
 #[derive(Debug, Serialize, DeserializeFromStr, Clone, PartialEq, Eq)]
 pub enum DataKind {
-    #[serde(rename = "data arrays")]
-    #[serde(alias = "data_arrays")]
+    #[serde(rename = "data_arrays")]
+    #[serde(alias = "data arrays")]
     DataArray,
     #[serde(rename = "peaks")]
     Peaks,
     #[serde(rename = "metadata")]
     Metadata,
+    #[serde(rename = "scans")]
+    Scans,
+    #[serde(rename = "precursors")]
+    Precursors,
+    #[serde(rename = "selected_ions")]
+    SelectedIons,
+    #[serde(rename = "products")]
+    Products,
     #[serde(rename = "proprietary")]
     Proprietary,
     #[serde(rename = "other")]
@@ -32,9 +46,13 @@ impl FromStr for DataKind {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s.to_lowercase().trim() {
-            "data arrays" => Self::DataArray,
+            "data arrays" | "data_arrays" => Self::DataArray,
             "peaks" => Self::Peaks,
             "metadata" => Self::Metadata,
+            "scans" => Self::Scans,
+            "precursors" => Self::Precursors,
+            "selected_ions" => Self::SelectedIons,
+            "products" => Self::Products,
             "proprietary" => Self::Proprietary,
             "other" => Self::Other("other".into()),
             _ => Self::Other(s.to_string()),
@@ -47,10 +65,12 @@ impl FromStr for DataKind {
 pub enum EntityType {
     #[serde(rename = "spectrum")]
     #[serde(alias = "mass spectrum")]
+    #[serde(alias = "mass_spectrum")]
     Spectrum,
     #[serde(rename = "chromatogram")]
     Chromatogram,
-    #[serde(rename = "wavelength spectrum")]
+    #[serde(rename = "wavelength_spectrum")]
+    #[serde(alias = "wavelength spectrum")]
     WavelengthSpectrum,
     #[serde(rename = "other")]
     #[serde(untagged)]
@@ -62,9 +82,8 @@ impl FromStr for EntityType {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s.to_lowercase().trim() {
-            "spectrum" => Self::Spectrum,
-            "mass spectrum" => Self::Spectrum,
-            "wavelength spectrum" => Self::WavelengthSpectrum,
+            "spectrum" | "mass spectrum" | "mass_spectrum" => Self::Spectrum,
+            "wavelength spectrum" | "wavelength_spectrum" => Self::WavelengthSpectrum,
             "chromatogram" => Self::Chromatogram,
             "other" => Self::Other("other".into()),
             _ => {
@@ -75,7 +94,11 @@ impl FromStr for EntityType {
     }
 }
 
-/// A single file in the mzPeak archive of a certain type
+/// A single file in the mzPeak archive of a certain type.
+///
+/// This is distinct from a [`mzdata::meta::SourceFile`]. This describes a file *in* the mzPeak Archive
+/// while a `SourceFile` describes a file that was consumed to create the mzPeak Archive. A file can be
+/// recorded as both.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct FileEntry {
     /// The name of the file, relative to the root of the archive
@@ -84,6 +107,13 @@ pub struct FileEntry {
     pub entity_type: EntityType,
     /// The data this file describes
     pub data_kind: DataKind,
+    /// The relationship between columns in this file and controlled vocabulary terms
+    #[serde(default)]
+    #[serde(alias="metadata_mapping")]
+    pub column_mapping: MetadataColumnCollection,
+    /// Additional descriptive parameters for this file.
+    #[serde(default)]
+    pub parameters: Vec<MetaParam>,
 }
 
 impl FileEntry {
@@ -95,6 +125,15 @@ impl FileEntry {
             (EntityType::Spectrum, DataKind::Metadata) => {
                 super::MzPeakArchiveType::SpectrumMetadata
             }
+            (EntityType::Spectrum, DataKind::Scans) => {
+                super::MzPeakArchiveType::SpectrumMetadataScans
+            }
+            (EntityType::Spectrum, DataKind::Precursors) => {
+                super::MzPeakArchiveType::SpectrumMetadataPrecursors
+            }
+            (EntityType::Spectrum, DataKind::SelectedIons) => {
+                super::MzPeakArchiveType::SpectrumMetadataSelectedIons
+            }
             (EntityType::Spectrum, DataKind::Peaks) => {
                 super::MzPeakArchiveType::SpectrumPeakDataArrays
             }
@@ -104,11 +143,20 @@ impl FileEntry {
             (EntityType::Chromatogram, DataKind::Metadata) => {
                 super::MzPeakArchiveType::ChromatogramMetadata
             }
+            (EntityType::Chromatogram, DataKind::Precursors) => {
+                super::MzPeakArchiveType::ChromatogramMetadataPrecursors
+            }
+            (EntityType::Chromatogram, DataKind::SelectedIons) => {
+                super::MzPeakArchiveType::ChromatogramMetadataSelectedIons
+            }
             (EntityType::WavelengthSpectrum, DataKind::DataArray) => {
                 super::MzPeakArchiveType::WavelengthSpectrumDataArrays
             }
             (EntityType::WavelengthSpectrum, DataKind::Metadata) => {
                 super::MzPeakArchiveType::WavelengthSpectrumMetadata
+            }
+            (EntityType::WavelengthSpectrum, DataKind::Scans) => {
+                super::MzPeakArchiveType::WavelengthSpectrumMetadataScans
             }
             (EntityType::Other(_), _) => super::MzPeakArchiveType::Other,
             (_, _) => {
@@ -127,7 +175,33 @@ impl FileEntry {
             name,
             entity_type,
             data_kind,
+            column_mapping: Default::default(),
+            parameters: Default::default(),
         }
+    }
+
+    pub fn new_with_meta(
+        name: String,
+        entity_type: EntityType,
+        data_kind: DataKind,
+        column_mapping: MetadataColumnCollection,
+        parameters: Vec<MetaParam>,
+    ) -> Self {
+        Self {
+            name,
+            entity_type,
+            data_kind,
+            column_mapping,
+            parameters,
+        }
+    }
+
+    pub fn column_mapping_for(&self, curie: CURIE) -> Option<&MetadataColumn> {
+        self.column_mapping.find(curie)
+    }
+
+    pub fn column_with_path(&self, path: &[&str]) -> Option<&MetadataColumn> {
+        self.column_mapping.iter().find(|v| v.path == path)
     }
 }
 
@@ -179,6 +253,13 @@ impl From<super::MzPeakArchiveType> for FileEntry {
                 EntityType::Other("".into()),
                 DataKind::Proprietary,
             ),
+            super::MzPeakArchiveType::SpectrumMetadataScans => FileEntry::new(value.tag_file_suffix().into(), EntityType::Spectrum, DataKind::Scans),
+            super::MzPeakArchiveType::SpectrumMetadataPrecursors => FileEntry::new(value.tag_file_suffix().into(), EntityType::Spectrum, DataKind::Precursors),
+            super::MzPeakArchiveType::SpectrumMetadataSelectedIons => FileEntry::new(value.tag_file_suffix().into(), EntityType::Spectrum, DataKind::SelectedIons),
+            super::MzPeakArchiveType::ChromatogramMetadataPrecursors => FileEntry::new(value.tag_file_suffix().into(), EntityType::Chromatogram, DataKind::Precursors),
+            super::MzPeakArchiveType::ChromatogramMetadataSelectedIons => FileEntry::new(value.tag_file_suffix().into(), EntityType::Chromatogram, DataKind::SelectedIons),
+            super::MzPeakArchiveType::ChromatogramMetadataProducts => FileEntry::new(value.tag_file_suffix().into(), EntityType::Chromatogram, DataKind::Products),
+            super::MzPeakArchiveType::WavelengthSpectrumMetadataScans => FileEntry::new(value.tag_file_suffix().into(), EntityType::WavelengthSpectrum, DataKind::Scans),
         }
     }
 }
@@ -272,7 +353,8 @@ impl FileIndex {
                     }
                 }
                 SCAN_SETTINGS_LIST_KEY => {
-                    let settings: Vec<crate::param::ScanSettings> = serde_json::from_value(val.clone())?;
+                    let settings: Vec<crate::param::ScanSettings> =
+                        serde_json::from_value(val.clone())?;
                     match mz_metadata.scan_settings_mut() {
                         Some(confs) => confs.extend(settings.into_iter().map(|v| v.into())),
                         None => {
@@ -299,6 +381,12 @@ impl Deref for FileIndex {
     }
 }
 
+impl AsMut<Vec<FileEntry>> for FileIndex {
+    fn as_mut(&mut self) -> &mut Vec<FileEntry> {
+        &mut self.files
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -321,7 +409,7 @@ mod test {
     fn test_data_type_conversion() {
         let spec = serde_json::to_string(&DataKind::DataArray).unwrap();
         let dup: DataKind = serde_json::from_str(&spec).unwrap();
-        assert_eq!(spec, r#""data arrays""#);
+        assert_eq!(spec, r#""data_arrays""#);
         assert_eq!(dup, DataKind::DataArray);
 
         let src = DataKind::Other("foobarbazbang".into());

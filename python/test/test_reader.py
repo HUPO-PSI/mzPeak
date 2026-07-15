@@ -39,7 +39,6 @@ def common_checks(reader: MzPeakFile, subtests: pytest.Subtests):
             "software_list",
             "spectrum_count",
             "scan_settings_list",
-            "spectrum_data_point_count",
         }
 
     with subtests.test("chromatogram"):

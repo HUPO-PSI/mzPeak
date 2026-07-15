@@ -505,8 +505,8 @@ pub enum BufferTransform {
     NullZero,
 }
 
-const NULL_INTERPOLATE: CURIE = mzdata::curie!(MS:1003901);
-const NULL_ZERO: CURIE = mzdata::curie!(MS:1003902);
+const NULL_ZERO: CURIE = mzdata::curie!(MS:1003901);
+const NULL_INTERPOLATE: CURIE = mzdata::curie!(MS:1003902);
 
 impl BufferTransform {
     pub fn from_curie(accession: crate::param::CURIE) -> Option<Self> {

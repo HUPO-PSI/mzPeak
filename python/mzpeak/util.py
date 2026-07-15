@@ -3,11 +3,13 @@ import logging
 
 from dataclasses import dataclass, field
 from numbers import Number
-from typing import Any, Generic, Mapping, TypeVar, Iterator
+from typing import Any, Callable, Generic, Mapping, TypeVar, Iterator
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+
+from .file_index import MetadataColumn
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -173,10 +175,22 @@ class OntologyMapper:
     cv_uo: Mapping[str, Any]
     overrides: dict[str, str]
 
-    def __init__(self, cv_psims=CV_PSIMS, cv_uo=CV_UO, overrides: dict[str, str]=None):
+    def __init__(self, cv_psims=CV_PSIMS, cv_uo=CV_UO, overrides: dict[str, str] | None = None):
         self.cv_psims = cv_psims
         self.cv_uo = cv_uo
         self.overrides = overrides or {}
+
+    def with_overrides(self, overrides: dict[str, str] | None = None):
+        return self.__class__(
+            self.cv_psims,
+            self.cv_uo,
+            overrides
+        )
+
+    def with_overrides_from(self, metacolumns: list[MetadataColumn]):
+        return self.with_overrides({
+            c.path[-1]: c.name for c in metacolumns
+        })
 
     def __getitem__(self, value: str):
         colname = parse_inflected_cv_name(value)
@@ -232,7 +246,7 @@ class OntologyMapper:
 
 @dataclass
 class _NameCleaningNode:
-    '''
+    """
     A helper type for doing recursive Arrow schema column renaming.
 
     Attributes
@@ -242,14 +256,14 @@ class _NameCleaningNode:
     array : pa.Array
         The actual data stored in this column. This may be a pa.StructArray which will itself
         have multiple arrays under it.
-    mapper : OntologyMapper
+    mapper : Callable[[str], str]
         The renaming mapping table to use to update names
     children : list of _NameCleaningNode
         The sub-arrays of this array, nested columns used to handle the recursive case
-    '''
+    """
     field: pa.Field
     array: pa.Array
-    mapper: OntologyMapper
+    mapper: Callable[[str], str]
     children: list["_NameCleaningNode"] = field(default_factory=list)
 
     def __post_init__(self):
@@ -326,6 +340,27 @@ class _NameCleaningNode:
         #     return self.field, pa.ListArray.from_arrays(self.array.offsets, a)
         else:
             return (self.field, self.array)
+
+    @classmethod
+    def clean_table(cls, table: pa.Table, mapper: Callable[[str], str]):
+        blocks = []
+        fields = []
+        for f, block in zip(table.schema, table):
+            chunks = []
+            clean_f = None
+            for chunk in block.chunks:
+                node = cls.from_array(f, chunk, mapper)
+                clean_f, clean_chunk = node.clean()
+                chunks.append(clean_chunk)
+            fields.append(clean_f)
+            blocks.append(chunks)
+
+        chunks = []
+        for block in zip(*blocks):
+            chunks.append(pa.StructArray.from_arrays(block, fields=fields))
+        return pa.Table.from_struct_array(
+            pa.chunked_array(chunks)
+        )
 
 
 T = TypeVar('T')

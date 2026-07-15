@@ -21,38 +21,117 @@ use parquet::arrow::arrow_reader::{
 
 use crate::archive::{FileEntry, FileIndex};
 use crate::constants::{
-    CHROMATOGRAM_DATA_ARRAYS_NAME, CHROMATOGRAM_METADATA_NAME, SPECTRUM_DATA_ARRAYS_NAME,
-    SPECTRUM_METADATA_NAME, SPECTRUM_PEAK_DATA_ARRAYS_NAME, WAVELENGTH_SPECTRUM_DATA_ARRAYS_NAME,
-    WAVELENGTH_SPECTRUM_METADATA_NAME,
+    CHROMATOGRAM_DATA_ARRAYS_NAME, CHROMATOGRAM_METADATA_NAME,
+    CHROMATOGRAM_METADATA_PRECURSORS_NAME, CHROMATOGRAM_METADATA_PRODUCTS_NAME,
+    CHROMATOGRAM_METADATA_SELECTED_IONS_NAME, SPECTRUM_DATA_ARRAYS_NAME, SPECTRUM_METADATA_NAME,
+    SPECTRUM_METADATA_PRECURSORS_NAME, SPECTRUM_METADATA_SCANS_NAME,
+    SPECTRUM_METADATA_SELECTED_IONS_NAME, SPECTRUM_PEAK_DATA_ARRAYS_NAME,
+    WAVELENGTH_SPECTRUM_DATA_ARRAYS_NAME, WAVELENGTH_SPECTRUM_METADATA_NAME,
+    WAVELENGTH_SPECTRUM_METADATA_SCANS_NAME,
 };
-
 
 /// Create a single shared [`FileDecryptionProperties`] that is used for all [`MzPeakArchiveType`] members,
 /// even those not found in an archive.
-pub fn make_common_decryption_properties(key: &str) -> HashMap<String, Arc<FileDecryptionProperties>> {
+pub fn make_common_decryption_properties(
+    key: &str,
+) -> HashMap<String, Arc<FileDecryptionProperties>> {
     let mut dec_props = HashMap::default();
-    let dec = FileDecryptionProperties::builder(key.as_bytes().to_vec()).build().unwrap();
-    dec_props.insert(MzPeakArchiveType::SpectrumDataArrays.tag_file_suffix().to_string(), dec.clone());
-    dec_props.insert(MzPeakArchiveType::SpectrumMetadata.tag_file_suffix().to_string(), dec.clone());
-    dec_props.insert(MzPeakArchiveType::SpectrumPeakDataArrays.tag_file_suffix().to_string(), dec.clone());
-    dec_props.insert(MzPeakArchiveType::ChromatogramDataArrays.tag_file_suffix().to_string(), dec.clone());
-    dec_props.insert(MzPeakArchiveType::ChromatogramMetadata.tag_file_suffix().to_string(), dec.clone());
-    dec_props.insert(MzPeakArchiveType::WavelengthSpectrumMetadata.tag_file_suffix().to_string(), dec.clone());
-    dec_props.insert(MzPeakArchiveType::WavelengthSpectrumDataArrays.tag_file_suffix().to_string(), dec.clone());
+    let dec = FileDecryptionProperties::builder(key.as_bytes().to_vec())
+        .build()
+        .unwrap();
+    dec_props.insert(
+        MzPeakArchiveType::SpectrumDataArrays
+            .tag_file_suffix()
+            .to_string(),
+        dec.clone(),
+    );
+    dec_props.insert(
+        MzPeakArchiveType::SpectrumMetadata
+            .tag_file_suffix()
+            .to_string(),
+        dec.clone(),
+    );
+    dec_props.insert(
+        MzPeakArchiveType::SpectrumPeakDataArrays
+            .tag_file_suffix()
+            .to_string(),
+        dec.clone(),
+    );
+    dec_props.insert(
+        MzPeakArchiveType::ChromatogramDataArrays
+            .tag_file_suffix()
+            .to_string(),
+        dec.clone(),
+    );
+    dec_props.insert(
+        MzPeakArchiveType::ChromatogramMetadata
+            .tag_file_suffix()
+            .to_string(),
+        dec.clone(),
+    );
+    dec_props.insert(
+        MzPeakArchiveType::WavelengthSpectrumMetadata
+            .tag_file_suffix()
+            .to_string(),
+        dec.clone(),
+    );
+    dec_props.insert(
+        MzPeakArchiveType::WavelengthSpectrumDataArrays
+            .tag_file_suffix()
+            .to_string(),
+        dec.clone(),
+    );
     dec_props
 }
 
 /// Replicate a single shared [`FileEncryptionProperties`] that is used for all [`MzPeakArchiveType`] members,
 /// even those not found in an archive.
-pub fn make_common_encryption_properties(encryptor: Arc<FileEncryptionProperties>) -> HashMap<String, Arc<FileEncryptionProperties>> {
+pub fn make_common_encryption_properties(
+    encryptor: Arc<FileEncryptionProperties>,
+) -> HashMap<String, Arc<FileEncryptionProperties>> {
     let mut enc_props = HashMap::default();
-    enc_props.insert(MzPeakArchiveType::SpectrumDataArrays.tag_file_suffix().to_string(), encryptor.clone());
-    enc_props.insert(MzPeakArchiveType::SpectrumMetadata.tag_file_suffix().to_string(), encryptor.clone());
-    enc_props.insert(MzPeakArchiveType::SpectrumPeakDataArrays.tag_file_suffix().to_string(), encryptor.clone());
-    enc_props.insert(MzPeakArchiveType::ChromatogramDataArrays.tag_file_suffix().to_string(), encryptor.clone());
-    enc_props.insert(MzPeakArchiveType::ChromatogramMetadata.tag_file_suffix().to_string(), encryptor.clone());
-    enc_props.insert(MzPeakArchiveType::WavelengthSpectrumMetadata.tag_file_suffix().to_string(), encryptor.clone());
-    enc_props.insert(MzPeakArchiveType::WavelengthSpectrumDataArrays.tag_file_suffix().to_string(), encryptor.clone());
+    enc_props.insert(
+        MzPeakArchiveType::SpectrumDataArrays
+            .tag_file_suffix()
+            .to_string(),
+        encryptor.clone(),
+    );
+    enc_props.insert(
+        MzPeakArchiveType::SpectrumMetadata
+            .tag_file_suffix()
+            .to_string(),
+        encryptor.clone(),
+    );
+    enc_props.insert(
+        MzPeakArchiveType::SpectrumPeakDataArrays
+            .tag_file_suffix()
+            .to_string(),
+        encryptor.clone(),
+    );
+    enc_props.insert(
+        MzPeakArchiveType::ChromatogramDataArrays
+            .tag_file_suffix()
+            .to_string(),
+        encryptor.clone(),
+    );
+    enc_props.insert(
+        MzPeakArchiveType::ChromatogramMetadata
+            .tag_file_suffix()
+            .to_string(),
+        encryptor.clone(),
+    );
+    enc_props.insert(
+        MzPeakArchiveType::WavelengthSpectrumMetadata
+            .tag_file_suffix()
+            .to_string(),
+        encryptor.clone(),
+    );
+    enc_props.insert(
+        MzPeakArchiveType::WavelengthSpectrumDataArrays
+            .tag_file_suffix()
+            .to_string(),
+        encryptor.clone(),
+    );
     enc_props
 }
 
@@ -223,17 +302,43 @@ archive, nor was one given via the file index entry"#,
             .insert(key.to_string(), serde_json::to_value(value)?);
         Ok(())
     }
+
+    pub fn index(&self) -> &FileIndex {
+        &self.index
+    }
+
+    pub fn index_mut(&mut self) -> &mut FileIndex {
+        &mut self.index
+    }
+
+    pub fn current_entry(&self) -> Option<&FileEntry> {
+        self.index.first()
+    }
+
+    pub fn current_entry_mut(&mut self) -> Option<&mut FileEntry> {
+        self.index.as_mut().last_mut()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MzPeakArchiveType {
     SpectrumMetadata,
+    SpectrumMetadataScans,
+    SpectrumMetadataPrecursors,
+    SpectrumMetadataSelectedIons,
     SpectrumDataArrays,
     SpectrumPeakDataArrays,
+
     ChromatogramMetadata,
+    ChromatogramMetadataPrecursors,
+    ChromatogramMetadataSelectedIons,
+    ChromatogramMetadataProducts,
     ChromatogramDataArrays,
+
     WavelengthSpectrumDataArrays,
     WavelengthSpectrumMetadata,
+    WavelengthSpectrumMetadataScans,
+
     Other,
     Proprietary,
 }
@@ -250,6 +355,19 @@ impl MzPeakArchiveType {
             MzPeakArchiveType::WavelengthSpectrumMetadata => WAVELENGTH_SPECTRUM_METADATA_NAME,
             MzPeakArchiveType::Other => "",
             MzPeakArchiveType::Proprietary => "",
+            MzPeakArchiveType::SpectrumMetadataScans => SPECTRUM_METADATA_SCANS_NAME,
+            MzPeakArchiveType::SpectrumMetadataPrecursors => SPECTRUM_METADATA_PRECURSORS_NAME,
+            MzPeakArchiveType::SpectrumMetadataSelectedIons => SPECTRUM_METADATA_SELECTED_IONS_NAME,
+            MzPeakArchiveType::ChromatogramMetadataPrecursors => {
+                CHROMATOGRAM_METADATA_PRECURSORS_NAME
+            }
+            MzPeakArchiveType::ChromatogramMetadataSelectedIons => {
+                CHROMATOGRAM_METADATA_SELECTED_IONS_NAME
+            }
+            MzPeakArchiveType::ChromatogramMetadataProducts => CHROMATOGRAM_METADATA_PRODUCTS_NAME,
+            MzPeakArchiveType::WavelengthSpectrumMetadataScans => {
+                WAVELENGTH_SPECTRUM_METADATA_SCANS_NAME
+            }
         }
     }
 
@@ -260,15 +378,37 @@ impl MzPeakArchiveType {
             MzPeakArchiveType::SpectrumMetadata
         } else if name.ends_with(MzPeakArchiveType::SpectrumPeakDataArrays.tag_file_suffix()) {
             MzPeakArchiveType::SpectrumPeakDataArrays
+        } else if name.ends_with(MzPeakArchiveType::SpectrumMetadataPrecursors.tag_file_suffix()) {
+            MzPeakArchiveType::SpectrumMetadataPrecursors
+        } else if name.ends_with(MzPeakArchiveType::SpectrumMetadataScans.tag_file_suffix()) {
+            MzPeakArchiveType::SpectrumMetadataScans
+        } else if name.ends_with(MzPeakArchiveType::SpectrumMetadataSelectedIons.tag_file_suffix())
+        {
+            MzPeakArchiveType::SpectrumMetadataSelectedIons
         } else if name.ends_with(MzPeakArchiveType::ChromatogramMetadata.tag_file_suffix()) {
             MzPeakArchiveType::ChromatogramMetadata
+        } else if name
+            .ends_with(MzPeakArchiveType::ChromatogramMetadataPrecursors.tag_file_suffix())
+        {
+            MzPeakArchiveType::ChromatogramMetadataPrecursors
+        } else if name
+            .ends_with(MzPeakArchiveType::ChromatogramMetadataSelectedIons.tag_file_suffix())
+        {
+            MzPeakArchiveType::ChromatogramMetadataSelectedIons
+        } else if name.ends_with(MzPeakArchiveType::ChromatogramMetadataProducts.tag_file_suffix())
+        {
+            MzPeakArchiveType::ChromatogramMetadataProducts
         } else if name.ends_with(MzPeakArchiveType::ChromatogramDataArrays.tag_file_suffix()) {
             MzPeakArchiveType::ChromatogramDataArrays
         } else if name.ends_with(MzPeakArchiveType::WavelengthSpectrumDataArrays.tag_file_suffix())
         {
             MzPeakArchiveType::WavelengthSpectrumDataArrays
-        } else if name.ends_with(MzPeakArchiveType::ChromatogramDataArrays.tag_file_suffix()) {
+        } else if name.ends_with(MzPeakArchiveType::WavelengthSpectrumMetadata.tag_file_suffix()) {
             MzPeakArchiveType::WavelengthSpectrumMetadata
+        } else if name
+            .ends_with(MzPeakArchiveType::WavelengthSpectrumMetadataScans.tag_file_suffix())
+        {
+            MzPeakArchiveType::WavelengthSpectrumMetadataScans
         } else {
             MzPeakArchiveType::Other
         }
@@ -505,7 +645,7 @@ pub struct ZipArchiveBytesSource {
     archive_offset: Config,
     pub file_names: Vec<String>,
     pub file_index: FileIndex,
-    decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>
+    decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>,
 }
 
 impl ZipArchiveBytesSource {
@@ -565,7 +705,10 @@ impl ArchiveSource for ZipArchiveBytesSource {
         true
     }
 
-    fn set_decryption_properties(&mut self, decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>) {
+    fn set_decryption_properties(
+        &mut self,
+        decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>,
+    ) {
         self.decryption_properties = decryption_properties;
     }
 
@@ -573,7 +716,6 @@ impl ArchiveSource for ZipArchiveBytesSource {
         &self.decryption_properties
     }
 }
-
 
 fn zip_archive_to_config<R: io::Read + io::Seek>(
     archive_file: R,
@@ -679,15 +821,74 @@ pub struct MzPeakArchiveEntry {
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct SchemaMetadataManager {
-    pub(crate) spectrum_data_arrays: Option<MzPeakArchiveEntry>,
     pub(crate) spectrum_metadata: Option<MzPeakArchiveEntry>,
+    pub(crate) spectrum_scan_metadata: Option<MzPeakArchiveEntry>,
+    pub(crate) spectrum_precursor_metadata: Option<MzPeakArchiveEntry>,
+    pub(crate) spectrum_selected_ion_metadata: Option<MzPeakArchiveEntry>,
+
+    pub(crate) spectrum_data_arrays: Option<MzPeakArchiveEntry>,
     pub(crate) peaks_data_arrays: Option<MzPeakArchiveEntry>,
 
     pub(crate) chromatogram_metadata: Option<MzPeakArchiveEntry>,
+    pub(crate) chromatogram_precursor_metadata: Option<MzPeakArchiveEntry>,
+    pub(crate) chromatogram_selected_ion_metadata: Option<MzPeakArchiveEntry>,
+    pub(crate) chromatogram_product_metadata: Option<MzPeakArchiveEntry>,
+
     pub(crate) chromatogram_data_arrays: Option<MzPeakArchiveEntry>,
 
     pub(crate) wavelength_metadata: Option<MzPeakArchiveEntry>,
+    pub(crate) wavelength_scan_metadata: Option<MzPeakArchiveEntry>,
     pub(crate) wavelength_data_arrays: Option<MzPeakArchiveEntry>,
+}
+
+impl SchemaMetadataManager {
+    pub(crate) fn add_entry(&mut self, entry: MzPeakArchiveEntry) {
+        match entry.entry_type {
+            MzPeakArchiveType::SpectrumMetadata => {
+                self.spectrum_metadata = Some(entry);
+            }
+            MzPeakArchiveType::SpectrumDataArrays => {
+                self.spectrum_data_arrays = Some(entry);
+            }
+            MzPeakArchiveType::SpectrumPeakDataArrays => {
+                self.peaks_data_arrays = Some(entry)
+            }
+            MzPeakArchiveType::ChromatogramMetadata => {
+                self.chromatogram_metadata = Some(entry)
+            }
+            MzPeakArchiveType::ChromatogramDataArrays => {
+                self.chromatogram_data_arrays = Some(entry)
+            }
+            MzPeakArchiveType::WavelengthSpectrumMetadata => {
+                self.wavelength_metadata = Some(entry);
+            }
+            MzPeakArchiveType::WavelengthSpectrumDataArrays => {
+                self.wavelength_data_arrays = Some(entry);
+            }
+            MzPeakArchiveType::Other | MzPeakArchiveType::Proprietary => {}
+            MzPeakArchiveType::SpectrumMetadataScans => {
+                self.spectrum_scan_metadata = Some(entry)
+            }
+            MzPeakArchiveType::SpectrumMetadataPrecursors => {
+                self.spectrum_precursor_metadata = Some(entry)
+            }
+            MzPeakArchiveType::SpectrumMetadataSelectedIons => {
+                self.spectrum_selected_ion_metadata = Some(entry)
+            }
+            MzPeakArchiveType::ChromatogramMetadataPrecursors => {
+                self.chromatogram_precursor_metadata = Some(entry)
+            }
+            MzPeakArchiveType::ChromatogramMetadataSelectedIons => {
+                self.chromatogram_selected_ion_metadata = Some(entry)
+            }
+            MzPeakArchiveType::ChromatogramMetadataProducts => {
+                self.chromatogram_product_metadata = Some(entry)
+            }
+            MzPeakArchiveType::WavelengthSpectrumMetadataScans => {
+                self.wavelength_scan_metadata = Some(entry)
+            }
+        }
+    }
 }
 
 pub trait ArchiveSource: Sized + 'static {
@@ -729,11 +930,19 @@ pub trait ArchiveSource: Sized + 'static {
         }
     }
 
-    fn decryption_properties_for_index(&self, index: usize) -> Option<Arc<FileDecryptionProperties>> {
-        self.file_names().get(index).and_then(|s| self.decryption_properties().get(s.as_str()).cloned())
+    fn decryption_properties_for_index(
+        &self,
+        index: usize,
+    ) -> Option<Arc<FileDecryptionProperties>> {
+        self.file_names()
+            .get(index)
+            .and_then(|s| self.decryption_properties().get(s.as_str()).cloned())
     }
 
-    fn set_decryption_properties(&mut self, decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>);
+    fn set_decryption_properties(
+        &mut self,
+        decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>,
+    );
 
     fn decryption_properties(&self) -> &HashMap<String, Arc<FileDecryptionProperties>>;
 
@@ -796,7 +1005,10 @@ impl ArchiveSource for SplittingZipArchiveSource {
         &mut self.file_index
     }
 
-    fn set_decryption_properties(&mut self, decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>) {
+    fn set_decryption_properties(
+        &mut self,
+        decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>,
+    ) {
         self.decryption_properties = decryption_properties;
     }
 
@@ -876,7 +1088,10 @@ impl ArchiveSource for DirectorySource {
         &mut self.file_index
     }
 
-    fn set_decryption_properties(&mut self, decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>) {
+    fn set_decryption_properties(
+        &mut self,
+        decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>,
+    ) {
         self.decryption_properties = decryption_properties;
     }
 
@@ -922,36 +1137,15 @@ impl<T: ArchiveSource + 'static> ArchiveReader<T> {
                 name: name.clone(),
                 entry_type: tp,
             };
-            match tp {
-                MzPeakArchiveType::SpectrumMetadata => {
-                    members.spectrum_metadata = Some(entry);
-                }
-                MzPeakArchiveType::SpectrumDataArrays => {
-                    members.spectrum_data_arrays = Some(entry);
-                }
-                MzPeakArchiveType::SpectrumPeakDataArrays => {
-                    members.peaks_data_arrays = Some(entry)
-                }
-                MzPeakArchiveType::ChromatogramMetadata => {
-                    members.chromatogram_metadata = Some(entry)
-                }
-                MzPeakArchiveType::ChromatogramDataArrays => {
-                    members.chromatogram_data_arrays = Some(entry)
-                }
-                MzPeakArchiveType::WavelengthSpectrumMetadata => {
-                    members.wavelength_metadata = Some(entry);
-                }
-                MzPeakArchiveType::WavelengthSpectrumDataArrays => {
-                    members.wavelength_data_arrays = Some(entry);
-                }
-                MzPeakArchiveType::Other | MzPeakArchiveType::Proprietary => {}
-            }
+            members.add_entry(entry);
         }
         Ok(Self { archive, members })
     }
 
     /// An associated function alias for [`make_common_decryption_properties`]
-    pub fn make_common_decryption_properties(key: &str) ->HashMap<String, Arc<FileDecryptionProperties>> {
+    pub fn make_common_decryption_properties(
+        key: &str,
+    ) -> HashMap<String, Arc<FileDecryptionProperties>> {
         make_common_decryption_properties(key)
     }
 
@@ -968,7 +1162,10 @@ impl<T: ArchiveSource + 'static> ArchiveReader<T> {
         Self::from_archive(archive)
     }
 
-    pub fn from_path_with_decryption(archive_path: PathBuf, decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>) -> io::Result<Self> {
+    pub fn from_path_with_decryption(
+        archive_path: PathBuf,
+        decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>,
+    ) -> io::Result<Self> {
         let mut archive = T::from_path(archive_path)?;
         archive.set_decryption_properties(decryption_properties);
         Self::from_archive(archive)
@@ -980,6 +1177,30 @@ impl<T: ArchiveSource + 'static> ArchiveReader<T> {
 
     pub fn chromatograms_metadata(&self) -> io::Result<ParquetRecordBatchReaderBuilder<T::File>> {
         if let Some(meta) = self.members.chromatogram_metadata.as_ref() {
+            self.archive
+                .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap()))
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Chromatogram metadata entry not found",
+            ))
+        }
+    }
+
+    pub fn chromatograms_metadata_precursors(&self) -> io::Result<ParquetRecordBatchReaderBuilder<T::File>> {
+        if let Some(meta) = self.members.chromatogram_precursor_metadata.as_ref() {
+            self.archive
+                .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap()))
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Chromatogram metadata entry not found",
+            ))
+        }
+    }
+
+    pub fn chromatograms_metadata_selected_ions(&self) -> io::Result<ParquetRecordBatchReaderBuilder<T::File>> {
+        if let Some(meta) = self.members.chromatogram_selected_ion_metadata.as_ref() {
             self.archive
                 .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap()))
         } else {
@@ -1038,6 +1259,42 @@ impl<T: ArchiveSource + 'static> ArchiveReader<T> {
         }
     }
 
+    pub fn spectrum_metadata_scans(&self) -> io::Result<ParquetRecordBatchReaderBuilder<T::File>> {
+        if let Some(meta) = self.members.spectrum_scan_metadata.as_ref() {
+            self.archive
+                .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap()))
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Spectrum metadata entry not found",
+            ))
+        }
+    }
+
+    pub fn spectrum_metadata_precursors(&self) -> io::Result<ParquetRecordBatchReaderBuilder<T::File>> {
+        if let Some(meta) = self.members.spectrum_precursor_metadata.as_ref() {
+            self.archive
+                .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap()))
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Spectrum metadata entry not found",
+            ))
+        }
+    }
+
+    pub fn spectrum_metadata_selected_ions(&self) -> io::Result<ParquetRecordBatchReaderBuilder<T::File>> {
+        if let Some(meta) = self.members.spectrum_selected_ion_metadata.as_ref() {
+            self.archive
+                .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap()))
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Spectrum metadata entry not found",
+            ))
+        }
+    }
+
     pub fn wavelength_spectrum_data(
         &self,
     ) -> Option<io::Result<ParquetRecordBatchReaderBuilder<T::File>>> {
@@ -1059,6 +1316,15 @@ impl<T: ArchiveSource + 'static> ArchiveReader<T> {
                 self.archive
                     .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap())),
             )
+        } else {
+            None
+        }
+    }
+
+    pub fn wavelength_spectrum_metadata_scans(&self) -> Option<io::Result<ParquetRecordBatchReaderBuilder<T::File>>> {
+        if let Some(meta) = self.members.wavelength_scan_metadata.as_ref() {
+            Some(self.archive
+                 .read_index(meta.entry_index, Some(meta.metadata.clone().unwrap())))
         } else {
             None
         }
@@ -1132,8 +1398,13 @@ impl ArchiveSource for DispatchArchiveSource {
         dispatch!(self, src, { src.file_index() })
     }
 
-    fn set_decryption_properties(&mut self, decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>) {
-        dispatch!(self, src, { src.set_decryption_properties(decryption_properties); })
+    fn set_decryption_properties(
+        &mut self,
+        decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>,
+    ) {
+        dispatch!(self, src, {
+            src.set_decryption_properties(decryption_properties);
+        })
     }
 
     fn decryption_properties(&self) -> &HashMap<String, Arc<FileDecryptionProperties>> {
@@ -1142,7 +1413,6 @@ impl ArchiveSource for DispatchArchiveSource {
 }
 
 impl ArchiveReader<DispatchArchiveSource> {
-
     /// Create a memory-mapped reader for `handle`.
     ///
     /// A memory-mapped reader may be faster in some circumstances, but the caller **MUST** ensure the
@@ -1158,7 +1428,10 @@ impl ArchiveReader<DispatchArchiveSource> {
         Self::from_archive(archive)
     }
 
-    pub unsafe fn memmap_with_decryption(file: fs::File, decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>) -> io::Result<Self> {
+    pub unsafe fn memmap_with_decryption(
+        file: fs::File,
+        decryption_properties: HashMap<String, Arc<FileDecryptionProperties>>,
+    ) -> io::Result<Self> {
         let map = unsafe { memmap2::Mmap::map(&file)? };
         let buf = bytes::Bytes::from_owner(map);
         let mut archive = DispatchArchiveSource::MemoryMapZip(ZipArchiveBytesSource::new(buf)?);
@@ -1190,29 +1463,32 @@ impl MemoryMapZipArchiveReader {
 
 #[cfg(test)]
 mod test {
-    use arrow::array::AsArray;
-
     use super::*;
 
-    #[test]
-    fn test_base() -> io::Result<()> {
-        let arch = ArchiveReader::from_archive(SplittingZipArchiveSource::new("small.mzpeak".into())?)?;
+    fn test_archive_inner<T: ArchiveSource>(arch: &ArchiveReader<T>) -> io::Result<()> where T::File: io::Seek {
         let handle = arch.spectrum_metadata()?;
         let reader = handle.with_limit(5).build()?;
         for batch in reader {
-            let batch = batch.unwrap();
-            let spec = batch.column(0).as_struct();
+            let spec = batch.unwrap();
             assert_eq!(spec.column_by_name("index").unwrap().len(), 5);
         }
 
         let index = arch.file_index();
-        assert_eq!(index.len(), 5);
-        assert_eq!(arch.list_files().len(), 6);
+        assert_eq!(index.len(), 10);
+        assert_eq!(arch.list_files().len(), 11);
         assert!(arch.can_split());
 
         let mut handle = arch.open_stream("mzpeak_index.json")?;
         handle.seek_relative(20)?;
         assert_eq!(handle.stream_position()?, 20);
+        Ok(())
+    }
+
+    #[test]
+    fn test_base() -> io::Result<()> {
+        let arch =
+            ArchiveReader::from_archive(SplittingZipArchiveSource::new("small.mzpeak".into())?)?;
+        test_archive_inner(&arch)?;
 
         Ok(())
     }
@@ -1220,22 +1496,7 @@ mod test {
     #[test]
     fn test_mmap() -> io::Result<()> {
         let arch = MemoryMapZipArchiveReader::from_path("small.mzpeak".into())?;
-        let handle = arch.spectrum_metadata()?;
-        let reader = handle.with_limit(5).build()?;
-        for batch in reader {
-            let batch = batch.unwrap();
-            let spec = batch.column(0).as_struct();
-            assert_eq!(spec.column_by_name("index").unwrap().len(), 5);
-        }
-
-        let index = arch.file_index();
-        assert_eq!(index.len(), 5);
-        assert_eq!(arch.list_files().len(), 6);
-        assert!(arch.can_split());
-
-        let mut handle = arch.open_stream("mzpeak_index.json")?;
-        handle.seek_relative(20)?;
-        assert_eq!(handle.stream_position()?, 20);
+        test_archive_inner(&arch)?;
         Ok(())
     }
 
@@ -1243,45 +1504,14 @@ mod test {
     fn test_in_memory() -> io::Result<()> {
         let buf = Bytes::from(fs::read("small.mzpeak")?);
         let arch = MemoryMapZipArchiveReader::from_buf(buf)?;
-        let handle = arch.spectrum_metadata()?;
-        let reader = handle.with_limit(5).build()?;
-        for batch in reader {
-            let batch = batch.unwrap();
-            let spec = batch.column(0).as_struct();
-            assert_eq!(spec.column_by_name("index").unwrap().len(), 5);
-        }
-
-        let index = arch.file_index();
-        assert_eq!(index.len(), 5);
-        assert_eq!(arch.list_files().len(), 6);
-        assert!(arch.can_split());
-
-        let mut handle = arch.open_stream("mzpeak_index.json")?;
-        handle.seek_relative(20)?;
-        assert_eq!(handle.stream_position()?, 20);
+        test_archive_inner(&arch)?;
         Ok(())
     }
 
     #[test]
     fn test_base_dir() -> io::Result<()> {
         let arch = DirectoryArchiveReader::from_path("small.unpacked.mzpeak".into())?;
-        let handle = arch.spectrum_metadata()?;
-        let reader = handle.with_limit(5).build()?;
-        for batch in reader {
-            let batch = batch.unwrap();
-            let spec = batch.column(0).as_struct();
-            assert_eq!(spec.column_by_name("index").unwrap().len(), 5);
-        }
-
-        let index = arch.file_index();
-        assert_eq!(index.len(), 5);
-        assert_eq!(arch.list_files().len(), 6);
-        assert!(arch.can_split());
-
-        let mut handle = arch.open_stream("mzpeak_index.json")?;
-        handle.seek_relative(20)?;
-        assert_eq!(handle.stream_position()?, 20);
-
+        test_archive_inner(&arch)?;
         Ok(())
     }
 
@@ -1289,24 +1519,7 @@ mod test {
     fn test_base_splittable() -> io::Result<()> {
         let arch =
             ArchiveReader::<DispatchArchiveSource>::from_path("small.chunked.mzpeak".into())?;
-
-        let handle = arch.spectrum_metadata()?;
-        let reader = handle.with_limit(5).build()?;
-        for batch in reader {
-            let batch = batch.unwrap();
-            let spec = batch.column(0).as_struct();
-            assert_eq!(spec.column_by_name("index").unwrap().len(), 5);
-        }
-
-        let index = arch.file_index();
-        assert_eq!(index.len(), 5);
-        assert_eq!(arch.list_files().len(), 6);
-        assert!(arch.can_split());
-
-        let mut handle = arch.open_stream("mzpeak_index.json")?;
-        handle.seek_relative(20)?;
-        assert_eq!(handle.stream_position()?, 20);
-
+        test_archive_inner(&arch)?;
         Ok(())
     }
 }

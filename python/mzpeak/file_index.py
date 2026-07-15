@@ -1,5 +1,5 @@
 from typing import ClassVar
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from collections.abc import MutableSequence
 
@@ -8,11 +8,15 @@ OTHER = "other"
 
 SPECTRUM = "spectrum"
 CHROMATOGRAM = "chromatogram"
-WAVELENGTH_SPECTRUM = "wavelength spectrum"
+WAVELENGTH_SPECTRUM = "wavelength_spectrum"
 
-DATA_ARRAYS = "data arrays"
+DATA_ARRAYS = "data_arrays"
 METADATA = "metadata"
 PEAKS = "peaks"
+SCANS = "scans"
+PRECURSORS = "precursors"
+SELECTED_IONS = "selected_ions"
+PRODUCTS = "products"
 PROPRIETARY = "proprietary"
 
 
@@ -28,6 +32,9 @@ class EntityTypeTag(StrEnum):
             return cls(value)
         except ValueError:
             return cls.Other
+
+    def __call__(self, *args, **kwargs):
+        return EntityType.get(self)
 
 
 @dataclass(frozen=True)
@@ -75,16 +82,22 @@ class DataKindTag(StrEnum):
     DataArrays = DATA_ARRAYS
     Peaks = PEAKS
     Metadata = METADATA
+    Scans = SCANS
+    Precursors = PRECURSORS
+    SelectedIons = SELECTED_IONS
+    Products = PRODUCTS
     Other = OTHER
     Proprietary = PROPRIETARY
 
     @classmethod
     def get(cls, value: str):
         try:
-            return cls(value.replace("_", " "))
+            return cls(value.replace(" ", "_"))
         except ValueError:
             return cls.Other
 
+    def __call__(self, *args, **kwargs):
+        return DataKind.get(self)
 
 @dataclass(frozen=True)
 class DataKind:
@@ -94,6 +107,10 @@ class DataKind:
     DataArrays: ClassVar[DataKindTag] = DataKindTag.DataArrays
     Peaks: ClassVar[DataKindTag] = DataKindTag.Peaks
     Metadata: ClassVar[DataKindTag] = DataKindTag.Metadata
+    Scans: ClassVar[DataKindTag] = DataKindTag.Scans
+    Precursors: ClassVar[DataKindTag] = DataKindTag.Precursors
+    SelectedIons: ClassVar[DataKindTag] = DataKindTag.SelectedIons
+    Products: ClassVar[DataKindTag] = DataKindTag.Products
     Other: ClassVar[DataKindTag] = DataKindTag.Other
     Proprietary: ClassVar[DataKindTag] = DataKindTag.Proprietary
 
@@ -127,13 +144,25 @@ class DataKind:
         else:
             return self.label
 
+@dataclass
+class MetadataColumn:
+    name: str
+    path: list[str]
+    index: int | None = None
+    accession: str | None = None
+    unit: str | None = None
+
+    def to_json(self):
+        return asdict(self)
+
 
 @dataclass
 class FileEntry:
     name: str
     entity_type: EntityType
     data_kind: DataKind
-
+    column_mapping: list[MetadataColumn]
+    parameters: list[dict]
 
     def as_data_kind(self) -> DataKind:
         return self.data_kind
@@ -146,11 +175,26 @@ class FileEntry:
             "name": self.name,
             "entity_type": str(self.entity_type),
             "data_kind": str(self.data_kind),
+            "column_mapping": [c.to_json() for c in self.column_mapping],
+            "parameters": self.parameters,
         }
+
+    def rename_columns(self, columns: list[str]) -> list[str]:
+        name_map = {c.path[-1]: c.name for c in self.column_mapping}
+        return [name_map.get(c, c) for c in columns]
+
+    def renaming_map(self) -> dict[str, str]:
+        return {c.path[-1]: c.name for c in self.column_mapping}
 
     @classmethod
     def from_json(cls, data: dict) -> 'FileEntry':
-        return cls(data["name"], EntityType.get(data["entity_type"]), DataKind.get(data["data_kind"]))
+        return cls(
+            data["name"],
+            EntityType.get(data["entity_type"]),
+            DataKind.get(data["data_kind"]),
+            [MetadataColumn(**c) for c in data.get("column_mapping", [])],
+            data.get("parameters", []),
+        )
 
     def entry_type(self) -> tuple[EntityType, DataKind]:
         return (self.as_entity_type(), self.as_data_kind())
@@ -187,6 +231,26 @@ class FileIndex(MutableSequence[FileEntry]):
     def insert(self, i: int, value: FileEntry):
         self.files.insert(i, value)
 
+    def find(self, entity_type: EntityTypeTag | EntityType, data_kind: DataKindTag | DataKind) -> FileEntry | None:
+        """
+        Find a :class:`FileEntry` by tags.
+
+        Parameters
+        ----------
+        entity_type :
+            The entity type to constrain the search to.
+        data_kind :
+            The kind of data to constrain the search to.
+
+        Returns
+        -------
+        :class:`FileEntry` or :const:`None`
+        """
+        for f in self:
+            if f.data_kind == data_kind and f.entity_type == entity_type:
+                return f
+        return None
+
     def to_json(self) -> dict:
         return {
             "files": [v.to_json() for v in self.files],
@@ -196,7 +260,7 @@ class FileIndex(MutableSequence[FileEntry]):
     @classmethod
     def from_json(cls, data: dict) -> 'FileIndex':
         files = [FileEntry.from_json(f) for f in data['files']]
-        return cls(files, data['metadata'])
+        return cls(files, data.get('metadata', {}))
 
 
 __all__ = ["FileIndex", "FileEntry", "EntityType", "DataKind"]

@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use std::{borrow::Borrow, collections::{HashMap, VecDeque}, ops::Deref, vec};
 
 use mzdata::params::{ParamDescribed, ParamLike, Unit};
 use serde::{Deserialize, Serialize, ser::SerializeSeq};
@@ -184,17 +184,19 @@ pub struct MetaParam {
     pub name: Option<String>,
     #[serde(
         serialize_with = "opt_curie_serialize",
-        deserialize_with = "opt_curie_deserialize"
+        deserialize_with = "opt_curie_deserialize",
     )]
     pub accession: Option<CURIE>,
     #[serde(default)]
     pub value: serde_json::Value,
     #[serde(
         serialize_with = "opt_curie_serialize",
-        deserialize_with = "opt_curie_deserialize"
+        deserialize_with = "opt_curie_deserialize",
     )]
     pub unit: Option<CURIE>,
 }
+
+impl Eq for MetaParam {}
 
 impl From<MetaParam> for mzdata::Param {
     fn from(value: MetaParam) -> Self {
@@ -745,7 +747,7 @@ impl From<&mzdata::meta::Sample> for Sample {
 /// no value stored, the equivalent of [`Option::None`].
 ///
 /// Used primarily for denoting how to resolve the storage of [`Unit`] for a column.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PathOrCURIE {
     /// The column path denoting where each row's [`CURIE`] for this entity lives
     Path(Vec<String>),
@@ -800,16 +802,22 @@ impl From<Vec<String>> for PathOrCURIE {
     }
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetadataColumn {
+    /// A human-readable name for the parameter
     pub name: String,
+    /// The path to the column in the Parquet file
     pub path: Vec<String>,
-    pub index: usize,
+    /// The column index in the schema
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub index: Option<usize>,
+    /// The CURIE for the term this column refers to, if any
     #[serde(
         serialize_with = "opt_curie_serialize",
         deserialize_with = "opt_curie_deserialize"
     )]
     pub accession: Option<CURIE>,
+    /// The CURIE for the unit of this column, the path to another column that holds it, or None
     #[serde(
         serialize_with = "path_or_curie_serialize",
         deserialize_with = "path_or_curie_deserialize",
@@ -819,11 +827,11 @@ pub struct MetadataColumn {
 }
 
 impl MetadataColumn {
-    pub fn new(name: String, path: Vec<String>, index: usize, accession: Option<CURIE>) -> Self {
+    pub fn new(name: String, path: Vec<String>, index: impl Into<Option<usize>>, accession: Option<CURIE>) -> Self {
         Self {
             name,
             path,
-            index,
+            index: index.into(),
             accession,
             unit: PathOrCURIE::None,
         }
@@ -833,14 +841,52 @@ impl MetadataColumn {
         self.unit = value.into();
         self
     }
+
+    pub fn leaf(&self) -> Option<&str> {
+        self.path.last().map(|s| s.as_str())
+    }
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct MetadataColumnCollection(Vec<MetadataColumn>);
 
 impl MetadataColumnCollection {
     pub fn find(&self, curie: CURIE) -> Option<&MetadataColumn> {
         self.0.iter().find(|c| c.accession == Some(curie))
+    }
+
+    pub fn as_definition_map(&self) -> HashMap<String, MetadataColumn> {
+        let mut table = HashMap::with_capacity(self.len());
+        for col in self.iter().cloned() {
+            let key = col.path.last().unwrap().clone();
+            table.insert(key, col);
+        }
+        table
+    }
+
+    pub fn push(&mut self, value: MetadataColumn) {
+        self.0.push(value)
+    }
+}
+
+impl IntoIterator for MetadataColumnCollection {
+    type Item = MetadataColumn;
+
+    type IntoIter = vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a MetadataColumnCollection {
+    type Item = &'a MetadataColumn;
+
+    type IntoIter = core::slice::Iter<'a, MetadataColumn>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 
@@ -864,9 +910,249 @@ impl AsMut<Vec<MetadataColumn>> for MetadataColumnCollection {
     }
 }
 
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MetadataMapping {
+    columns: MetadataColumnCollection,
+    path: Vec<String>,
+    members: HashMap<String, MetadataMapping>,
+    column_map: Option<HashMap<String, usize>>,
+}
+
+struct MetadataTreeIter<'a> {
+    current: Option<core::slice::Iter<'a, MetadataColumn>>,
+    queue: VecDeque<&'a MetadataColumnCollection>
+}
+
+impl<'a> ExactSizeIterator for MetadataTreeIter<'a> {
+    fn len(&self) -> usize {
+        let z = self.current.as_ref().map(|s| s.len()).unwrap_or_default();
+        z + self.queue.iter().map(|v| v.len()).sum::<usize>()
+    }
+}
+
+impl<'a> Iterator for MetadataTreeIter<'a> {
+    type Item = &'a MetadataColumn;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.current.as_mut() {
+                Some(it) => {
+                    match it.next() {
+                        Some(val) => return Some(val),
+                        None => {
+                            self.current = self.queue.pop_front().map(|v| v.iter());
+                        }
+                    }
+                },
+                None => {
+                    return None
+                }
+            }
+        }
+    }
+}
+
+pub struct MetadataMappingIntoIter {
+    current: Option<std::vec::IntoIter<MetadataColumn>>,
+    queue: VecDeque<MetadataColumnCollection>
+}
+
+impl Iterator for MetadataMappingIntoIter {
+    type Item = MetadataColumn;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.current.as_mut() {
+                Some(it) => {
+                    match it.next() {
+                        Some(val) => return Some(val),
+                        None => {
+                            self.current = self.queue.pop_front().map(|v| v.into_iter());
+                        }
+                    }
+                },
+                None => {
+                    return None
+                }
+            }
+        }
+    }
+}
+
+impl ExactSizeIterator for MetadataMappingIntoIter {
+    fn len(&self) -> usize {
+        let z = self.current.as_ref().map(|s| s.len()).unwrap_or_default();
+        z + self.queue.iter().map(|v| v.len()).sum::<usize>()
+    }
+}
+
+impl MetadataMapping {
+    pub fn new(
+        columns: MetadataColumnCollection,
+        path: Vec<String>,
+        members: HashMap<String, MetadataMapping>,
+    ) -> Self {
+        Self {
+            columns,
+            path,
+            members,
+            column_map: None,
+        }
+    }
+
+    fn collect_node<'a>(&'a self, queue: &mut VecDeque<&'a MetadataColumnCollection>) {
+        queue.push_back(&self.columns);
+        for node in self.members.values() {
+            node.collect_node(queue);
+        }
+    }
+
+    fn collect_node_owned(self, queue: &mut VecDeque<MetadataColumnCollection>) {
+        queue.push_back(self.columns);
+        for node in self.members.into_values() {
+            node.collect_node_owned(queue);
+        }
+    }
+
+    pub fn iter<'a>(&'a self) -> impl Iterator<Item = &'a MetadataColumn> + 'a {
+        let mut queue = VecDeque::new();
+        self.collect_node(&mut queue);
+        let it = queue.pop_front().map(|v| v.iter());
+        MetadataTreeIter {
+            current: it,
+            queue
+        }
+    }
+
+    /// Rebuild the name lookup map for `columns` used by `traverse`
+    pub fn rebuild_column_maps(&mut self) {
+        self.column_map = Some(
+            self.columns
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (v.path.last().unwrap().to_string(), i))
+                .collect(),
+        );
+        for child in self.members.values_mut() {
+            child.rebuild_column_maps();
+        }
+    }
+
+    /// Traverse the tree from this node down the `path` to find `name`
+    pub fn traverse<Q: Borrow<str>>(&self, path: &[Q], name: &str) -> Option<&MetadataColumn> {
+        let mut node = self;
+        for p in path {
+            node = node.members.get(p.borrow())?;
+        }
+        match node.column_map.as_ref().and_then(|v| v.get(name).copied()) {
+            Some(i) => self.columns.get(i),
+            None => node.columns.iter().find(|v| v.path.last().unwrap() == name),
+        }
+    }
+
+    /// The path to this node
+    #[inline(always)]
+    pub fn path(&self) -> &[String] {
+        &self.path
+    }
+
+    /// Get access to the list of columns in this node
+    #[inline(always)]
+    pub fn columns(&self) -> &MetadataColumnCollection {
+        &self.columns
+    }
+
+    pub fn find(&self, curie: CURIE) -> Option<&MetadataColumn> {
+        self.columns.find(curie)
+    }
+
+    /// Get access to the child node map
+    #[inline(always)]
+    pub fn members(&self) -> &HashMap<String, MetadataMapping> {
+        &self.members
+    }
+
+    /// Get a child node by name
+    #[inline(always)]
+    pub fn member(&self, key: &str) -> Option<&MetadataMapping> {
+        self.members.get(key)
+    }
+}
+
+impl From<Vec<MetadataColumn>> for MetadataMapping {
+    fn from(value: Vec<MetadataColumn>) -> Self {
+        MetadataColumnCollection::from(value).into()
+    }
+}
+
+impl From<MetadataColumnCollection> for MetadataMapping {
+    fn from(value: MetadataColumnCollection) -> Self {
+        let mut by_prefix: HashMap<Vec<String>, Vec<MetadataColumn>> =
+            HashMap::with_capacity(value.len());
+
+        for col in value {
+            let n = col.path.len();
+            // This is a top-level leaf node
+            if n == 1 {
+                by_prefix.entry(Vec::new()).or_default().push(col);
+            } else {
+                // Otherwise this is a child's leaf node (no internal nodes exist)
+                let prefix: Vec<String> = col.path[..n - 1].iter().map(|s| s.to_string()).collect();
+                by_prefix.entry(prefix).or_default().push(col);
+            }
+        }
+
+        // Re-order the paths in ascending order
+        let mut by_prefix: Vec<(_, _)> = by_prefix.into_iter().collect();
+        by_prefix.sort_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0)));
+
+        let mut root = MetadataMapping::default();
+        for (prefix, cols) in by_prefix {
+            if prefix.is_empty() {
+                root.columns.as_mut().extend(cols);
+            } else {
+                // Walk down the path, and create nodes along the way
+                let n = prefix.len();
+                let mut node = &mut root;
+                for i in 0..n {
+                    node = node.members.entry(prefix[i].clone()).or_insert_with(|| {
+                        MetadataMapping::new(
+                            Default::default(),
+                            // Initialize the prefix of the intermediate or leaf nodes
+                            prefix[0..=i].iter().cloned().collect(),
+                            Default::default(),
+                        )
+                    });
+                }
+                // When we've reached the end of the path, set the leaf node's columns
+                *node.columns.as_mut() = cols.into();
+            }
+        }
+        root.rebuild_column_maps();
+        root
+    }
+}
+
+impl IntoIterator for MetadataMapping {
+    type Item = MetadataColumn;
+
+    type IntoIter = MetadataMappingIntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let mut queue = VecDeque::new();
+        self.collect_node_owned(&mut queue);
+        let current = queue.pop_front().map(|v| v.into_iter());
+        MetadataMappingIntoIter {
+            current,
+            queue
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::io;
+    use super::*;
 
     #[test]
     fn test_metadata_col_serde() -> io::Result<()> {
@@ -878,5 +1164,32 @@ mod test {
         assert_eq!(cols, dups);
 
         Ok(())
+    }
+
+
+    #[test]
+    fn test_spectrum_schema_map() {
+        let cols: Vec<MetadataColumn> = crate::spectrum::SpectrumEntry::metadata_columns()
+            .into_iter()
+            .map(|mut v| {
+                v.path.remove(0);
+                v
+            })
+            .collect();
+        let n = cols.len();
+        let mapping = MetadataMapping::from(cols);
+        assert_eq!(mapping.columns.len(), n);
+        assert_eq!(mapping.members.len(), 0);
+        assert_eq!(mapping.path.len(), 0);
+
+        let cols: Vec<MetadataColumn> = serde_json::from_str(r#"[{"name": "scan start time", "path": ["MS_1000016_scan_start_time_unit_UO_0000031"], "index": 0, "accession": "MS:1000016", "unit": "UO:0000031"}, {"name": "preset scan configuration", "path": ["MS_1000616_preset_scan_configuration"], "index": null, "accession": "MS:1000616", "unit": null}, {"name": "filter string", "path": ["MS_1000512_filter_string"], "index": null, "accession": "MS:1000512", "unit": null}, {"name": "ion injection time", "path": ["MS_1000927_ion_injection_time_unit_UO_0000028"], "index": 0, "accession": "MS:1000927", "unit": "UO:0000028"}, {"name": "scan window lower limit", "path": ["scan_windows", "MS_1000501_scan_window_lower_limit_unit_MS_1000040"], "index": 0, "accession": "MS:1000501", "unit": "MS:1000040"}, {"name": "scan window upper limit", "path": ["scan_windows", "MS_1000500_scan_window_upper_limit_unit_MS_1000040"], "index": 0, "accession": "MS:1000500", "unit": "MS:1000040"}]"#).unwrap();
+        let n = cols.len();
+        let mapping = MetadataMapping::from(cols);
+        assert_eq!(mapping.columns.len(), 4);
+        assert_eq!(mapping.members.len(), 1);
+        let window_mapping = mapping.members.get("scan_windows").unwrap();
+        assert_eq!(window_mapping.columns.len(), 2);
+        assert_eq!(window_mapping.columns.len() + mapping.columns.len(), n);
+        assert_eq!(window_mapping.path, vec!["scan_windows"]);
     }
 }

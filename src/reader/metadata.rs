@@ -7,20 +7,21 @@ use std::{
 
 use crate::{
     BufferContext,
-    archive::{ArchiveReader, ArchiveSource},
+    archive::{ArchiveReader, ArchiveSource, DataKind, FileIndex},
     buffer_descriptors::{ArrayIndex, SerializedArrayIndex, arrow_to_array_type},
     constants::{
-        CHROMATOGRAM, CHROMATOGRAM_ARRAY_INDEX, DATA_PROCESSING_METHOD_LIST_KEY, FILE_DESCRIPTION_KEY, INDEX, INSTRUMENT_CONFIGURATION_LIST_KEY, MS_RUN_KEY, NUMBER_OF_DATA_POINTS, NUMBER_OF_PEAKS, PRECURSOR, SAMPLE_LIST_KEY, SCAN, SCAN_SETTINGS_LIST_KEY, SELECTED_ION, SOFTWARE_LIST_KEY, SOURCE_INDEX, SPECTRUM, SPECTRUM_ARRAY_INDEX, SPECTRUM_INDEX, WAVELENGTH_SPECTRUM_ARRAY_INDEX
+        CHROMATOGRAM, CHROMATOGRAM_ARRAY_INDEX, INDEX,
+        PRECURSOR, SCAN, SELECTED_ION, SOURCE_INDEX, SPECTRUM,
+        SPECTRUM_ARRAY_INDEX, SPECTRUM_INDEX, WAVELENGTH_SPECTRUM_ARRAY_INDEX,
     },
     filter::RegressionDeltaModel,
-    param::{MetadataColumn, MetadataColumnCollection},
+    param::MetadataMapping,
     reader::{
         index::{QueryIndex, SpectrumDataIndex, SpectrumMetadataIndexLike, SpectrumPointIndex},
         utils::MaskSet,
         visitor::{
             CompoundIndexVisitor, DoubleIndexed, Indexed, MzChromatogramBuilder,
             MzPrecursorVisitor, MzScanVisitor, MzSelectedIonVisitor, MzSpectrumVisitor,
-            metadata_columns_to_definition_map, schema_to_metadata_cols,
         },
     },
 };
@@ -31,13 +32,10 @@ use arrow::{
 use identity_hash::BuildIdentityHasher;
 use itertools::Itertools;
 use mzdata::{
-    io::OffsetIndex,
-    meta,
-    prelude::*,
-    spectrum::{
+    curie, io::OffsetIndex, meta, prelude::*, spectrum::{
         ArrayType, BinaryDataArrayType, ChromatogramDescription, DataArray, Precursor, ScanEvent,
         SelectedIon, SpectrumDescription,
-    },
+    }
 };
 use mzpeaks::coordinate::SimpleInterval;
 use parquet::{
@@ -48,7 +46,7 @@ use parquet::{
         },
     },
     file::{
-        metadata::{KeyValue, ParquetMetaData},
+        metadata::ParquetMetaData,
         reader::ChunkReader,
     },
     schema::types::SchemaDescPtr,
@@ -57,9 +55,10 @@ use parquet::{
 pub trait ReaderFacetMetadataLike {
     fn array_indices(&self) -> &Arc<ArrayIndex>;
     fn id_index(&self) -> &OffsetIndex;
-    fn primary_metadata_map(&self) -> Option<&[MetadataColumn]>;
-    fn scan_metadata_map(&self) -> Option<&[MetadataColumn]>;
-    fn selected_ion_metadata_map(&self) -> Option<&[MetadataColumn]>;
+    fn primary_metadata_map(&self) -> Option<&MetadataMapping>;
+    fn precursor_metadata_map(&self) -> Option<&MetadataMapping>;
+    fn scan_metadata_map(&self) -> Option<&MetadataMapping>;
+    fn selected_ion_metadata_map(&self) -> Option<&MetadataMapping>;
     fn auxiliary_array_counts(&self) -> &[u32];
 }
 
@@ -69,9 +68,10 @@ pub struct SpectrumMetadataFacet {
     pub(crate) id_index: OffsetIndex,
     pub(crate) mz_model_deltas: Vec<Option<Vec<f64>>>,
     pub(crate) auxiliary_array_counts: Vec<u32>,
-    pub(crate) spectrum_metadata_map: Option<MetadataColumnCollection>,
-    pub(crate) scan_metadata_map: Option<MetadataColumnCollection>,
-    pub(crate) selected_ion_metadata_map: Option<MetadataColumnCollection>,
+    pub(crate) spectrum_metadata_map: Option<MetadataMapping>,
+    pub(crate) scan_metadata_map: Option<MetadataMapping>,
+    pub(crate) precursor_metadata_map: Option<MetadataMapping>,
+    pub(crate) selected_ion_metadata_map: Option<MetadataMapping>,
     pub(crate) peak_indices: Option<PeakMetadata>,
     pub(crate) data_point_counts: Vec<u64>,
     pub(crate) peak_counts: Vec<u64>,
@@ -86,16 +86,20 @@ impl ReaderFacetMetadataLike for SpectrumMetadataFacet {
         &self.id_index
     }
 
-    fn primary_metadata_map(&self) -> Option<&[MetadataColumn]> {
-        self.spectrum_metadata_map.as_deref()
+    fn primary_metadata_map(&self) -> Option<&MetadataMapping> {
+        self.spectrum_metadata_map.as_ref()
     }
 
-    fn scan_metadata_map(&self) -> Option<&[MetadataColumn]> {
-        self.scan_metadata_map.as_deref()
+    fn scan_metadata_map(&self) -> Option<&MetadataMapping> {
+        self.scan_metadata_map.as_ref()
     }
 
-    fn selected_ion_metadata_map(&self) -> Option<&[MetadataColumn]> {
-        self.selected_ion_metadata_map.as_deref()
+    fn precursor_metadata_map(&self) -> Option<&MetadataMapping> {
+        self.precursor_metadata_map.as_ref()
+    }
+
+    fn selected_ion_metadata_map(&self) -> Option<&MetadataMapping> {
+        self.selected_ion_metadata_map.as_ref()
     }
 
     fn auxiliary_array_counts(&self) -> &[u32] {
@@ -109,9 +113,10 @@ impl SpectrumMetadataFacet {
         spectrum_id_index: OffsetIndex,
         mz_model_deltas: Vec<Option<Vec<f64>>>,
         spectrum_auxiliary_array_counts: Vec<u32>,
-        spectrum_metadata_map: Option<MetadataColumnCollection>,
-        scan_metadata_map: Option<MetadataColumnCollection>,
-        selected_ion_metadata_map: Option<MetadataColumnCollection>,
+        spectrum_metadata_map: Option<MetadataMapping>,
+        scan_metadata_map: Option<MetadataMapping>,
+        precursor_metadata_map: Option<MetadataMapping>,
+        selected_ion_metadata_map: Option<MetadataMapping>,
         peak_indices: Option<PeakMetadata>,
         data_point_counts: Vec<u64>,
         peak_counts: Vec<u64>,
@@ -123,6 +128,7 @@ impl SpectrumMetadataFacet {
             auxiliary_array_counts: spectrum_auxiliary_array_counts,
             spectrum_metadata_map,
             scan_metadata_map,
+            precursor_metadata_map,
             selected_ion_metadata_map,
             peak_indices,
             data_point_counts,
@@ -144,8 +150,8 @@ pub struct WavelengthSpectrumMetadataFacet {
     pub(crate) array_indices: Arc<ArrayIndex>,
     pub(crate) id_index: OffsetIndex,
     pub(crate) auxiliary_array_counts: Vec<u32>,
-    pub(crate) spectrum_metadata_map: Option<MetadataColumnCollection>,
-    pub(crate) scan_metadata_map: Option<MetadataColumnCollection>,
+    pub(crate) spectrum_metadata_map: Option<MetadataMapping>,
+    pub(crate) scan_metadata_map: Option<MetadataMapping>,
 }
 
 impl ReaderFacetMetadataLike for WavelengthSpectrumMetadataFacet {
@@ -157,15 +163,19 @@ impl ReaderFacetMetadataLike for WavelengthSpectrumMetadataFacet {
         &self.id_index
     }
 
-    fn primary_metadata_map(&self) -> Option<&[MetadataColumn]> {
-        self.spectrum_metadata_map.as_deref()
+    fn primary_metadata_map(&self) -> Option<&MetadataMapping> {
+        self.spectrum_metadata_map.as_ref()
     }
 
-    fn scan_metadata_map(&self) -> Option<&[MetadataColumn]> {
-        self.scan_metadata_map.as_deref()
+    fn scan_metadata_map(&self) -> Option<&MetadataMapping> {
+        self.scan_metadata_map.as_ref()
     }
 
-    fn selected_ion_metadata_map(&self) -> Option<&[MetadataColumn]> {
+    fn precursor_metadata_map(&self) -> Option<&MetadataMapping> {
+        None
+    }
+
+    fn selected_ion_metadata_map(&self) -> Option<&MetadataMapping> {
         None
     }
 
@@ -179,7 +189,9 @@ pub struct ChromatogramMetadataFacet {
     pub(crate) array_indices: Arc<ArrayIndex>,
     pub(crate) id_index: OffsetIndex,
     pub(crate) auxiliary_array_counts: Vec<u32>,
-    pub(crate) chromatogram_metadata_map: Option<MetadataColumnCollection>,
+    pub(crate) chromatogram_metadata_map: Option<MetadataMapping>,
+    pub(crate) precursor_metadata_map: Option<MetadataMapping>,
+    pub(crate) selected_ion_metadata_map: Option<MetadataMapping>,
 }
 
 impl ChromatogramMetadataFacet {
@@ -187,13 +199,17 @@ impl ChromatogramMetadataFacet {
         array_indices: Arc<ArrayIndex>,
         id_index: OffsetIndex,
         auxiliary_array_counts: Vec<u32>,
-        chromatogram_metadata_map: Option<MetadataColumnCollection>,
+        chromatogram_metadata_map: Option<MetadataMapping>,
+        precursor_metadata_map: Option<MetadataMapping>,
+        selected_ion_metadata_map: Option<MetadataMapping>,
     ) -> Self {
         Self {
             array_indices,
             id_index,
             auxiliary_array_counts,
             chromatogram_metadata_map,
+            precursor_metadata_map,
+            selected_ion_metadata_map,
         }
     }
 }
@@ -207,16 +223,20 @@ impl ReaderFacetMetadataLike for ChromatogramMetadataFacet {
         &self.id_index
     }
 
-    fn primary_metadata_map(&self) -> Option<&[MetadataColumn]> {
-        self.chromatogram_metadata_map.as_deref()
+    fn primary_metadata_map(&self) -> Option<&MetadataMapping> {
+        self.chromatogram_metadata_map.as_ref()
     }
 
-    fn scan_metadata_map(&self) -> Option<&[MetadataColumn]> {
+    fn scan_metadata_map(&self) -> Option<&MetadataMapping> {
         None
     }
 
-    fn selected_ion_metadata_map(&self) -> Option<&[MetadataColumn]> {
-        None
+    fn precursor_metadata_map(&self) -> Option<&MetadataMapping> {
+        self.precursor_metadata_map.as_ref()
+    }
+
+    fn selected_ion_metadata_map(&self) -> Option<&MetadataMapping> {
+        self.selected_ion_metadata_map.as_ref()
     }
 
     fn auxiliary_array_counts(&self) -> &[u32] {
@@ -307,19 +327,15 @@ impl MSDataFileMetadata for ReaderMetadata {
 pub(crate) fn build_id_index<T: ArchiveSource>(
     handle: ParquetRecordBatchReaderBuilder<T::File>,
     prefix: &str,
-    name: &str,
 ) -> io::Result<OffsetIndex> {
     let mut id_index = OffsetIndex::new(prefix.to_string());
     let pq_schema = handle.parquet_schema();
     let mask = ProjectionMask::columns(
         pq_schema,
-        [
-            format!("{name}.id").as_str(),
-            format!("{name}.index").as_str(),
-        ],
+        [format!("id").as_str(), format!("index").as_str()],
     );
     for batch in handle.with_projection(mask).build()?.flatten() {
-        let root = batch.column(0).as_struct();
+        let root = batch;
 
         let indices: &UInt64Array = root
             .column_by_name(INDEX)
@@ -405,145 +421,104 @@ pub(crate) struct ParquetIndexExtractor {
 }
 
 impl ParquetIndexExtractor {
-    pub(crate) fn visit_file_metadata_key_value_pairs<'a>(
+    pub(crate) fn load_spectrum_metadata_indices<T>(
         &mut self,
-        iter: impl Iterator<Item = &'a KeyValue>,
-    ) -> io::Result<()> {
-        for kv in iter {
-            match kv.key.as_str() {
-                FILE_DESCRIPTION_KEY => {
-                    if let Some(val) = kv.value.as_ref() {
-                        let file_description: crate::param::FileDescription =
-                            serde_json::from_str(&val)?;
-                        *self.mz_metadata.file_description_mut() = file_description.into();
-                    } else {
-                        log::warn!("file description was empty");
-                    }
-                }
-                INSTRUMENT_CONFIGURATION_LIST_KEY => {
-                    if let Some(val) = kv.value.as_ref() {
-                        let instrument_configurations: Vec<crate::param::InstrumentConfiguration> =
-                            serde_json::from_str(&val)?;
-                        for ic in instrument_configurations {
-                            self.mz_metadata
-                                .instrument_configurations_mut()
-                                .insert(ic.id, ic.into());
-                        }
-                    } else {
-                        log::warn!("instrument configurations list was empty for",);
-                    }
-                }
-                DATA_PROCESSING_METHOD_LIST_KEY => {
-                    if let Some(val) = kv.value.as_ref() {
-                        let data_processing_list: Vec<crate::param::DataProcessing> =
-                            serde_json::from_str(&val)?;
-                        for dp in data_processing_list {
-                            self.mz_metadata.data_processings_mut().push(dp.into());
-                        }
-                    } else {
-                        log::warn!("data processing method list was empty");
-                    }
-                }
-                SAMPLE_LIST_KEY => {
-                    if let Some(val) = kv.value.as_ref() {
-                        let meta_list: Vec<crate::param::Sample> = serde_json::from_str(&val)?;
-                        for sw in meta_list {
-                            self.mz_metadata.samples_mut().push(sw.into());
-                        }
-                    } else {
-                        log::warn!("sample list was empty");
-                    }
-                }
-                SOFTWARE_LIST_KEY => {
-                    if let Some(val) = kv.value.as_ref() {
-                        let software_list: Vec<crate::param::Software> =
-                            serde_json::from_str(&val)?;
-                        for sw in software_list {
-                            self.mz_metadata.softwares_mut().push(sw.into());
-                        }
-                    } else {
-                        log::warn!("software list was empty");
-                    }
-                }
-                SCAN_SETTINGS_LIST_KEY => {
-                    if let Some(val) = kv.value.as_ref() {
-                        let settings: Vec<crate::param::ScanSettings> = serde_json::from_str(&val)?;
-                        match self.mz_metadata.scan_settings_mut() {
-                            Some(confs) => confs.extend(settings.into_iter().map(|v| v.into())),
-                            None => {
-                                panic!("Cannot inject scan settings. This should never happen");
-                            }
-                        }
-                    } else {
-                        log::warn!("scan_settings was empty")
-                    }
-                }
-                MS_RUN_KEY => {
-                    if let Some(val) = kv.value.as_ref() {
-                        let run: meta::MassSpectrometryRun = serde_json::from_str(&val)?;
-                        *self.mz_metadata.run_description_mut().unwrap() = run;
-                    } else {
-                        log::warn!("run was empty")
-                    }
-                }
-                _ => {}
-            }
-        }
-        Ok(())
+        spectrum_metadata_reader: &ArrowReaderBuilder<T>,
+    ) {
+        self.query_index
+            .populate_spectrum_metadata_indices(spectrum_metadata_reader);
     }
 
-    pub(crate) fn visit_spectrum_metadata_reader<T>(
+    pub(crate) fn load_spectrum_metadata_scan_indices<T>(
         &mut self,
-        spectrum_metadata_reader: ArrowReaderBuilder<T>,
-    ) -> io::Result<()> {
-        let arrow_schema = spectrum_metadata_reader.schema();
-        if let Ok(root) = arrow_schema.field_with_name(SPECTRUM) {
-            if let DataType::Struct(fields) = root.data_type() {
-                let defaults = crate::spectrum::SpectrumEntry::metadata_columns();
-                let defined_columns = metadata_columns_to_definition_map(defaults);
-                self.spectra.spectrum_metadata_map = Some(schema_to_metadata_cols(
-                    fields,
-                    SPECTRUM.into(),
-                    Some(&defined_columns),
-                ));
-            }
-        }
-        if let Ok(root) = arrow_schema.field_with_name(SCAN) {
-            if let DataType::Struct(fields) = root.data_type() {
-                let defaults = crate::spectrum::ScanEntry::metadata_columns();
-                let defined_columns = metadata_columns_to_definition_map(defaults);
-                self.spectra.scan_metadata_map = Some(schema_to_metadata_cols(
-                    fields,
-                    SCAN.into(),
-                    Some(&defined_columns),
-                ));
-            }
-        }
-        if let Ok(root) = arrow_schema.field_with_name(SELECTED_ION) {
-            if let DataType::Struct(fields) = root.data_type() {
-                let defaults = crate::spectrum::SelectedIonEntry::metadata_columns();
-                let defined_columns = metadata_columns_to_definition_map(defaults);
-                self.spectra.selected_ion_metadata_map = Some(schema_to_metadata_cols(
-                    fields,
-                    SELECTED_ION.into(),
-                    Some(&defined_columns),
-                ));
-            }
-        }
-
-        self.visit_file_metadata_key_value_pairs(
-            spectrum_metadata_reader
-                .metadata()
-                .file_metadata()
-                .key_value_metadata()
-                .into_iter()
-                .flatten(),
-        )?;
-
+        spectrum_metadata_reader: &ArrowReaderBuilder<T>,
+    ) {
         self.query_index
-            .populate_spectrum_metadata_indices(&spectrum_metadata_reader);
+            .populate_spectrum_scan_indices(spectrum_metadata_reader);
+    }
 
-        Ok(())
+    pub(crate) fn load_spectrum_metadata_precursor_indices<T>(
+        &mut self,
+        spectrum_metadata_reader: &ArrowReaderBuilder<T>,
+    ) {
+        self.query_index
+            .populate_spectrum_precursor_indices(spectrum_metadata_reader);
+    }
+
+    pub(crate) fn load_spectrum_metadata_selected_ion_indices<T>(
+        &mut self,
+        spectrum_metadata_reader: &ArrowReaderBuilder<T>,
+    ) {
+        self.query_index
+            .populate_spectrum_selected_ion_indices(spectrum_metadata_reader);
+    }
+
+    pub(crate) fn load_metadata_mapping_from_index(&mut self, file_index: &FileIndex) {
+        for f in file_index.iter() {
+            log::trace!("Visiting {f:?} from file index");
+            match &f.entity_type {
+                crate::archive::EntityType::Spectrum => match f.data_kind {
+                    crate::archive::DataKind::DataArray
+                    | crate::archive::DataKind::Peaks
+                    | crate::archive::DataKind::Other(_)
+                    | crate::archive::DataKind::Proprietary => {}
+                    crate::archive::DataKind::Metadata => {
+                        self.spectra.spectrum_metadata_map = Some(f.column_mapping.clone().into())
+                    }
+                    crate::archive::DataKind::Scans => {
+                        self.spectra.scan_metadata_map = Some(f.column_mapping.clone().into())
+                    }
+                    crate::archive::DataKind::Precursors => {
+                        self.spectra.precursor_metadata_map =
+                            Some(f.column_mapping.clone().into())
+                    }
+                    crate::archive::DataKind::SelectedIons => {
+                        self.spectra.selected_ion_metadata_map =
+                            Some(f.column_mapping.clone().into())
+                    }
+                    crate::archive::DataKind::Products => {}
+                },
+                crate::archive::EntityType::Chromatogram => match f.data_kind {
+                    crate::archive::DataKind::DataArray
+                    | crate::archive::DataKind::Peaks
+                    | crate::archive::DataKind::Other(_)
+                    | crate::archive::DataKind::Scans
+                    | crate::archive::DataKind::Proprietary => {}
+                    crate::archive::DataKind::Metadata => {
+                        self.chromatograms.chromatogram_metadata_map =
+                            Some(f.column_mapping.clone().into())
+                    }
+                    crate::archive::DataKind::Precursors => {
+                        self.chromatograms.precursor_metadata_map =
+                            Some(f.column_mapping.clone().into())
+                    }
+                    crate::archive::DataKind::SelectedIons => {
+                        self.chromatograms.selected_ion_metadata_map =
+                            Some(f.column_mapping.clone().into())
+                    }
+                    crate::archive::DataKind::Products => todo!(),
+                },
+                crate::archive::EntityType::WavelengthSpectrum => {
+                    let v = self.wavelength_spectra.get_or_insert_default();
+                    match f.data_kind {
+                        crate::archive::DataKind::DataArray
+                        | crate::archive::DataKind::Peaks
+                        | crate::archive::DataKind::Other(_)
+                        | crate::archive::DataKind::Products
+                        | crate::archive::DataKind::Precursors
+                        | crate::archive::DataKind::SelectedIons
+                        | crate::archive::DataKind::Proprietary => {}
+                        crate::archive::DataKind::Metadata => {
+                            v.spectrum_metadata_map = Some(f.column_mapping.clone().into())
+                        }
+                        crate::archive::DataKind::Scans => {
+                            v.scan_metadata_map = Some(f.column_mapping.clone().into())
+                        }
+                    }
+                }
+                crate::archive::EntityType::Other(_) => {},
+            }
+        }
     }
 
     pub(crate) fn visit_spectrum_data_reader<T>(
@@ -610,35 +585,6 @@ impl ParquetIndexExtractor {
         &mut self,
         wavelength_spectrum_metadata_reader: ArrowReaderBuilder<T>,
     ) -> io::Result<()> {
-        let arrow_schema = wavelength_spectrum_metadata_reader.schema();
-
-        if let Ok(root) = arrow_schema.field_with_name(SPECTRUM) {
-            if let DataType::Struct(fields) = root.data_type() {
-                let defaults = crate::spectrum::SpectrumEntry::metadata_columns();
-                let defined_columns = metadata_columns_to_definition_map(defaults);
-                let mut spectra = self.wavelength_spectra.take().unwrap_or_default();
-                spectra.spectrum_metadata_map = Some(schema_to_metadata_cols(
-                    fields,
-                    SPECTRUM.into(),
-                    Some(&defined_columns),
-                ));
-                self.wavelength_spectra = Some(spectra);
-            }
-        }
-        if let Ok(root) = arrow_schema.field_with_name(SCAN) {
-            if let DataType::Struct(fields) = root.data_type() {
-                let defaults = crate::spectrum::ScanEntry::metadata_columns();
-                let defined_columns = metadata_columns_to_definition_map(defaults);
-                let mut spectra = self.wavelength_spectra.take().unwrap_or_default();
-                spectra.scan_metadata_map = Some(schema_to_metadata_cols(
-                    fields,
-                    SCAN.into(),
-                    Some(&defined_columns),
-                ));
-                self.wavelength_spectra = Some(spectra);
-            }
-        }
-
         self.query_index
             .populate_wavelength_spectrum_metadata_indices(&wavelength_spectrum_metadata_reader);
         Ok(())
@@ -648,33 +594,8 @@ impl ParquetIndexExtractor {
         &mut self,
         chromatogram_metadata_reader: ArrowReaderBuilder<T>,
     ) -> io::Result<()> {
-        let arrow_schema = chromatogram_metadata_reader.schema();
-        if let Ok(root) = arrow_schema.field_with_name(CHROMATOGRAM) {
-            if let DataType::Struct(fields) = root.data_type() {
-                let defaults = crate::spectrum::ChromatogramEntry::metadata_columns();
-                let defined_columns = metadata_columns_to_definition_map(defaults);
-                self.chromatograms.chromatogram_metadata_map = Some(schema_to_metadata_cols(
-                    fields,
-                    CHROMATOGRAM.into(),
-                    Some(&defined_columns),
-                ));
-            }
-        }
-
-        for kv in chromatogram_metadata_reader
-            .metadata()
-            .file_metadata()
-            .key_value_metadata()
-            .into_iter()
-            .flatten()
-        {
-            match kv.key.as_str() {
-                _ => {}
-            }
-        }
         self.query_index
             .populate_chromatogram_metadata_indices(&chromatogram_metadata_reader);
-
         Ok(())
     }
 
@@ -722,14 +643,18 @@ pub(crate) fn load_indices_from<T: ArchiveSource>(
     handle: &mut ArchiveReader<T>,
 ) -> io::Result<(ReaderMetadata, QueryIndex)> {
     log::trace!("Loading indices");
-    let spectrum_metadata_reader = handle.spectrum_metadata()?;
     let spectrum_data_reader = handle.spectrum_data()?;
 
-    let spectrum_id_index = build_id_index::<T>(handle.spectrum_metadata()?, SPECTRUM, SPECTRUM)?;
-
     let mut this = ParquetIndexExtractor::default();
+    this.load_metadata_mapping_from_index(handle.file_index());
+
     log::trace!("Loading spectrum metadata indices");
-    this.visit_spectrum_metadata_reader(spectrum_metadata_reader)?;
+    let spectrum_metadata_reader = handle.spectrum_metadata()?;
+    this.load_spectrum_metadata_indices(&spectrum_metadata_reader);
+    let spectrum_id_index = build_id_index::<T>(spectrum_metadata_reader, SPECTRUM)?;
+    this.load_spectrum_metadata_scan_indices(&handle.spectrum_metadata_scans()?);
+    this.load_spectrum_metadata_precursor_indices(&handle.spectrum_metadata_precursors()?);
+    this.load_spectrum_metadata_selected_ion_indices(&handle.spectrum_metadata_selected_ions()?);
 
     log::trace!("Loading spectrum data indices");
     this.visit_spectrum_data_reader(spectrum_data_reader)?;
@@ -738,7 +663,15 @@ pub(crate) fn load_indices_from<T: ArchiveSource>(
         log::trace!("Loading chromatogram metadata indices");
         this.visit_chromatogram_metadata_reader(chromatogram_metadata_reader)?;
         this.chromatograms.id_index =
-            build_id_index::<T>(handle.chromatograms_metadata()?, CHROMATOGRAM, CHROMATOGRAM)?;
+            build_id_index::<T>(handle.chromatograms_metadata()?, CHROMATOGRAM)?;
+    }
+    if let Ok(chromatogram_metadata_reader) = handle.chromatograms_metadata_precursors() {
+        this.query_index
+            .populate_chromatogram_metadata_precursor_indices(&chromatogram_metadata_reader);
+    }
+    if let Ok(chromatogram_metadata_reader) = handle.chromatograms_metadata_selected_ions() {
+        this.query_index
+            .populate_chromatogram_metadata_selected_ion_indices(&chromatogram_metadata_reader);
     }
     if let Ok(chromatogram_data_reader) = handle.chromatograms_data() {
         log::trace!("Loading chromatogram indices");
@@ -766,7 +699,7 @@ pub(crate) fn load_indices_from<T: ArchiveSource>(
     this.spectra.id_index = spectrum_id_index;
 
     if let Some(Ok(dat)) = handle.wavelength_spectrum_metadata() {
-        let id_index = build_id_index::<T>(dat, "wavelength_spectrum", SPECTRUM)?;
+        let id_index = build_id_index::<T>(dat, "wavelength_spectrum")?;
         let mut meta = this.wavelength_spectra.take().unwrap_or_default();
         meta.id_index = id_index;
         this.wavelength_spectra = Some(meta);
@@ -802,105 +735,68 @@ pub(crate) trait SpectrumMetadataQuerySource: BaseMetadataQuerySource {
         ) -> Result<arrow::array::BooleanArray, arrow::error::ArrowError>
         + 'static,
     > {
-        let predicate_mask = ProjectionMask::columns(
-            &self.parquet_schema(),
-            [
-                "spectrum.index",
-                "scan.spectrum_index",
-                "scan.source_index",
-                "precursor.spectrum_index",
-                "precursor.source_index",
-                "selected_ion.spectrum_index",
-                "selected_ion.source_index",
-            ],
-        );
+        let schema = self.parquet_schema();
+        let index_col = schema.column(0);
+        let predicate_mask = ProjectionMask::columns(&self.parquet_schema(), [index_col.name()]);
 
         let predicate = ArrowPredicateFn::new(predicate_mask, move |batch| {
-            let spectrum_index: &UInt64Array = batch
-                .column(0)
-                .as_struct()
-                .column(0)
-                .as_primitive::<UInt64Type>();
+            let primary_index: &UInt64Array = batch.column(0).as_primitive::<UInt64Type>();
 
-            let scan_spectrum_index: &UInt64Array = batch
-                .column(1)
-                .as_struct()
-                .column(0)
-                .as_primitive::<UInt64Type>();
-
-            macro_rules! is_some_or {
-                ($it:ident, $arr:ident) => {
-                    $arr.iter()
-                        .map(|val| val.is_some())
-                        .zip($it)
-                        .map(|(a, b)| a || b)
-                };
-            }
-
-            let it = spectrum_index.iter().map(|val| val.is_some());
-            let it = is_some_or!(it, scan_spectrum_index);
-
-            if batch.column_by_name(PRECURSOR).is_none() {
-                return Ok(it.map(Some).collect());
-            }
-
-            let precursor_spectrum_index: &UInt64Array = batch
-                .column(2)
-                .as_struct()
-                .column(0)
-                .as_primitive::<UInt64Type>();
-
-            let it = is_some_or!(it, precursor_spectrum_index);
-
-            if batch.column_by_name(SELECTED_ION).is_none() {
-                return Ok(it.map(Some).collect());
-            }
-
-            let selected_ion_spectrum_index: &UInt64Array = batch
-                .column(3)
-                .as_struct()
-                .column(0)
-                .as_primitive::<UInt64Type>();
-
-            let it = is_some_or!(it, selected_ion_spectrum_index);
+            let it = primary_index.iter().map(|val| val.is_some());
             Ok(it.map(Some).collect())
         });
         predicate
     }
 
-    fn prepare_rows_for_all(&self, query_indices: &impl SpectrumMetadataIndexLike) -> RowSelection {
-        let mut rows = query_indices.index_index().row_selection_is_not_null();
-
-        if let Some(s) = query_indices.scan_index() {
-            rows = rows.union(&s.row_selection_is_not_null());
+    fn prepare_rows_for_all(
+        &self,
+        query_indices: &impl SpectrumMetadataIndexLike,
+        facet: DataKind,
+    ) -> RowSelection {
+        match facet {
+            DataKind::Metadata => query_indices.index_index().row_selection_is_not_null(),
+            DataKind::Scans => query_indices
+                .scan_index()
+                .map(|s| s.row_selection_is_not_null())
+                .unwrap_or_default(),
+            DataKind::Precursors => query_indices
+                .precursor_index()
+                .map(|s| s.row_selection_is_not_null())
+                .unwrap_or_default(),
+            DataKind::SelectedIons => query_indices
+                .selected_ion_index()
+                .map(|s| s.row_selection_is_not_null())
+                .unwrap_or_default(),
+            _ => unimplemented!(
+                "{facet:?} row selection is not supported by SpectrumMetadataQuerySource",
+            ),
         }
-        if let Some(s) = query_indices.precursor_index() {
-            rows = rows.union(&s.row_selection_is_not_null());
-        }
-        if let Some(s) = query_indices.selected_ion_index() {
-            rows = rows.union(&s.row_selection_is_not_null());
-        }
-
-        rows
     }
 
     fn prepare_rows_for(
         &self,
         index: u64,
         query_indices: &impl SpectrumMetadataIndexLike,
+        facet: DataKind,
     ) -> RowSelection {
-        let mut rows = query_indices.index_index().row_selection_contains(index);
-
-        if let Some(s) = query_indices.scan_index() {
-            rows = rows.union(&s.row_selection_contains(index));
+        match facet {
+            DataKind::Metadata => query_indices.index_index().row_selection_contains(index),
+            DataKind::Scans => query_indices
+                .scan_index()
+                .map(|s| s.row_selection_contains(index))
+                .unwrap_or_default(),
+            DataKind::Precursors => query_indices
+                .precursor_index()
+                .map(|s| s.row_selection_contains(index))
+                .unwrap_or_default(),
+            DataKind::SelectedIons => query_indices
+                .selected_ion_index()
+                .map(|s| s.row_selection_contains(index))
+                .unwrap_or_default(),
+            _ => unimplemented!(
+                "{facet:?} row selection is not supported by SpectrumMetadataQuerySource",
+            ),
         }
-        if let Some(s) = query_indices.precursor_index() {
-            rows = rows.union(&s.row_selection_contains(index));
-        }
-        if let Some(s) = query_indices.selected_ion_index() {
-            rows = rows.union(&s.row_selection_contains(index));
-        };
-        rows
     }
 
     fn prepare_predicate_for(
@@ -912,81 +808,24 @@ pub(crate) trait SpectrumMetadataQuerySource: BaseMetadataQuerySource {
         ) -> Result<arrow::array::BooleanArray, arrow::error::ArrowError>
         + 'static,
     > {
-        let predicate_mask = ProjectionMask::columns(
-            &self.parquet_schema(),
-            [
-                "spectrum.index",
-                "scan.spectrum_index",
-                "scan.source_index",
-                "precursor.spectrum_index",
-                "precursor.source_index",
-                "selected_ion.spectrum_index",
-                "selected_ion.source_index",
-            ],
-        );
+        let schema = self.parquet_schema();
+        let index_col = schema.column(0);
+        let index_col_name = index_col.name();
+
+        let predicate_mask = ProjectionMask::columns(&schema, [index_col_name]);
 
         let predicate = ArrowPredicateFn::new(predicate_mask, move |batch| {
-            let spectrum_index: &UInt64Array = batch
-                .column(0)
-                .as_struct()
-                .column(0)
-                .as_primitive::<UInt64Type>();
+            let primary_index: &UInt64Array = batch.column(0).as_primitive::<UInt64Type>();
 
-            macro_rules! equal_to_index {
-                ($it:ident, $arr:ident) => {
-                    $arr.iter()
-                        .map(|val| val.is_some_and(|val| val == index))
-                        .zip($it)
-                        .map(|(a, b)| a || b)
-                };
-            }
-
-            macro_rules! precursor_filter {
-                ($it:ident, $col:ident) => {
-                    let precursor_spectrum_index: &UInt64Array =
-                        $col.as_struct().column(0).as_primitive::<UInt64Type>();
-                    let it = equal_to_index!($it, precursor_spectrum_index);
-
-                    if let Some(col) = batch.column_by_name(SELECTED_ION) {
-                        let selected_ion_spectrum_index =
-                            col.as_struct().column(0).as_primitive::<UInt64Type>();
-
-                        let it = equal_to_index!(it, selected_ion_spectrum_index);
-                        return Ok(it.map(Some).collect());
-                    } else {
-                        return Ok(it.map(Some).collect());
-                    }
-                };
-            }
-
-            let it = spectrum_index
+            let it = primary_index
                 .iter()
                 .map(|val| val.is_some_and(|val| val == index));
 
-            if let Some(col) = batch.column_by_name(SCAN) {
-                let scan_spectrum_index: &UInt64Array =
-                    col.as_struct().column(0).as_primitive::<UInt64Type>();
-
-                let it = equal_to_index!(it, scan_spectrum_index);
-
-                if let Some(col) = batch.column_by_name(PRECURSOR) {
-                    precursor_filter!(it, col);
-                } else {
-                    return Ok(it.map(Some).collect());
-                }
-            }
-
-            if let Some(col) = batch.column_by_name(PRECURSOR) {
-                precursor_filter!(it, col);
-            } else {
-                return Ok(it.map(Some).collect());
-            }
+            return Ok(it.map(Some).collect());
         });
         predicate
     }
 }
-
-const EMPTY_FIELDS: [MetadataColumn; 0] = [];
 
 /// An IO independent driver for parsing the spectrum metadata
 /// table(s) into [`SpectrumDescription`] instances
@@ -997,8 +836,11 @@ pub struct SpectrumMetadataDecoder<'a, T: ReaderFacetMetadataLike + 'a> {
     pub selected_ions: Vec<DoubleIndexed<SelectedIon>>,
     pub scan_events: Vec<Indexed<ScanEvent>>,
     metadata: &'a T,
+    empty_map: MetadataMapping,
+    ticks: u32,
 }
 
+#[allow(unused)]
 fn segment_by_index_array(
     group: &StructArray,
     index_array: &UInt64Array,
@@ -1020,6 +862,8 @@ impl<'a, T: ReaderFacetMetadataLike + 'a> SpectrumMetadataDecoder<'a, T> {
             selected_ions: Vec::new(),
             scan_events: Vec::new(),
             metadata,
+            empty_map: MetadataMapping::default(),
+            ticks: 0,
         }
     }
 
@@ -1036,8 +880,12 @@ impl<'a, T: ReaderFacetMetadataLike + 'a> SpectrumMetadataDecoder<'a, T> {
         if acc.is_empty() && n > 0 {
             acc.resize(n, Default::default());
         }
+        let metadata_map = self
+            .metadata
+            .precursor_metadata_map()
+            .unwrap_or(&self.empty_map);
         if n > 0 {
-            MzPrecursorVisitor::new(acc, &[], 0, Vec::new()).visit(&precursor_arr);
+            MzPrecursorVisitor::new(acc, metadata_map, 0, Vec::new()).visit(&precursor_arr);
         }
     }
 
@@ -1049,7 +897,7 @@ impl<'a, T: ReaderFacetMetadataLike + 'a> SpectrumMetadataDecoder<'a, T> {
         let metacols = self
             .metadata
             .selected_ion_metadata_map()
-            .unwrap_or(&EMPTY_FIELDS);
+            .unwrap_or(&self.empty_map);
         let n = si_arr
             .column_by_name(SPECTRUM_INDEX)
             .or_else(|| si_arr.column_by_name(SOURCE_INDEX))
@@ -1068,7 +916,7 @@ impl<'a, T: ReaderFacetMetadataLike + 'a> SpectrumMetadataDecoder<'a, T> {
         scan_arr: &StructArray,
         scan_accumulator: &mut Vec<(u64, ScanEvent)>,
     ) {
-        let metacols = self.metadata.scan_metadata_map().unwrap_or(&EMPTY_FIELDS);
+        let metacols = self.metadata.scan_metadata_map().unwrap_or(&self.empty_map);
         let n = scan_arr
             .column_by_name(SPECTRUM_INDEX)
             .or_else(|| scan_arr.column_by_name(SOURCE_INDEX))
@@ -1081,8 +929,67 @@ impl<'a, T: ReaderFacetMetadataLike + 'a> SpectrumMetadataDecoder<'a, T> {
         builder.visit(scan_arr);
     }
 
+    pub fn decode_batch_spectrum(&mut self, batch: RecordBatch) {
+        let spec_arr = StructArray::from(batch);
+        let index_arr: &UInt64Array = spec_arr.column_by_name(INDEX).unwrap().as_primitive();
+        let n_spec = index_arr.len() - index_arr.null_count();
+        if n_spec > 0 {
+            let mut local_descr = vec![SpectrumDescription::default(); n_spec];
+            let mut builder = MzSpectrumVisitor::new(
+                &mut local_descr,
+                &self
+                    .metadata
+                    .primary_metadata_map()
+                    .unwrap_or(&self.empty_map),
+                0,
+            );
+            builder.visit(&spec_arr);
+            if self.descriptions.is_empty() {
+                self.descriptions = local_descr;
+            } else {
+                self.descriptions.extend(local_descr);
+            }
+        }
+    }
+
+    pub fn decode_batch_scan(&mut self, batch: RecordBatch) {
+        let scan_arr: StructArray = batch.into();
+        let mut acc = Vec::new();
+        self.load_scan_events_from(&scan_arr, &mut acc);
+        if self.scan_events.is_empty() {
+            self.scan_events = acc;
+        } else {
+            self.scan_events.extend(acc);
+        }
+    }
+
+    pub fn decode_batch_precursor(&mut self, batch: RecordBatch) {
+        let precursor_arr = StructArray::from(batch);
+        let mut precursor_acc = Vec::new();
+        self.load_precursors_from(&precursor_arr, &mut precursor_acc);
+        if self.precursors.is_empty() {
+            self.precursors = precursor_acc
+        } else {
+            self.precursors.extend(precursor_acc);
+        }
+    }
+
+    pub fn decode_batch_selected_ion(&mut self, batch: RecordBatch) {
+        let selected_ion_arr = StructArray::from(batch);
+        let mut acc = Vec::new();
+        self.load_selected_ions_from(&selected_ion_arr, &mut acc);
+        if self.selected_ions.is_empty() {
+            self.selected_ions = acc;
+        } else {
+            self.selected_ions.extend(acc);
+        }
+    }
+
+    #[allow(unused)]
     // This function is almost right, but something is missing during the decoding process
     pub fn decode_batch_for(&mut self, batch: RecordBatch, spectrum_index: u64) {
+        self.ticks += 1;
+        let empty = MetadataMapping::default();
         let spec_arr = batch.column_by_name(SPECTRUM).unwrap().as_struct();
         let index_arr: &UInt64Array = spec_arr.column_by_name(INDEX).unwrap().as_primitive();
         let spec_arrays = segment_by_index_array(spec_arr, index_arr, spectrum_index).unwrap();
@@ -1092,10 +999,7 @@ impl<'a, T: ReaderFacetMetadataLike + 'a> SpectrumMetadataDecoder<'a, T> {
                 let mut local_descr = vec![SpectrumDescription::default()];
                 let mut builder = MzSpectrumVisitor::new(
                     &mut local_descr,
-                    &self
-                        .metadata
-                        .primary_metadata_map()
-                        .unwrap_or(&EMPTY_FIELDS),
+                    &self.metadata.primary_metadata_map().unwrap_or(&empty),
                     0,
                 );
                 builder.visit(&spec_arr);
@@ -1163,58 +1067,17 @@ impl<'a, T: ReaderFacetMetadataLike + 'a> SpectrumMetadataDecoder<'a, T> {
         }
     }
 
+    #[allow(unused)]
     /// Visit a [`RecordBatch`], splitting it into separate streams passed
     /// through distinct visitors for *any* spectra.
-    pub fn decode_batch(&mut self, batch: RecordBatch) {
-        let spec_arr = batch.column_by_name(SPECTRUM).unwrap().as_struct();
-        let index_arr: &UInt64Array = spec_arr.column_by_name(INDEX).unwrap().as_primitive();
-        let n_spec = index_arr.len() - index_arr.null_count();
-        if n_spec > 0 {
-            let mut local_descr = vec![SpectrumDescription::default(); n_spec];
-            let mut builder = MzSpectrumVisitor::new(
-                &mut local_descr,
-                &self
-                    .metadata
-                    .primary_metadata_map()
-                    .unwrap_or(&EMPTY_FIELDS),
-                0,
-            );
-            builder.visit(spec_arr);
-            if self.descriptions.is_empty() {
-                self.descriptions = local_descr;
-            } else {
-                self.descriptions.extend(local_descr);
-            }
-        }
-
-        if let Some(scan_arr) = batch.column_by_name(SCAN).map(|arr| arr.as_struct()) {
-            let mut acc = Vec::new();
-            self.load_scan_events_from(scan_arr, &mut acc);
-            if self.scan_events.is_empty() {
-                self.scan_events = acc;
-            } else {
-                self.scan_events.extend(acc);
-            }
-        }
-
-        if let Some(precursor_arr) = batch.column_by_name(PRECURSOR).map(|c| c.as_struct()) {
-            let mut precursor_acc = Vec::new();
-            self.load_precursors_from(precursor_arr, &mut precursor_acc);
-            if self.precursors.is_empty() {
-                self.precursors = precursor_acc
-            } else {
-                self.precursors.extend(precursor_acc);
-            }
-        }
-
-        if let Some(selected_ion_arr) = batch.column_by_name(SELECTED_ION).map(|c| c.as_struct()) {
-            let mut acc = Vec::new();
-            self.load_selected_ions_from(&selected_ion_arr, &mut acc);
-            if self.selected_ions.is_empty() {
-                self.selected_ions = acc;
-            } else {
-                self.selected_ions.extend(acc);
-            }
+    pub fn decode_batch(&mut self, batch: RecordBatch, facet: DataKind) {
+        self.ticks += 1;
+        match facet {
+            DataKind::Metadata => self.decode_batch_spectrum(batch),
+            DataKind::Scans => self.decode_batch_scan(batch),
+            DataKind::Precursors => self.decode_batch_precursor(batch),
+            DataKind::SelectedIons => self.decode_batch_selected_ion(batch),
+            _ => unimplemented!("{facet:?} is not supported")
         }
     }
 
@@ -1253,6 +1116,11 @@ impl<'a, T: ReaderFacetMetadataLike + 'a> SpectrumMetadataDecoder<'a, T> {
                 }
             }
         }
+        log::debug!(
+            "Finished decoding {} spectrum descriptions after {} batches",
+            self.descriptions.len(),
+            self.ticks
+        );
         self.descriptions
     }
 }
@@ -1368,39 +1236,14 @@ pub(crate) trait ChromatogramMetadataQuerySource: BaseMetadataQuerySource {
         impl FnMut(RecordBatch) -> Result<arrow::array::BooleanArray, arrow::error::ArrowError>
         + 'static,
     > {
-        let predicate_mask = ProjectionMask::columns(
-            &self.parquet_schema(),
-            [
-                "chromatogram.index",
-                "precursor.spectrum_index",
-                "precursor.source_index",
-                "selected_ion.spectrum_index",
-                "selected_ion.source_index",
-            ],
-        );
+        let schema = self.parquet_schema();
+        let index_col = schema.column(0);
+        let predicate_mask = ProjectionMask::columns(&self.parquet_schema(), [index_col.name()]);
 
         let predicate = ArrowPredicateFn::new(predicate_mask, move |batch| {
-            let chromatogram_index: &UInt64Array =
-                batch.column(0).as_struct().column(0).as_primitive();
-            let precursor_spectrum_index: &UInt64Array =
-                batch.column(1).as_struct().column(0).as_primitive();
-            let selected_ion_spectrum_index: &UInt64Array =
-                batch.column(2).as_struct().column(0).as_primitive();
+            let primary_index: &UInt64Array = batch.column(0).as_primitive::<UInt64Type>();
 
-            let it = chromatogram_index.iter().map(|val| val.is_some());
-
-            let it = precursor_spectrum_index
-                .iter()
-                .map(|val| val.is_some())
-                .zip(it)
-                .map(|(a, b)| a || b);
-
-            let it = selected_ion_spectrum_index
-                .iter()
-                .map(|val| val.is_some())
-                .zip(it)
-                .map(|(a, b)| a || b);
-
+            let it = primary_index.iter().map(|val| val.is_some());
             Ok(it.map(Some).collect())
         });
         predicate
@@ -1437,8 +1280,9 @@ impl<'a> ChromatogramMetadataDecoder<'a> {
         if acc.is_empty() && n > 0 {
             acc.resize(n, Default::default());
         }
+        let empty = MetadataMapping::default();
         if n > 0 {
-            MzPrecursorVisitor::new(acc, &[], 0, Vec::new()).visit(&precursor_arr);
+            MzPrecursorVisitor::new(acc, &empty, 0, Vec::new()).visit(&precursor_arr);
         }
     }
 
@@ -1447,12 +1291,13 @@ impl<'a> ChromatogramMetadataDecoder<'a> {
         si_arr: &StructArray,
         acc: &mut Vec<(u64, Option<u64>, SelectedIon)>,
     ) {
+        let empty = MetadataMapping::default();
         let metacols = self
             .metadata
             .spectra
             .selected_ion_metadata_map
-            .as_deref()
-            .unwrap_or(&EMPTY_FIELDS);
+            .as_ref()
+            .unwrap_or(&empty);
         let n = si_arr
             .column_by_name(SOURCE_INDEX)
             .or_else(|| si_arr.column_by_name(SPECTRUM_INDEX))
@@ -1461,12 +1306,55 @@ impl<'a> ChromatogramMetadataDecoder<'a> {
         if acc.is_empty() && n > 0 {
             acc.resize(n, Default::default());
         }
+
         if n > 0 {
             MzSelectedIonVisitor::new(acc, &metacols, 0, Vec::new()).visit(&si_arr);
         }
     }
 
+    pub fn decode_batch_chromatogram(&mut self, batch: RecordBatch) {
+        let empty = MetadataMapping::default();
+        let chrom_arr = StructArray::from(batch);
+        let index_arr: &UInt64Array = chrom_arr
+            .column_by_name(INDEX)
+            .unwrap()
+            .as_any()
+            .downcast_ref()
+            .unwrap();
+        let n_spec = index_arr.len() - index_arr.null_count();
+        let mut local_descr = vec![ChromatogramDescription::default(); n_spec];
+        let mut builder = MzChromatogramBuilder::new(
+            &mut local_descr,
+            &self
+                .metadata
+                .chromatograms
+                .primary_metadata_map()
+                .unwrap_or(&empty),
+            0,
+        );
+        builder.visit(&chrom_arr);
+        self.descriptions.extend(local_descr);
+    }
+
+    pub fn decode_batch_precursor(&mut self, batch: RecordBatch) {
+        let precursor_arr = StructArray::from(batch);
+        {
+            let mut acc = Vec::new();
+            self.load_precursors_from(&precursor_arr, &mut acc);
+            self.precursors.extend(acc);
+        }
+    }
+
+    pub fn decode_batch_selected_ion(&mut self, batch: RecordBatch) {
+        let selected_ion_arr = StructArray::from(batch);
+        let mut acc = Vec::new();
+        self.load_selected_ions_from(&selected_ion_arr, &mut acc);
+        self.selected_ions.extend(acc);
+    }
+
+    #[allow(unused)]
     pub fn decode_batch(&mut self, batch: RecordBatch) {
+        let empty = MetadataMapping::default();
         let chrom_arr = batch.column_by_name(CHROMATOGRAM).unwrap().as_struct();
         let index_arr: &UInt64Array = chrom_arr
             .column_by_name(INDEX)
@@ -1482,7 +1370,7 @@ impl<'a> ChromatogramMetadataDecoder<'a> {
                 .metadata
                 .chromatograms
                 .primary_metadata_map()
-                .unwrap_or(&EMPTY_FIELDS),
+                .unwrap_or(&empty),
             0,
         );
         builder.visit(chrom_arr);
@@ -1612,7 +1500,7 @@ impl TimeIndexDecoder {
         &mut self,
         batch: RecordBatch,
     ) -> Result<(), parquet::errors::ParquetError> {
-        let root = batch.column(0).as_struct();
+        let root = batch;
         let arr: &UInt64Array = root.column(0).as_primitive();
         let time_arr = root.column(1);
 
@@ -1687,7 +1575,7 @@ impl SelectedIonIndexDecoder {
         &mut self,
         batch: &RecordBatch,
     ) -> Result<(), parquet::errors::ParquetError> {
-        let root = batch.column(0).as_struct();
+        let root = batch;
         let arr: &UInt64Array = root.column(0).as_primitive();
         let selected_mz_arr = root.column(1);
 
@@ -1765,14 +1653,11 @@ impl AuxiliaryArrayCountDecoder {
         let mut auxiliary_count_i = None;
         for (i, c) in schema.columns().iter().enumerate() {
             let parts = c.path().parts();
-            if parts == [self.context.main_struct_name(), INDEX] {
+            if parts == [INDEX] {
                 index_i = Some(i);
             } else if parts
                 .iter()
-                .zip([
-                    self.context.main_struct_name(),
-                    "number_of_auxiliary_arrays",
-                ])
+                .zip(["number_of_auxiliary_arrays"])
                 .all(|(a, b)| a == b)
             {
                 auxiliary_count_i = Some(i);
@@ -1824,9 +1709,8 @@ impl AuxiliaryArrayCountDecoder {
             };
         }
 
-        let root = batch.column(0).as_struct();
-        let index_array: &UInt64Array = root.column(0).as_primitive();
-        let values_array = root.column(1);
+        let index_array: &UInt64Array = batch.column(0).as_primitive();
+        let values_array = batch.column(1);
 
         if unpack!(index_array, values_array, UInt32Type) {
         } else if unpack!(index_array, values_array, UInt64Type) {
@@ -1845,17 +1729,38 @@ impl AuxiliaryArrayCountDecoder {
     }
 }
 
-#[derive(Default)]
-pub struct PeakInfoDecoder {
+#[derive(Debug)]
+pub struct PeakInfoDecoder<'a> {
     pub model_parameters: Vec<Option<Vec<f64>>>,
     pub data_point_counts: Vec<u64>,
     pub peak_counts: Vec<u64>,
     pub has_data_point_counts: bool,
     pub has_peaks: bool,
     pub has_models: bool,
+
+    data_point_column_name: String,
+    peak_column_name: String,
+    model_column_name: String,
+
+    metadata_mapping: &'a MetadataMapping
 }
 
-impl PeakInfoDecoder {
+impl<'a> PeakInfoDecoder<'a> {
+    pub fn new(metadata_mapping: &'a MetadataMapping) -> Self {
+        Self {
+            model_parameters: Default::default(),
+            data_point_counts: Default::default(),
+            peak_counts: Default::default(),
+            has_data_point_counts: false,
+            has_peaks: false,
+            has_models: false,
+            data_point_column_name: String::new(),
+            peak_column_name: String::new(),
+            model_column_name: String::new(),
+            metadata_mapping
+        }
+    }
+
     pub fn resize(&mut self, n: usize) {
         if self.has_models {
             self.model_parameters.resize(n, None);
@@ -1877,34 +1782,40 @@ impl PeakInfoDecoder {
         let mut median_i = None;
         let mut dp_i = None;
         let mut peaks_i = None;
+
+        let number_of_peaks_col = self.metadata_mapping.find(curie!(MS:1003059));
+        let number_of_dp_col = self.metadata_mapping.find(curie!(MS:1003060));
+        let spacing_model_col = self.metadata_mapping.find(curie!(MS:1003820));
+
         for (i, c) in schema.columns().iter().enumerate() {
             let parts = c.path().parts();
-            if parts == [SPECTRUM, INDEX] {
+            if parts == [INDEX] {
                 index_i = Some(i);
             }
             if parts
                 .iter()
-                .zip([SPECTRUM, "median_delta"])
+                .zip(["median_delta"])
                 .all(|(a, b)| a == b)
                 || parts
                     .iter()
-                    .zip([SPECTRUM, "mz_delta_model"])
+                    .zip(["mz_delta_model"])
                     .all(|(a, b)| a == b)
-                || parts
-                    .iter()
-                    .zip([SPECTRUM, "MS_1003820_coordinate_spacing_model"])
-                    .all(|(a, b)| a == b)
+                || spacing_model_col.is_some_and(|c| c.path == parts)
             {
                 median_i = Some(i);
                 self.has_models = true;
+                self.model_column_name = parts[0].to_string();
             }
-            if parts == [SPECTRUM, NUMBER_OF_DATA_POINTS] {
+
+            if number_of_dp_col.is_some_and(|c| c.path == parts) {
                 dp_i = Some(i);
                 self.has_data_point_counts = true;
+                self.data_point_column_name = c.name().to_string();
             }
-            if parts == [SPECTRUM, NUMBER_OF_PEAKS] {
+            if number_of_peaks_col.is_some_and(|c| c.path == parts) {
                 peaks_i = Some(i);
                 self.has_peaks = true;
+                self.peak_column_name = c.name().to_string();
             }
         }
         if let Some(i) = index_i {
@@ -1924,14 +1835,12 @@ impl PeakInfoDecoder {
     }
 
     pub fn decode_batch(&mut self, batch: &RecordBatch) {
-        let root = batch.column(0).as_struct();
+        let root = batch;
         let index_array: &UInt64Array = root.column(0).as_primitive();
 
         if self.has_models {
             if let Some(col) = root
-                .column_by_name("mz_delta_model")
-                .or_else(|| root.column_by_name("median_delta"))
-                .or_else(|| root.column_by_name("MS_1003820_coordinate_spacing_model"))
+                .column_by_name(&self.model_column_name)
             {
                 macro_rules! process_list {
                     ($val_array:expr) => {
@@ -1990,7 +1899,7 @@ impl PeakInfoDecoder {
         }
 
         if self.has_data_point_counts {
-            let col = root.column_by_name(NUMBER_OF_DATA_POINTS).unwrap();
+            let col = root.column_by_name(&self.data_point_column_name).unwrap();
             macro_rules! extract {
                 ($dtype:ty) => {
                     if let Some(col) = col.as_primitive_opt::<$dtype>() {
@@ -2015,7 +1924,7 @@ impl PeakInfoDecoder {
         }
 
         if self.has_peaks {
-            let col = root.column_by_name(NUMBER_OF_PEAKS).unwrap();
+            let col = root.column_by_name(&self.peak_column_name).unwrap();
             macro_rules! extract {
                 ($dtype:ty) => {
                     if let Some(col) = col.as_primitive_opt::<$dtype>() {
@@ -2060,7 +1969,6 @@ impl TimeEncodedSeriesDecoder {
     }
 
     pub fn decode_batch(&mut self, batch: RecordBatch) {
-        let batch = batch.column(0).as_struct();
         let time_array = batch.column(self.time_index);
         if let Some(arr) = time_array.as_primitive_opt::<Float32Type>() {
             for val in arr {

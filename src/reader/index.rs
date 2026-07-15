@@ -1729,66 +1729,58 @@ impl QueryIndex {
         self.spectrum.index_index = read_u64_page_index_from(
             spectrum_metadata_reader.metadata(),
             pq_schema,
-            "spectrum.index",
+            "index",
         )
         .unwrap_or_default();
         self.spectrum.time_index = read_f64_page_index_from(
             spectrum_metadata_reader.metadata(),
             pq_schema,
-            "spectrum.time",
+            "time",
         )
         .unwrap_or_default();
         self.spectrum.ms_level_index = read_u8_page_index_from(
             spectrum_metadata_reader.metadata(),
             pq_schema,
-            "spectrum.ms_level",
+            "ms_level",
         )
-        .or_else(|| {
-            read_u8_page_index_from(
-                spectrum_metadata_reader.metadata(),
-                pq_schema,
-                "spectrum.MS_1000511_ms_level",
-            )
-        })
         .unwrap_or_default();
+    }
+
+    pub fn populate_spectrum_scan_indices<T>(&mut self,
+        spectrum_metadata_reader: &ArrowReaderBuilder<T>,
+    ) {
+        let pq_schema = spectrum_metadata_reader.parquet_schema();
         self.spectrum.scan_index = read_u64_page_index_from(
             spectrum_metadata_reader.metadata(),
             pq_schema,
-            "scan.spectrum_index",
+            "source_index",
         )
-        .or_else(|| {
-            read_u64_page_index_from(
-                spectrum_metadata_reader.metadata(),
-                pq_schema,
-                "scan.source_index",
-            )
-        })
         .unwrap_or_default();
+    }
+
+    pub fn populate_spectrum_precursor_indices<T>(&mut self,
+        spectrum_metadata_reader: &ArrowReaderBuilder<T>,
+    ) {
+        let pq_schema = spectrum_metadata_reader.parquet_schema();
+
         self.spectrum.precursor_index = read_u64_page_index_from(
             spectrum_metadata_reader.metadata(),
             pq_schema,
-            "precursor.spectrum_index",
+            "source_index",
         )
-        .or_else(|| {
-            read_u64_page_index_from(
-                spectrum_metadata_reader.metadata(),
-                pq_schema,
-                "precursor.source_index",
-            )
-        })
         .unwrap_or_default();
+    }
+
+    pub fn populate_spectrum_selected_ion_indices<T>(&mut self,
+        spectrum_metadata_reader: &ArrowReaderBuilder<T>,
+    ) {
+        let pq_schema = spectrum_metadata_reader.parquet_schema();
+
         self.spectrum.selected_ion_index = read_u64_page_index_from(
             spectrum_metadata_reader.metadata(),
             pq_schema,
-            "selected_ion.spectrum_index",
+            "source_index",
         )
-        .or_else(|| {
-            read_u64_page_index_from(
-                spectrum_metadata_reader.metadata(),
-                pq_schema,
-                "selected_ion.source_index",
-            )
-        })
         .unwrap_or_default();
     }
 
@@ -1797,23 +1789,30 @@ impl QueryIndex {
         chromatogram_metadata_reader: &ArrowReaderBuilder<T>,
     ) {
         let pq_schema = chromatogram_metadata_reader.parquet_schema();
-
         self.chromatogram_index_index = read_u64_page_index_from(
             chromatogram_metadata_reader.metadata(),
             pq_schema,
-            "chromatogram.index",
+            "index",
         )
         .unwrap_or_default();
+    }
+
+    pub fn populate_chromatogram_metadata_precursor_indices<T>(&mut self, chromatogram_metadata_reader: &ArrowReaderBuilder<T>,) {
+        let pq_schema = chromatogram_metadata_reader.parquet_schema();
         self.chromatogram_precursor_index = read_u64_page_index_from(
             chromatogram_metadata_reader.metadata(),
             pq_schema,
-            "precursor.spectrum_index",
+            "source_index",
         )
         .unwrap_or_default();
+    }
+
+    pub fn populate_chromatogram_metadata_selected_ion_indices<T>(&mut self, chromatogram_metadata_reader: &ArrowReaderBuilder<T>,) {
+        let pq_schema = chromatogram_metadata_reader.parquet_schema();
         self.chromatogram_selected_ion_index = read_u64_page_index_from(
             chromatogram_metadata_reader.metadata(),
             pq_schema,
-            "selected_ion.spectrum_index",
+            "source_index",
         )
         .unwrap_or_default();
     }
@@ -1827,11 +1826,7 @@ impl QueryIndex {
         let mut wavelength_index = self.wavelength_spectrum_index.take().unwrap_or_default();
 
         wavelength_index.index =
-            read_u64_page_index_from(metadata_reader.metadata(), pq_schema, "spectrum.index")
-                .unwrap_or_default();
-
-        wavelength_index.scan_index =
-            read_u64_page_index_from(metadata_reader.metadata(), pq_schema, "scan.index")
+            read_u64_page_index_from(metadata_reader.metadata(), pq_schema, "index")
                 .unwrap_or_default();
 
         self.wavelength_spectrum_index = Some(wavelength_index);

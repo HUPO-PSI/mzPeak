@@ -10,15 +10,11 @@ use arrow::array::{AsArray, UInt64Array};
 
 use identity_hash::BuildIdentityHasher;
 use mzdata::{
-    io::{DetailLevel, OffsetIndex},
-    meta::MSDataFileMetadata,
-    params::Unit,
-    prelude::*,
-    spectrum::{
+    curie, io::{DetailLevel, OffsetIndex}, meta::MSDataFileMetadata, params::Unit, prelude::*, spectrum::{
         ArrayType, BinaryArrayMap, Chromatogram, ChromatogramDescription, ChromatogramType,
         DataArray, MultiLayerSpectrum, PeakDataLevel, SpectrumDescription,
         bindata::BuildFromArrayMap,
-    },
+    }
 };
 use mzpeaks::{
     CentroidPeak, DeconvolutedCentroidLike, DeconvolutedPeak, coordinate::SimpleInterval,
@@ -38,8 +34,7 @@ use parquet::{
 use crate::{
     BufferContext,
     archive::{
-        ArchiveReader, ArchiveSource, DirectorySource, DispatchArchiveSource, EntityType,
-        SplittingZipArchiveSource, ZipArchiveBytesSource,
+        ArchiveReader, ArchiveSource, DataKind, DirectorySource, DispatchArchiveSource, EntityType, SplittingZipArchiveSource, ZipArchiveBytesSource
     },
     reader::{
         chunk::ChunkDataReader,
@@ -151,9 +146,10 @@ impl<
     }
 
     fn count_chromatograms(&self) -> usize {
-        self.load_all_chromatgram_metadata_impl()
-            .map(|v| v.len())
+        self.handle.chromatograms_metadata()
+            .map(|v| v.metadata().row_groups().iter().map(|rg| rg.num_rows()).sum::<i64>() as usize)
             .unwrap_or(2)
+
     }
 }
 
@@ -542,32 +538,34 @@ impl<
             .time_index
             .row_selection_overlaps(&time_range);
 
-        let builder = self.handle.spectrum_metadata()?;
-
         let has_ms_level_range = ms_level_range.is_some();
         let ms_level_range = ms_level_range.unwrap_or_default();
-        let columns_for_predicate: &[&str] = if has_ms_level_range {
-            &[
-                "spectrum.time",
-                "spectrum.ms_level",
-                "spectrum.MS_1000511_ms_level",
-            ]
-        } else {
-            &["spectrum.time"]
-        };
+        let builder = self.handle.spectrum_metadata()?;
+
+        let mut columns_for_predicate = vec![String::from("time")];
+
+        if has_ms_level_range {
+            if let Some(metadata_map) = self.metadata.spectra.primary_metadata_map() {
+                if let Some(col) = metadata_map.find(curie!(MS:1000511)) {
+                    let name = col.leaf().unwrap().to_string();
+                    columns_for_predicate.push(name);
+                } else {
+                    return Err(io::Error::other("ms_level column not found"))
+                }
+            }
+        }
 
         let predicate_mask = ProjectionMask::columns(
             builder.parquet_schema(),
-            columns_for_predicate.iter().copied(),
+            columns_for_predicate.iter().map(|s| s.as_str())
         );
 
         let predicate = ArrowPredicateFn::new(predicate_mask, move |batch| {
-            let root = batch.column(0).as_struct();
+            let root = batch;
             let times = root.column_by_name("time").unwrap();
-            if has_ms_level_range {
+            if has_ms_level_range && columns_for_predicate.len() == 2 {
                 let ms_levels = root
-                    .column_by_name("ms_level")
-                    .or_else(|| root.column_by_name("MS_1000511_ms_level"))
+                    .column_by_name(columns_for_predicate.last().unwrap())
                     .unwrap();
                 arrow::compute::and(
                     &time_range.contains_dy(times),
@@ -580,7 +578,7 @@ impl<
 
         let proj = ProjectionMask::columns(
             builder.parquet_schema(),
-            ["spectrum.index", "spectrum.time"],
+            ["index", "time"],
         );
 
         let reader = builder
@@ -1074,10 +1072,8 @@ impl<
         }
 
         let builder = SpectrumMetadataReader(self.handle.spectrum_metadata()?);
-
-        let rows = builder.prepare_rows_for(index, &self.query_indices.spectrum);
+        let rows = builder.prepare_rows_for(index, &self.query_indices.spectrum, DataKind::Metadata);
         let predicate = builder.prepare_predicate_for(index);
-
         let reader = builder
             .0
             .with_row_selection(rows)
@@ -1091,7 +1087,58 @@ impl<
                 Ok(batch) => batch,
                 Err(e) => return Err(io::Error::other(e)),
             };
-            decoder.decode_batch_for(batch, index);
+            decoder.decode_batch_spectrum(batch);
+        }
+
+        let builder = SpectrumMetadataReader(self.handle.spectrum_metadata_scans()?);
+        let rows = builder.prepare_rows_for(index, &self.query_indices.spectrum, DataKind::Scans);
+        let predicate = builder.prepare_predicate_for(index);
+        let reader = builder
+            .0
+            .with_row_selection(rows)
+            .with_row_filter(RowFilter::new(vec![Box::new(predicate)]))
+            .build()?;
+
+        for batch in reader {
+            let batch = match batch {
+                Ok(batch) => batch,
+                Err(e) => return Err(io::Error::other(e)),
+            };
+            decoder.decode_batch_scan(batch);
+        }
+
+        let builder = SpectrumMetadataReader(self.handle.spectrum_metadata_precursors()?);
+        let rows = builder.prepare_rows_for(index, &self.query_indices.spectrum, DataKind::Precursors);
+        let predicate = builder.prepare_predicate_for(index);
+        let reader = builder
+            .0
+            .with_row_selection(rows)
+            .with_row_filter(RowFilter::new(vec![Box::new(predicate)]))
+            .build()?;
+
+        for batch in reader {
+            let batch = match batch {
+                Ok(batch) => batch,
+                Err(e) => return Err(io::Error::other(e)),
+            };
+            decoder.decode_batch_precursor(batch);
+        }
+
+        let builder = SpectrumMetadataReader(self.handle.spectrum_metadata_selected_ions()?);
+        let rows = builder.prepare_rows_for(index, &self.query_indices.spectrum, DataKind::SelectedIons);
+        let predicate = builder.prepare_predicate_for(index);
+        let reader = builder
+            .0
+            .with_row_selection(rows)
+            .with_row_filter(RowFilter::new(vec![Box::new(predicate)]))
+            .build()?;
+
+        for batch in reader {
+            let batch = match batch {
+                Ok(batch) => batch,
+                Err(e) => return Err(io::Error::other(e)),
+            };
+            decoder.decode_batch_selected_ion(batch);
         }
 
         let descriptions = decoder.finish();
@@ -1247,7 +1294,7 @@ impl<
         }
 
         let builder = self.handle.chromatograms_metadata()?;
-        load_auxiliary_arrays_for_from(None, builder, BufferContext::Chromatogram, index)
+        load_auxiliary_arrays_for_from(None, builder, index)
     }
 
     pub(crate) fn load_auxiliary_arrays_for_spectrum(
@@ -1273,14 +1320,14 @@ impl<
             .index_index
             .row_selection_contains(index);
 
-        load_auxiliary_arrays_for_from(Some(rows), builder, BufferContext::Spectrum, index)
+        load_auxiliary_arrays_for_from(Some(rows), builder, index)
     }
 
     /// Load m/z spacing model parameters column if it is present, as well as peak and point counts.
     pub(crate) fn load_delta_models(&mut self) -> io::Result<()> {
         let builder = self.handle.spectrum_metadata()?;
 
-        let mut decoder = PeakInfoDecoder::default();
+        let mut decoder = PeakInfoDecoder::new(self.metadata.spectra.primary_metadata_map().unwrap());
         let proj = match decoder.build_projection(&builder) {
             Some(proj) => proj,
             None => return Ok(()),
@@ -1296,21 +1343,25 @@ impl<
             decoder.decode_batch(&batch);
         }
 
-        self.metadata.spectra.mz_model_deltas = decoder.model_parameters;
-        self.metadata.spectra.data_point_counts = decoder.data_point_counts;
-        self.metadata.spectra.peak_counts = decoder.peak_counts;
+        let model_parameters = decoder.model_parameters;
+        let data_point_counts = decoder.data_point_counts;
+        let peak_counts = decoder.peak_counts;
+
+        self.metadata.spectra.mz_model_deltas = model_parameters;
+        self.metadata.spectra.data_point_counts = data_point_counts;
+        self.metadata.spectra.peak_counts = peak_counts;
         Ok(())
     }
 
     pub(crate) fn load_all_spectrum_metadata_impl(&self) -> io::Result<Vec<SpectrumDescription>> {
         log::trace!("Loading all spectrum metadata");
+
+        let mut decoder = SpectrumMetadataDecoder::new(&self.metadata.spectra);
+
         let builder = self.handle.spectrum_metadata()?;
-
         let builder = SpectrumMetadataReader(builder);
-
-        let rows = builder.prepare_rows_for_all(&self.query_indices.spectrum);
+        let rows = builder.prepare_rows_for_all(&self.query_indices.spectrum, DataKind::Metadata);
         let predicate = builder.prepare_predicate_for_all();
-
         let reader = builder
             .0
             .with_row_selection(rows)
@@ -1318,10 +1369,53 @@ impl<
             .with_batch_size(10_000)
             .build()?;
 
-        let mut decoder = SpectrumMetadataDecoder::new(&self.metadata.spectra);
+        for batch in reader.flatten() {
+            decoder.decode_batch_spectrum(batch);
+        }
+
+        let builder = self.handle.spectrum_metadata_scans()?;
+        let builder = SpectrumMetadataReader(builder);
+        let rows = builder.prepare_rows_for_all(&self.query_indices.spectrum, DataKind::Scans);
+        let predicate = builder.prepare_predicate_for_all();
+        let reader = builder
+            .0
+            .with_row_selection(rows)
+            .with_row_filter(RowFilter::new(vec![Box::new(predicate)]))
+            .with_batch_size(10_000)
+            .build()?;
 
         for batch in reader.flatten() {
-            decoder.decode_batch(batch);
+            decoder.decode_batch_scan(batch);
+        }
+
+        let builder = self.handle.spectrum_metadata_precursors()?;
+        let builder = SpectrumMetadataReader(builder);
+        let rows = builder.prepare_rows_for_all(&self.query_indices.spectrum, DataKind::Precursors);
+        let predicate = builder.prepare_predicate_for_all();
+        let reader = builder
+            .0
+            .with_row_selection(rows)
+            .with_row_filter(RowFilter::new(vec![Box::new(predicate)]))
+            .with_batch_size(10_000)
+            .build()?;
+
+        for batch in reader.flatten() {
+            decoder.decode_batch_precursor(batch);
+        }
+
+        let builder = self.handle.spectrum_metadata_selected_ions()?;
+        let builder = SpectrumMetadataReader(builder);
+        let rows = builder.prepare_rows_for_all(&self.query_indices.spectrum, DataKind::SelectedIons);
+        let predicate = builder.prepare_predicate_for_all();
+        let reader = builder
+            .0
+            .with_row_selection(rows)
+            .with_row_filter(RowFilter::new(vec![Box::new(predicate)]))
+            .with_batch_size(10_000)
+            .build()?;
+
+        for batch in reader.flatten() {
+            decoder.decode_batch_selected_ion(batch);
         }
 
         let descriptions = decoder.finish();
@@ -1343,19 +1437,36 @@ impl<
     pub(crate) fn load_all_chromatgram_metadata_impl(
         &self,
     ) -> io::Result<Vec<ChromatogramDescription>> {
+        let mut decoder = ChromatogramMetadataDecoder::new(&self.metadata);
+
         let builder = ChromatogramMetadataReader(self.handle.chromatograms_metadata()?);
-
         let predicate = builder.prepare_predicate_for_all();
-
         let reader = builder
             .0
             .with_row_filter(RowFilter::new(vec![Box::new(predicate)]))
             .build()?;
-
-        let mut decoder = ChromatogramMetadataDecoder::new(&self.metadata);
-
         for batch in reader.flatten() {
-            decoder.decode_batch(batch);
+            decoder.decode_batch_chromatogram(batch);
+        }
+
+        let builder = ChromatogramMetadataReader(self.handle.chromatograms_metadata_precursors()?);
+        let predicate = builder.prepare_predicate_for_all();
+        let reader = builder
+            .0
+            .with_row_filter(RowFilter::new(vec![Box::new(predicate)]))
+            .build()?;
+        for batch in reader.flatten() {
+            decoder.decode_batch_precursor(batch);
+        }
+
+        let builder = ChromatogramMetadataReader(self.handle.chromatograms_metadata_selected_ions()?);
+        let predicate = builder.prepare_predicate_for_all();
+        let reader = builder
+            .0
+            .with_row_filter(RowFilter::new(vec![Box::new(predicate)]))
+            .build()?;
+        for batch in reader.flatten() {
+            decoder.decode_batch_selected_ion(batch);
         }
 
         Ok(decoder.finish())
@@ -1550,11 +1661,11 @@ impl<
             .spectra
             .spectrum_metadata_map
             .as_ref()
-            .and_then(|v| v.find(mzdata::curie!(MS:1000285)));
+            .and_then(|v| v.columns().find(mzdata::curie!(MS:1000285)));
 
         let mut targets = vec![
-            "spectrum.time".to_string(),
-            "spectrum.total_ion_current".to_string(), // deprecated name
+            "time".to_string(),
+            "total_ion_current".to_string(), // deprecated name
         ];
 
         if let Some(col) = target_col.as_ref() {
@@ -1611,7 +1722,7 @@ impl<
             .spectrum_metadata_map
             .as_ref()
             .unwrap();
-        let bp_col = match metadata.find(mzdata::curie!(MS:1000505)) {
+        let bp_col = match metadata.columns().find(mzdata::curie!(MS:1000505)) {
             Some(col) => col,
             None => return Err(io::Error::other("column not found")),
         };
@@ -1621,8 +1732,8 @@ impl<
         let proj = ProjectionMask::columns(
             builder.parquet_schema(),
             [
-                "spectrum.time",
-                "spectrum.base_peak_intensity",
+                "time",
+                "base_peak_intensity",
                 bp_path.as_str(),
             ],
         );
@@ -1679,8 +1790,7 @@ impl<
 fn load_auxiliary_arrays_from(reader: ParquetRecordBatchReader) -> Vec<DataArray> {
     let mut results = Vec::new();
     for bat in reader.flatten() {
-        let root = bat.column(0);
-        let root = root.as_struct();
+        let root = bat;
         if let Some(data) = root.column(1).as_list_opt::<i64>() {
             let data = data.values().as_struct();
             let arrays = AuxiliaryArrayVisitor::default().visit(data);
@@ -1700,21 +1810,20 @@ fn load_auxiliary_arrays_from(reader: ParquetRecordBatchReader) -> Vec<DataArray
 fn load_auxiliary_arrays_for_from<T: ChunkReader + 'static>(
     rows: Option<RowSelection>,
     mut builder: ParquetRecordBatchReaderBuilder<T>,
-    context: BufferContext,
     index: u64,
 ) -> io::Result<Vec<DataArray>> {
     let predicate_mask = ProjectionMask::columns(
         builder.parquet_schema(),
         [
-            format!("{}.index", context.main_struct_name()).as_str(),
-            format!("{}.auxiliary_arrays", context.main_struct_name()).as_str(),
+            "index",
+            "auxiliary_arrays",
         ],
     );
 
     let proj = predicate_mask.clone();
 
     let predicate = ArrowPredicateFn::new(predicate_mask, move |batch| {
-        let spectrum_index: &UInt64Array = batch.column(0).as_struct().column(0).as_primitive();
+        let spectrum_index: &UInt64Array = batch.column(0).as_primitive();
         Ok(spectrum_index
             .iter()
             .map(|v| v.map(|i| i == index))
@@ -1773,6 +1882,10 @@ pub trait MzPeakSpectrumFacet: Sized {
         &self,
     ) -> io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>;
 
+    fn metadata_scan_reader(&self) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>>;
+    fn metadata_precursor_reader(&self) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>>;
+    fn metadata_selected_ion_reader(&self) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>>;
+
     /// Get a raw [`ParquetRecordBatchReaderBuilder`] for the signal data table
     fn data_reader(
         &self,
@@ -1791,26 +1904,64 @@ pub trait MzPeakSpectrumFacet: Sized {
 
     /// Load a single observation's metadata
     fn get_metadata(&mut self, index: u64) -> io::Result<Option<SpectrumDescription>> {
-        let builder = self.metadata_reader();
-        let builder = SpectrumMetadataReader(builder?);
+        let mut decoder = SpectrumMetadataDecoder::new(self.metadata());
 
-        let rows = builder.prepare_rows_for(index, self.metadata_index());
+        let builder = SpectrumMetadataReader(self.metadata_reader()?);
+        let rows = builder.prepare_rows_for(index, self.metadata_index(), DataKind::Metadata);
         let predicate = builder.prepare_predicate_for(index);
-
         let reader = builder
             .0
             .with_row_selection(rows)
             .with_row_filter(RowFilter::new(vec![Box::new(predicate)]))
             .build()?;
 
-        let mut decoder = SpectrumMetadataDecoder::new(self.metadata());
-
         for batch in reader {
-            let batch = match batch {
-                Ok(batch) => batch,
-                Err(e) => return Err(io::Error::other(e)),
-            };
-            decoder.decode_batch_for(batch, index);
+            decoder.decode_batch_spectrum(batch.map_err(io::Error::other)?);
+        }
+
+        if let Some(builder) = self.metadata_scan_reader() {
+            let builder = SpectrumMetadataReader(builder?);
+            let rows = builder.prepare_rows_for(index, self.metadata_index(), DataKind::Scans);
+            let predicate = builder.prepare_predicate_for(index);
+            let reader = builder
+                .0
+                .with_row_selection(rows)
+                .with_row_filter(RowFilter::new(vec![Box::new(predicate)]))
+                .build()?;
+
+            for batch in reader {
+                decoder.decode_batch_scan(batch.map_err(io::Error::other)?);
+            }
+        }
+
+        if let Some(builder) = self.metadata_precursor_reader() {
+            let builder = SpectrumMetadataReader(builder?);
+            let rows = builder.prepare_rows_for(index, self.metadata_index(), DataKind::Precursors);
+            let predicate = builder.prepare_predicate_for(index);
+            let reader = builder
+                .0
+                .with_row_selection(rows)
+                .with_row_filter(RowFilter::new(vec![Box::new(predicate)]))
+                .build()?;
+
+            for batch in reader {
+                decoder.decode_batch_precursor(batch.map_err(io::Error::other)?);
+            }
+        }
+
+        if let Some(builder) = self.metadata_selected_ion_reader() {
+            let builder = SpectrumMetadataReader(builder?);
+            let rows = builder.prepare_rows_for(index, self.metadata_index(), DataKind::SelectedIons);
+            let predicate = builder.prepare_predicate_for(index);
+            let reader = builder
+                .0
+                .with_row_selection(rows)
+                .with_row_filter(RowFilter::new(vec![Box::new(predicate)]))
+                .build()?;
+
+            for batch in reader {
+                decoder.decode_batch_selected_ion(batch.map_err(io::Error::other)?);
+            }
         }
 
         let descriptions = decoder.finish();
@@ -1821,24 +1972,59 @@ pub trait MzPeakSpectrumFacet: Sized {
     /// batches than [`Self::get_metadata`]
     fn load_all_metadata(&mut self) -> io::Result<Vec<SpectrumDescription>> {
         log::trace!("Loading all {:?} metadata", self.buffer_context());
-        let builder = self.metadata_reader()?;
 
-        let builder = SpectrumMetadataReader(builder);
+        let mut decoder = SpectrumMetadataDecoder::new(self.metadata());
 
-        let rows = builder.prepare_rows_for_all(self.metadata_index());
+        let builder = SpectrumMetadataReader(self.metadata_reader()?);
+        let rows = builder.prepare_rows_for_all(self.metadata_index(), DataKind::Metadata);
         let predicate = builder.prepare_predicate_for_all();
-
         let reader = builder
             .0
             .with_row_selection(rows)
             .with_row_filter(RowFilter::new(vec![Box::new(predicate)]))
             .with_batch_size(10_000)
             .build()?;
-
-        let mut decoder = SpectrumMetadataDecoder::new(self.metadata());
-
         for batch in reader.flatten() {
-            decoder.decode_batch(batch);
+            decoder.decode_batch_spectrum(batch);
+        }
+
+        let builder = SpectrumMetadataReader(self.metadata_reader()?);
+        let rows = builder.prepare_rows_for_all(self.metadata_index(), DataKind::Scans);
+        let predicate = builder.prepare_predicate_for_all();
+        let reader = builder
+            .0
+            .with_row_selection(rows)
+            .with_row_filter(RowFilter::new(vec![Box::new(predicate)]))
+            .with_batch_size(10_000)
+            .build()?;
+        for batch in reader.flatten() {
+            decoder.decode_batch_scan(batch);
+        }
+
+        let builder = SpectrumMetadataReader(self.metadata_reader()?);
+        let rows = builder.prepare_rows_for_all(self.metadata_index(), DataKind::Precursors);
+        let predicate = builder.prepare_predicate_for_all();
+        let reader = builder
+            .0
+            .with_row_selection(rows)
+            .with_row_filter(RowFilter::new(vec![Box::new(predicate)]))
+            .with_batch_size(10_000)
+            .build()?;
+        for batch in reader.flatten() {
+            decoder.decode_batch_precursor(batch);
+        }
+
+        let builder = SpectrumMetadataReader(self.metadata_reader()?);
+        let rows = builder.prepare_rows_for_all(self.metadata_index(), DataKind::SelectedIons);
+        let predicate = builder.prepare_predicate_for_all();
+        let reader = builder
+            .0
+            .with_row_selection(rows)
+            .with_row_filter(RowFilter::new(vec![Box::new(predicate)]))
+            .with_batch_size(10_000)
+            .build()?;
+        for batch in reader.flatten() {
+            decoder.decode_batch_selected_ion(batch);
         }
 
         let descriptions = decoder.finish();
@@ -1849,7 +2035,7 @@ pub trait MzPeakSpectrumFacet: Sized {
     /// Load the auxiliary arrays for a single observation.
     fn load_auxiliary_arrays_for(&self, index: u64) -> io::Result<Vec<DataArray>> {
         let builder = self.metadata_reader()?;
-        load_auxiliary_arrays_for_from(None, builder, self.buffer_context(), index)
+        load_auxiliary_arrays_for_from(None, builder, index)
     }
 
     /// Load the signal data arrays  for a single observation.
@@ -2042,6 +2228,18 @@ impl<
     ) -> Self::Item {
         MultiLayerSpectrum::new(description, Some(arrays), None, None)
     }
+
+    fn metadata_scan_reader(&self) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>> {
+        self.0.handle.wavelength_spectrum_metadata_scans()
+    }
+
+    fn metadata_precursor_reader(&self) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>> {
+        None
+    }
+
+    fn metadata_selected_ion_reader(&self) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>> {
+        None
+    }
 }
 
 /// A [`MzPeakSpectrumFacet`] for mass spectra
@@ -2110,6 +2308,18 @@ impl<
         arrays: BinaryArrayMap,
     ) -> Self::Item {
         MultiLayerSpectrum::new(description, Some(arrays), None, None)
+    }
+
+    fn metadata_scan_reader(&self) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>> {
+        Some(self.0.handle.spectrum_metadata_scans())
+    }
+
+    fn metadata_precursor_reader(&self) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>> {
+        Some(self.0.handle.spectrum_metadata_precursors())
+    }
+
+    fn metadata_selected_ion_reader(&self) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>> {
+        Some(self.0.handle.spectrum_metadata_selected_ions())
     }
 }
 
@@ -2357,7 +2567,8 @@ mod test {
     #[test_log::test]
     fn test_eic_chunked() -> io::Result<()> {
         let mut reader = MzPeakReader::new("small.chunked.mzpeak")?;
-
+        let k_models_defined = reader.metadata.spectra.mz_model_deltas.iter().filter(|v| v.is_some()).count();
+        assert!(k_models_defined > 0);
         let (it, _time_index) =
             reader.extract_signal((0.3..0.4).into(), Some((800.0..820.0).into()), None, None)?;
 
@@ -2365,6 +2576,9 @@ mod test {
         for batch in it.flatten() {
             assert_eq!(batch.column(0).as_struct().num_columns(), 3);
             assert!(batch.num_rows() > 0);
+            let root = batch.column(0).as_struct();
+            let names = root.column_names();
+            assert_eq!(names, ["spectrum_index", "mz", "intensity"]);
             k += batch.num_rows();
         }
         assert!(k > 0);

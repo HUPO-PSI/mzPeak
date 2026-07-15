@@ -2,7 +2,8 @@ use std::{collections::HashMap, io, sync::Arc};
 
 use arrow::{
     array::{
-        Array, ArrayRef, AsArray, Float32Array, Float64Array, GenericListArray, Int32Array, Int64Array, PrimitiveArray, RecordBatch, StructArray, UInt8Array, UInt64Array
+        Array, ArrayRef, AsArray, Float32Array, Float64Array, GenericListArray, Int32Array,
+        Int64Array, PrimitiveArray, RecordBatch, StructArray, UInt8Array, UInt64Array,
     },
     datatypes::{
         DataType, Field, Fields, Float32Type, Float64Type, Int8Type, Int32Type, Int64Type, Schema,
@@ -124,7 +125,10 @@ impl ChunkDataCacheBlock {
             let arr = chunks.column(0).as_primitive::<UInt64Type>();
             let x = arr.value(0);
             let y = arr.value(arr.len() - 1);
-            panic!("Could not find start and end in binary search for {index} in {:?} / {:?} / {:?} ({x}, {y})", self.index_range, self.last_query_index, self.last_query_span);
+            panic!(
+                "Could not find start and end in binary search for {index} in {:?} / {:?} / {:?} ({x}, {y})",
+                self.index_range, self.last_query_index, self.last_query_span
+            );
         }
 
         log::debug!("Reading {start:?}-{end:?} for {index}");
@@ -483,9 +487,7 @@ trait ChunkQuerySource {
 
             let it = spectrum_index
                 .iter()
-                .map(|v| v.map(|v| {
-                    index_range.contains(&v)
-                }));
+                .map(|v| v.map(|v| index_range.contains(&v)));
 
             Ok(it.collect())
         });
@@ -560,6 +562,10 @@ impl<'a> BufferNameCache<'a> {
         }
         return None;
     }
+
+    fn array_indices(&self) -> &'a ArrayIndex {
+        self.array_indices
+    }
 }
 
 struct ChunkDecoder<'a> {
@@ -591,7 +597,9 @@ impl<'a> ChunkDecoder<'a> {
     fn compile_buffers(mut self) -> Result<BinaryArrayMap, ArrayRetrievalError> {
         // If we never populated the main axis, exit early and return empty arrays.
         if self.main_axis.is_none() {
-            for k in self.array_indices.iter() {
+            for k in self.array_indices().iter().filter(
+                |v| v.buffer_format == BufferFormat::Chunk || v.buffer_format == BufferFormat::ChunkSecondary
+            ) {
                 self.bin_map.add(k.as_buffer_name().as_data_array(0));
             }
             return Ok(self.bin_map);
@@ -614,11 +622,13 @@ impl<'a> ChunkDecoder<'a> {
             for arr in chunks {
                 if let Some(arr) = arr.as_list_opt::<i64>() {
                     Self::unpack_secondary_arrays(arr, &name, &mut store, &decoder);
-                }
-                else if let Some(arr) = arr.as_list_opt::<i32>() {
+                } else if let Some(arr) = arr.as_list_opt::<i32>() {
                     Self::unpack_secondary_arrays(arr, &name, &mut store, &decoder);
                 } else {
-                    panic!("Unsupported data type {:?} for secondary chunk collection for name {name:?}", arr.data_type());
+                    panic!(
+                        "Unsupported data type {:?} for secondary chunk collection for name {name:?}",
+                        arr.data_type()
+                    );
                 }
             }
             log::trace!(
@@ -634,7 +644,12 @@ impl<'a> ChunkDecoder<'a> {
         Ok(self.bin_map)
     }
 
-    fn unpack_secondary_arrays<T: arrow::array::OffsetSizeTrait>(arr: &GenericListArray<T>, name: &BufferName, store: &mut DataArray, decoder: &Option<BufferTransformDecoder>) {
+    fn unpack_secondary_arrays<T: arrow::array::OffsetSizeTrait>(
+        arr: &GenericListArray<T>,
+        name: &BufferName,
+        store: &mut DataArray,
+        decoder: &Option<BufferTransformDecoder>,
+    ) {
         if arr.is_empty() {
             return;
         }
@@ -715,13 +730,15 @@ impl<'a> ChunkDecoder<'a> {
                 for (i, row) in view_rows.iter().enumerate() {
                     rows[i].push((name.clone(), row));
                 }
-            }
-            else if let Some(view_rows) = view.as_list_opt::<i32>() {
+            } else if let Some(view_rows) = view.as_list_opt::<i32>() {
                 for (i, row) in view_rows.iter().enumerate() {
                     rows[i].push((name.clone(), row));
                 }
             } else {
-                panic!("Unsupported data type {:?} for main sequence array {name}", view.data_type());
+                panic!(
+                    "Unsupported data type {:?} for main sequence array {name}",
+                    view.data_type()
+                );
             }
         }
         return rows;
@@ -851,34 +868,38 @@ impl<'a> ChunkDecoder<'a> {
             }
 
             if !did_decode {
-                    match encoding {
-                        NO_COMPRESSION => {
-                            (ChunkingStrategy::Basic { chunk_size: 50.0 }).decode_arrow(
-                                &arrow::array::new_empty_array(&DataType::Float64),
-                                start as f64,
-                                end as f64,
-                                self.main_axis.as_mut().unwrap(),
-                                self.delta_model,
-                            );
-                        }
-                        DELTA_ENCODE => {
-                            (ChunkingStrategy::Delta { chunk_size: 50.0 }).decode_arrow(
-                                &arrow::array::new_empty_array(&DataType::Float64),
-                                start as f64,
-                                end as f64,
-                                self.main_axis.as_mut().unwrap(),
-                                self.delta_model,
-                            );
-                        }
-                        NUMPRESS_LINEAR => {
-                            // This chunk is never empty if it is valid
-                        }
-                        _ => {
-                            unimplemented!("{encoding}")
-                        }
+                match encoding {
+                    NO_COMPRESSION => {
+                        (ChunkingStrategy::Basic { chunk_size: 50.0 }).decode_arrow(
+                            &arrow::array::new_empty_array(&DataType::Float64),
+                            start as f64,
+                            end as f64,
+                            self.main_axis.as_mut().unwrap(),
+                            self.delta_model,
+                        );
+                    }
+                    DELTA_ENCODE => {
+                        (ChunkingStrategy::Delta { chunk_size: 50.0 }).decode_arrow(
+                            &arrow::array::new_empty_array(&DataType::Float64),
+                            start as f64,
+                            end as f64,
+                            self.main_axis.as_mut().unwrap(),
+                            self.delta_model,
+                        );
+                    }
+                    NUMPRESS_LINEAR => {
+                        // This chunk is never empty if it is valid
+                    }
+                    _ => {
+                        unimplemented!("{encoding}")
                     }
                 }
+            }
         }
+    }
+
+    fn array_indices(&self) -> &'a ArrayIndex {
+        self.array_indices
     }
 }
 
@@ -1112,12 +1133,31 @@ impl<'a> ChunkScanDecoder<'a> {
 
         // Reuse the same API that builds into a [`DataArray`] incrementally
         let axis = self.main_axis.take().unwrap();
-        let buffer_name = BufferName::from_data_array(self.buffer_context, &axis);
+        let buffer_name = self
+            .main_axis_buffers
+            .first()
+            .map(|v| v.0.clone())
+            .unwrap_or_else(|| {
+                let entry = self
+                    .array_indices()
+                    .iter()
+                    .filter(|e| e.buffer_format == BufferFormat::Chunk)
+                    .min_by(|a, b| a.sorting_rank.cmp(&b.sorting_rank))
+                    .map(|e| Arc::new(e.as_buffer_name()));
+                entry.unwrap_or_else(|| {
+                    log::warn!("Failed to infer buffer name");
+                    let buffer_name = BufferName::from_data_array(self.buffer_context, &axis);
+                    Arc::new(buffer_name)
+                })
+            });
         let axis = data_array_to_arrow_array(&buffer_name, &axis).unwrap();
 
         let mut fields = Vec::with_capacity(self.buffers.len() + 1);
         fields.push(buffer_name.context.index_field());
-        fields.push(buffer_name.to_field());
+        fields.push(Arc::new(
+            Arc::unwrap_or_clone(buffer_name.to_field())
+                .with_name(buffer_name.to_string().replace("_chunk_values", "")),
+        ));
 
         let mut arrays = Vec::with_capacity(self.buffers.len() + 1);
         arrays.push(Arc::new(UInt64Array::from(entity_idx_acc)) as ArrayRef);
@@ -1212,6 +1252,10 @@ impl<'a> ChunkScanDecoder<'a> {
         let batch = RecordBatch::from(batch);
         Ok(batch)
     }
+
+    fn array_indices(&self) -> &'a ArrayIndex {
+        self.buffer_name_cache.array_indices()
+    }
 }
 
 #[derive(Debug)]
@@ -1254,7 +1298,10 @@ impl<T: ChunkReader + 'static> ChunkDataReader<T> {
 
         let mut batches = Vec::new();
         for bat in reader {
-            batches.push(bat.inspect_err(|e| log::error!("Failed to load batch for cache block: {e}")).map_err(io::Error::other)?);
+            batches.push(
+                bat.inspect_err(|e| log::error!("Failed to load batch for cache block: {e}"))
+                    .map_err(io::Error::other)?,
+            );
         }
 
         let batch =
@@ -1354,12 +1401,18 @@ mod async_impl {
 
     pub struct AsyncChunkReader<T: AsyncFileReader + 'static + Unpin + Send> {
         builder: ParquetRecordBatchStreamBuilder<T>,
-        buffer_context: BufferContext
+        buffer_context: BufferContext,
     }
 
     impl<T: AsyncFileReader + 'static + Unpin + Send> AsyncChunkReader<T> {
-        pub fn new(builder: ParquetRecordBatchStreamBuilder<T>, buffer_context: BufferContext) -> Self {
-            Self { builder, buffer_context }
+        pub fn new(
+            builder: ParquetRecordBatchStreamBuilder<T>,
+            buffer_context: BufferContext,
+        ) -> Self {
+            Self {
+                builder,
+                buffer_context,
+            }
         }
 
         pub fn scan_chunks_for<'a>(
