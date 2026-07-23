@@ -580,7 +580,6 @@ impl<'a> MzSpectrumVisitor<'a> {
                         &MetadataColumn {
                             name: "".into(),
                             path: vec![],
-                            index: None,
                             accession: None,
                             unit: Unit::DetectorCounts.into(),
                         },
@@ -592,7 +591,6 @@ impl<'a> MzSpectrumVisitor<'a> {
                             &MetadataColumn {
                                 name: "".into(),
                                 path: vec![],
-                                index: None,
                                 accession: None,
                                 unit: Unit::DetectorCounts.into(),
                             },
@@ -607,7 +605,6 @@ impl<'a> MzSpectrumVisitor<'a> {
                         let metacol = MetadataColumn::new(
                             colname.to_string(),
                             vec![colname.to_string()],
-                            index,
                             None,
                         );
                         self.visit_as_param(spec_arr, index, &metacol);
@@ -1954,7 +1951,6 @@ impl<'a> MzScanVisitor<'a> {
                         let metacol = MetadataColumn::new(
                             colname.to_string(),
                             vec![colname.to_string()],
-                            index,
                             None,
                         );
                         self.visit_as_param(spec_arr, index, Some(&metacol), Some(colname));
@@ -2493,7 +2489,6 @@ impl<'a> MzSelectedIonVisitor<'a> {
                         let metacol = MetadataColumn::new(
                             colname.to_string(),
                             vec![],
-                            index,
                             None,
                         );
                         self.visit_as_param(spec_arr, index, Some(&metacol), Some(colname));
@@ -2675,7 +2670,6 @@ impl<'a> MzChromatogramBuilder<'a> {
                         let metacol = MetadataColumn::new(
                             colname.to_string(),
                             vec![colname.to_string()],
-                            index,
                             None,
                         );
                         self.visit_as_param(chrom_arr, index, &metacol);

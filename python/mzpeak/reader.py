@@ -134,17 +134,11 @@ class RTLocator:
         return self._reader[idx]
 
 
-def _format_curie(curie: dict):
+def _format_curie(curie: dict | str):
     if curie is None:
         return None
     elif isinstance(curie, str):
         return curie
-    idx = curie["cv_id"]
-    acc = curie["accession"]
-    if idx == 1:
-        return f"MS:{acc}"
-    elif idx == 2:
-        return f"UO:{acc:07d}"
     else:
         raise NotImplementedError()
 
@@ -968,23 +962,6 @@ class MzPeakChromatogramMetadataReader(_PrecursorReadMixin, _DataPointCountMixin
         self.chromatograms, self.id_index = storage._read_chromatograms()
         self.precursors = storage._read_precursors()
         self.selected_ions = storage._read_selected_ions()
-
-    def _infer_schema_idx(self):
-        rg = self.meta.row_group(0)
-        for i in range(rg.num_columns):
-            col = rg.column(i)
-            if col.path_in_schema == "chromatogram.index":
-                self.chromatogram_index_i = i
-            elif col.path_in_schema in (
-                "precursor.spectrum_index",
-                "precursor.source_index",
-            ):
-                self.precursor_index_i = i
-            elif col.path_in_schema in (
-                "selected_ion.spectrum_index",
-                "selected_ion.source_index",
-            ):
-                self.selected_ion_i = i
 
     def _read_chromatograms(self):
         chromatograms = []

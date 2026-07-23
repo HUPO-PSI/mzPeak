@@ -60,12 +60,6 @@ NOT_ALLOWED_IN_COLNAME_PATTERN = re.compile("[^a-zA-Z0-9_\\\\-]+")
 PERMITTED_CV_NAMES = ('MS', 'UO', )
 
 
-def inflect_cv_name(accession: str, name: str) -> str:
-    parts = [accession.replace(":", "_")]
-    parts.append(NOT_ALLOWED_IN_COLNAME_PATTERN.sub("_", name))
-    return "_".join(parts)
-
-
 @dataclass(frozen=True)
 class ColumnName:
     accession: str | None
@@ -86,6 +80,8 @@ class ColumnName:
 
 def parse_inflected_cv_name(name: str) -> ColumnName:
     tokens = iter(name.split("_"))
+    if tokens[0] == 'opt':
+        tokens = tokens[1:]
     try:
         prefix = next(tokens)
         accession = next(tokens)
@@ -441,7 +437,6 @@ class _SeekableIter(_PeekableIter[T], _SeekableMixin[T]):
 
 __all__ = [
     "Span",
-    "inflect_cv_name",
     "_slice_to_range",
     "parse_inflected_cv_name",
     "OntologyMapper",

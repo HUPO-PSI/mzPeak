@@ -14,11 +14,10 @@ use crate::{
 };
 
 macro_rules! metacol {
-    ($name:literal, $path:expr, $index:literal, $accession:expr) => {
+    ($name:literal, $path:expr, $accession:expr) => {
         MetadataColumn::new(
             $name.into(),
             $path.into_iter().map(|v| v.into()).collect(),
-            $index,
             Some($accession),
         )
     };
@@ -144,88 +143,74 @@ impl SpectrumEntry {
             MetadataColumn::new(
                 "ms level".into(),
                 vec![SPECTRUM.into(), "ms_level".into()],
-                2,
                 Some(curie!(MS:1000511)),
             ),
             MetadataColumn::new(
                 "scan polarity".into(),
                 vec![SPECTRUM.into(), "polarity".into()],
-                4,
                 Some(curie!(MS:1000465)),
             ),
             MetadataColumn::new(
                 "spectrum representation".into(),
                 vec![SPECTRUM.into(), "mz_signal_continuity".into()],
-                5,
                 Some(curie!(MS:1000525)),
             ),
             MetadataColumn::new(
                 "spectrum type".into(),
                 vec![SPECTRUM.into(), "spectrum_type".into()],
-                6,
                 Some(curie!(MS:1000559)),
             ),
             MetadataColumn::new(
                 "lowest observed m/z".into(),
                 vec![SPECTRUM.into(), "lowest_observed_mz".into()],
-                7,
                 Some(curie!(MS:1000528)),
             )
             .with_unit(Unit::MZ),
             MetadataColumn::new(
                 "highest observed m/z".into(),
                 vec![SPECTRUM.into(), "highest_observed_mz".into()],
-                8,
                 Some(curie!(MS:1000527)),
             )
             .with_unit(Unit::MZ),
             MetadataColumn::new(
                 "lowest observed wavelength".into(),
                 vec![SPECTRUM.into(), "lowest_observed_wavelength".into()],
-                9,
                 Some(curie!(MS:1000619)),
             ),
             MetadataColumn::new(
                 "highest observed wavelength".into(),
                 vec![SPECTRUM.into(), "highest_observed_wavelength".into()],
-                10,
                 Some(curie!(MS:1000618)),
             ),
             MetadataColumn::new(
                 "lowest observed ion mobility".into(),
                 vec![SPECTRUM.into(), "lowest_observed_ion_mobility".into()],
-                11,
                 Some(curie!(MS:1003439)),
             ),
             MetadataColumn::new(
                 "highest observed ion mobility".into(),
                 vec![SPECTRUM.into(), "highest_observed_ion_mobility".into()],
-                12,
                 Some(curie!(MS:1003440)),
             ),
             metacol!(
                 "number of data points",
                 vec![SPECTRUM, "number_of_data_points"],
-                13,
                 curie!(MS:1003060)
             ),
             MetadataColumn::new(
                 "base peak m/z".into(),
                 vec![SPECTRUM.into(), "base_peak_mz".into()],
-                14,
                 Some(curie!(MS:1000504)),
             )
             .with_unit(Unit::MZ),
             MetadataColumn::new(
                 "base peak intensity".into(),
                 vec![SPECTRUM.into(), "base_peak_intensity".into()],
-                15,
                 Some(curie!(MS:1000505)),
             ),
             MetadataColumn::new(
                 "total ion current".into(),
                 vec![SPECTRUM.into(), "total_ion_current".into()],
-                16,
                 Some(curie!(MS:1000285)),
             ),
         ]
@@ -242,26 +227,22 @@ impl ScanEntry {
             metacol!(
                 "scan start time",
                 ["scan", "scan_start_time"],
-                1,
                 curie!(MS:1000016)
             )
             .with_unit(Unit::Minute),
             metacol!(
                 "preset scan configuration",
                 ["scan", "preset_scan_configuration"],
-                2,
                 curie!(MS:1000616)
             ),
             metacol!(
                 "filter string",
                 ["scan", "filter_string"],
-                3,
                 curie!(MS:1000512)
             ),
             metacol!(
                 "ion injection time",
                 ["scan", "ion_injection_time"],
-                4,
                 curie!(MS:1000927)
             )
             .with_unit(Unit::Millisecond),
@@ -277,20 +258,17 @@ impl SelectedIonEntry {
             metacol!(
                 "selected ion m/z",
                 vec!["selected_ion", "selected_ion_mz"],
-                2,
                 curie!(MS:1000744)
             )
             .with_unit(Unit::MZ),
             metacol!(
                 "charge state",
                 vec!["selected_ion", "charge_state"],
-                3,
                 curie!(MS:1000041)
             ),
             metacol!(
                 "peak intensity",
                 vec!["selected_ion", "intensity"],
-                4,
                 curie!(MS:1000042)
             )
             .with_unit(Unit::DetectorCounts),
@@ -306,19 +284,16 @@ impl ChromatogramEntry {
             MetadataColumn::new(
                 "scan polarity".into(),
                 vec![CHROMATOGRAM.into(), "polarity".into()],
-                2,
                 Some(curie!(MS:1000465)),
             ),
             metacol!(
                 "chromatogram type",
                 vec![CHROMATOGRAM, "chromatogram_type"],
-                3,
                 curie!(MS:1000626)
             ),
             metacol!(
                 "number of data points",
                 vec![CHROMATOGRAM, "number_of_data_points"],
-                4,
                 curie!(MS:1003060)
             ),
         ]

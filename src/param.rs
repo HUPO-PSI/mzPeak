@@ -1,4 +1,9 @@
-use std::{borrow::Borrow, collections::{HashMap, VecDeque}, ops::Deref, vec};
+use std::{
+    borrow::Borrow,
+    collections::{HashMap, VecDeque},
+    ops::Deref,
+    vec,
+};
 
 use mzdata::params::{ParamDescribed, ParamLike, Unit};
 use serde::{Deserialize, Serialize, ser::SerializeSeq};
@@ -184,14 +189,14 @@ pub struct MetaParam {
     pub name: Option<String>,
     #[serde(
         serialize_with = "opt_curie_serialize",
-        deserialize_with = "opt_curie_deserialize",
+        deserialize_with = "opt_curie_deserialize"
     )]
     pub accession: Option<CURIE>,
     #[serde(default)]
     pub value: serde_json::Value,
     #[serde(
         serialize_with = "opt_curie_serialize",
-        deserialize_with = "opt_curie_deserialize",
+        deserialize_with = "opt_curie_deserialize"
     )]
     pub unit: Option<CURIE>,
 }
@@ -282,14 +287,12 @@ impl From<mzdata::params::ControlledVocabulary> for ControlledVocabularyEntry {
                 "http://purl.obolibrary.org/obo/obi/2026-05-08/obi.obo",
                 Some("2026-05-08"),
             ),
-            mzdata::params::ControlledVocabulary::HANCESTRO => {
-                ControlledVocabularyEntry::new(
-                    "HANCESTRO",
-                    "Human Ancestry Ontology",
-                    "http://purl.obolibrary.org/obo/hancestro/releases/2025-10-14/hancestro.obo",
-                    Some("2025-10-14")
-                )
-            }
+            mzdata::params::ControlledVocabulary::HANCESTRO => ControlledVocabularyEntry::new(
+                "HANCESTRO",
+                "Human Ancestry Ontology",
+                "http://purl.obolibrary.org/obo/hancestro/releases/2025-10-14/hancestro.obo",
+                Some("2025-10-14"),
+            ),
             mzdata::params::ControlledVocabulary::BFO => ControlledVocabularyEntry::new(
                 "BFO",
                 "Basic Formal Ontology",
@@ -498,7 +501,7 @@ pub struct Contact {
     #[serde(default)]
     pub contact_affiliation: Option<String>,
     #[serde(default)]
-    pub parameters: Vec<MetaParam>
+    pub parameters: Vec<MetaParam>,
 }
 
 /// An adaptation of [`mzdata::meta::FileDescription`]
@@ -808,9 +811,6 @@ pub struct MetadataColumn {
     pub name: String,
     /// The path to the column in the Parquet file
     pub path: Vec<String>,
-    /// The column index in the schema
-    #[serde(default, skip_serializing_if="Option::is_none")]
-    pub index: Option<usize>,
     /// The CURIE for the term this column refers to, if any
     #[serde(
         serialize_with = "opt_curie_serialize",
@@ -827,11 +827,10 @@ pub struct MetadataColumn {
 }
 
 impl MetadataColumn {
-    pub fn new(name: String, path: Vec<String>, index: impl Into<Option<usize>>, accession: Option<CURIE>) -> Self {
+    pub fn new(name: String, path: Vec<String>, accession: Option<CURIE>) -> Self {
         Self {
             name,
             path,
-            index: index.into(),
             accession,
             unit: PathOrCURIE::None,
         }
@@ -920,7 +919,7 @@ pub struct MetadataMapping {
 
 struct MetadataTreeIter<'a> {
     current: Option<core::slice::Iter<'a, MetadataColumn>>,
-    queue: VecDeque<&'a MetadataColumnCollection>
+    queue: VecDeque<&'a MetadataColumnCollection>,
 }
 
 impl<'a> ExactSizeIterator for MetadataTreeIter<'a> {
@@ -936,17 +935,13 @@ impl<'a> Iterator for MetadataTreeIter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             match self.current.as_mut() {
-                Some(it) => {
-                    match it.next() {
-                        Some(val) => return Some(val),
-                        None => {
-                            self.current = self.queue.pop_front().map(|v| v.iter());
-                        }
+                Some(it) => match it.next() {
+                    Some(val) => return Some(val),
+                    None => {
+                        self.current = self.queue.pop_front().map(|v| v.iter());
                     }
                 },
-                None => {
-                    return None
-                }
+                None => return None,
             }
         }
     }
@@ -954,7 +949,7 @@ impl<'a> Iterator for MetadataTreeIter<'a> {
 
 pub struct MetadataMappingIntoIter {
     current: Option<std::vec::IntoIter<MetadataColumn>>,
-    queue: VecDeque<MetadataColumnCollection>
+    queue: VecDeque<MetadataColumnCollection>,
 }
 
 impl Iterator for MetadataMappingIntoIter {
@@ -963,17 +958,13 @@ impl Iterator for MetadataMappingIntoIter {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             match self.current.as_mut() {
-                Some(it) => {
-                    match it.next() {
-                        Some(val) => return Some(val),
-                        None => {
-                            self.current = self.queue.pop_front().map(|v| v.into_iter());
-                        }
+                Some(it) => match it.next() {
+                    Some(val) => return Some(val),
+                    None => {
+                        self.current = self.queue.pop_front().map(|v| v.into_iter());
                     }
                 },
-                None => {
-                    return None
-                }
+                None => return None,
             }
         }
     }
@@ -1018,10 +1009,7 @@ impl MetadataMapping {
         let mut queue = VecDeque::new();
         self.collect_node(&mut queue);
         let it = queue.pop_front().map(|v| v.iter());
-        MetadataTreeIter {
-            current: it,
-            queue
-        }
+        MetadataTreeIter { current: it, queue }
     }
 
     /// Rebuild the name lookup map for `columns` used by `traverse`
@@ -1142,17 +1130,14 @@ impl IntoIterator for MetadataMapping {
         let mut queue = VecDeque::new();
         self.collect_node_owned(&mut queue);
         let current = queue.pop_front().map(|v| v.into_iter());
-        MetadataMappingIntoIter {
-            current,
-            queue
-        }
+        MetadataMappingIntoIter { current, queue }
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::io;
     use super::*;
+    use std::io;
 
     #[test]
     fn test_metadata_col_serde() -> io::Result<()> {
@@ -1165,7 +1150,6 @@ mod test {
 
         Ok(())
     }
-
 
     #[test]
     fn test_spectrum_schema_map() {
@@ -1182,7 +1166,7 @@ mod test {
         assert_eq!(mapping.members.len(), 0);
         assert_eq!(mapping.path.len(), 0);
 
-        let cols: Vec<MetadataColumn> = serde_json::from_str(r#"[{"name": "scan start time", "path": ["MS_1000016_scan_start_time_unit_UO_0000031"], "index": 0, "accession": "MS:1000016", "unit": "UO:0000031"}, {"name": "preset scan configuration", "path": ["MS_1000616_preset_scan_configuration"], "index": null, "accession": "MS:1000616", "unit": null}, {"name": "filter string", "path": ["MS_1000512_filter_string"], "index": null, "accession": "MS:1000512", "unit": null}, {"name": "ion injection time", "path": ["MS_1000927_ion_injection_time_unit_UO_0000028"], "index": 0, "accession": "MS:1000927", "unit": "UO:0000028"}, {"name": "scan window lower limit", "path": ["scan_windows", "MS_1000501_scan_window_lower_limit_unit_MS_1000040"], "index": 0, "accession": "MS:1000501", "unit": "MS:1000040"}, {"name": "scan window upper limit", "path": ["scan_windows", "MS_1000500_scan_window_upper_limit_unit_MS_1000040"], "index": 0, "accession": "MS:1000500", "unit": "MS:1000040"}]"#).unwrap();
+        let cols: Vec<MetadataColumn> = serde_json::from_str(r#"[{"name": "scan start time", "path": ["scan_start_time"], "index": 0, "accession": "MS:1000016", "unit": "UO:0000031"}, {"name": "preset scan configuration", "path": ["preset_scan_configuration"], "index": null, "accession": "MS:1000616", "unit": null}, {"name": "filter string", "path": ["filter_string"], "index": null, "accession": "MS:1000512", "unit": null}, {"name": "ion injection time", "path": ["ion_injection_time"], "index": 0, "accession": "MS:1000927", "unit": "UO:0000028"}, {"name": "scan window lower limit", "path": ["scan_windows", "scan_window_lower_limit"], "index": 0, "accession": "MS:1000501", "unit": "MS:1000040"}, {"name": "scan window upper limit", "path": ["scan_windows", "scan_window_upper_limit"], "index": 0, "accession": "MS:1000500", "unit": "MS:1000040"}]"#).unwrap();
         let n = cols.len();
         let mapping = MetadataMapping::from(cols);
         assert_eq!(mapping.columns.len(), 4);

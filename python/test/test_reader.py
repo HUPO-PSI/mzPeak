@@ -74,7 +74,6 @@ def common_checks(reader: MzPeakFile, subtests: pytest.Subtests):
         chunks = reader.read_spectrum(range(idx_slc.start, idx_slc.stop))
         assert len(chunks) == (idx_slc.stop - idx_slc.start)
 
-
     with subtests.test("archive behavior"):
         names = reader.list_files()
         for name in names:
@@ -90,6 +89,16 @@ def check_iterator(reader: MzPeakFile, n: int=10):
     for i in range(n):
         spec = next(it)
         assert spec['index'] == i
+
+    it = iter(reader)
+
+    for i in range(10):
+        it.seek(i * 3)
+        spec = next(it)
+        assert spec["index"] == (i * 3)
+
+    with pytest.raises(Exception):
+        it.seek(1)
 
 
 def test_load_base_point(subtests: pytest.Subtests):
