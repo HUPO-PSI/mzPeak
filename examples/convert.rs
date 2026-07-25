@@ -19,7 +19,7 @@ use parquet::{
     encryption::encrypt::FileEncryptionProperties,
 };
 use std::{
-    fmt::Debug,
+    fmt::{Debug, Display},
     fs, io,
     panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
@@ -79,11 +79,39 @@ fn chunk_encoding_parser(method_str: &str) -> Result<ChunkingStrategy, String> {
     }
 }
 
-fn encoding_parser_opt(method_str: &str) -> Result<Option<ChunkingStrategy>, String> {
+/// A [`ChunkingStrategy`] or not.
+///
+/// Because clap::value_parser does not like `Result<Option<T>, _>`.
+#[derive(Debug, Default, Clone, Copy)]
+pub enum ChunkingStrategyOrNone {
+    ChunkingStrategy(ChunkingStrategy),
+    #[default]
+    NotChunked,
+}
+
+impl From<ChunkingStrategyOrNone> for Option<ChunkingStrategy> {
+    fn from(value: ChunkingStrategyOrNone) -> Self {
+        match value {
+            ChunkingStrategyOrNone::NotChunked => None,
+            ChunkingStrategyOrNone::ChunkingStrategy(value) => Some(value),
+        }
+    }
+}
+
+impl Display for ChunkingStrategyOrNone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(format!("{self:?}").as_str())
+    }
+}
+
+fn encoding_parser_opt(method_str: &str) -> Result<ChunkingStrategyOrNone, String> {
     if method_str.is_empty() {
-        Ok(None)
+        Ok(ChunkingStrategyOrNone::NotChunked)
     } else {
-        chunk_encoding_parser(method_str).map(Some).or(Ok(None))
+        let out = chunk_encoding_parser(method_str)
+            .map(ChunkingStrategyOrNone::ChunkingStrategy)
+            .or(Ok(ChunkingStrategyOrNone::NotChunked));
+        out
     }
 }
 
@@ -232,7 +260,7 @@ You can also specify a chunk size like 'delta:50'. Defaults to 'delta:50'",
 See `--chunked-encoding` for more information",
         value_parser=encoding_parser_opt
     )]
-    pub peak_encoding: Option<ChunkingStrategy>,
+    pub peak_encoding: Option<ChunkingStrategyOrNone>,
 
     #[arg(
         long,
@@ -317,7 +345,7 @@ pub fn configure_writer_builder(
         .include_time_with_spectrum_data(args.include_time_with_spectrum_data)
         .shuffle_mz(args.shuffle_mz)
         .chunked_encoding(args.chunked_encoding)
-        .peaks_chunked_encoding(args.peak_encoding)
+        .peaks_chunked_encoding(args.peak_encoding.unwrap_or_default().into())
         .chromatogram_chunked_encoding(args.chromatogram_chunked_encoding())
         .null_zeros(args.null_zeros)
         .write_batch_size(args.write_batch_size.map(usize::from))
@@ -397,7 +425,6 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
 
     let handle = fs::File::create(output_path)?;
     let mut builder = configure_writer_builder(args);
-
     if let Some(encryption_key) = args.encrypt.as_ref() {
         match encryption_key.as_bytes().len() {
             16 | 24 | 32 => {}
@@ -424,12 +451,6 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
     for (from, to) in overrides.iter() {
         builder = builder.add_spectrum_array_override(from.clone(), to.clone());
         builder = builder.add_chromatogram_array_override(from.clone(), to.clone());
-    }
-
-    // If we are storing peaks too, configure the extra builder.
-    if args.write_peaks_and_profiles {
-        log::debug!("Sampling peak array types");
-        builder = builder.sample_array_types_for_peaks_from_spectrum_source(&mut reader);
     }
 
     builder = builder

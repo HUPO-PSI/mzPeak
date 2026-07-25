@@ -1569,7 +1569,7 @@ impl VisitorBase for SelectedIonBuilder {
             field!("precursor_index", DataType::UInt64),
             field!("selected_ion_mz", DataType::Float64),
             field!("charge_state", DataType::Int32),
-            field!("intensity", DataType::Float32),
+            field!("peak_intensity", DataType::Float32),
             field!("ion_mobility_value", DataType::Float64),
             field!("ion_mobility_type", self.ion_mobility_type.as_struct_type()),
         ];

@@ -377,22 +377,23 @@ impl MzPeakWriterBuilder {
         self
     }
 
-    fn take_or_initialize_peak_builder(&mut self) -> ArrayBuffersBuilder {
-        let mut point_builder = self
-            .store_peaks_and_profiles_apart
-            .take()
-            .unwrap_or_else(|| {
-                ArrayBuffersBuilder::default()
-                    .prefix("point")
-                    .with_context(BufferContext::Spectrum)
-            });
-        point_builder = point_builder.extend_overrides(self.spectrum_overrides().into_iter());
-        point_builder
-    }
+    // fn take_or_initialize_peak_builder(&mut self) -> ArrayBuffersBuilder {
+    //     let mut point_builder = self
+    //         .spectrum_peak_arrays
+    //         .take()
+    //         .unwrap_or_else(|| {
+    //             log::debug!("Initializing default spectrum peak builder");
+    //             ArrayBuffersBuilder::default()
+    //                 .prefix("point")
+    //                 .with_context(BufferContext::Spectrum)
+    //         });
+    //     point_builder = point_builder.extend_overrides(self.spectrum_overrides().into_iter());
+    //     point_builder
+    // }
 
     pub fn register_spectrum_peak_type<T: ToMzPeakDataSeries>(mut self) -> Self {
-        let point_builder = self.take_or_initialize_peak_builder();
-        self.store_peaks_and_profiles_apart(Some(point_builder.add_peak_type::<T>()))
+        self.spectrum_peak_arrays = self.spectrum_peak_arrays.add_peak_type::<T>();
+        self
     }
 
     pub fn sample_array_types_for_peaks_from_spectrum_source<
@@ -403,16 +404,15 @@ impl MzPeakWriterBuilder {
         mut self,
         reader: &mut R,
     ) -> Self {
-        let mut point_builder = self.take_or_initialize_peak_builder();
         for f in sample_array_types_from_spectrum_source(
             reader,
             &self.spectrum_overrides(),
             self.peaks_chunked_encoding.clone(),
             true,
         ) {
-            point_builder = point_builder.add_field(f);
+            self.spectrum_peak_arrays = self.spectrum_peak_arrays.add_field(f);
         }
-        self.store_peaks_and_profiles_apart(Some(point_builder))
+        self
     }
 
     /// Collect arrays fields from spectra in a [`StreamingSpectrumIterator`] to prepare
@@ -657,7 +657,7 @@ impl<
         use_chunked_encoding: Option<ChunkingStrategy>,
         use_chromatogram_chunked_encoding: Option<ChunkingStrategy>,
         compression: Compression,
-        store_peaks_and_profiles_apart: Option<ArrayBuffersBuilder>,
+        spectrum_peak_buffers_builder: ArrayBuffersBuilder,
         write_batch_config: WriteBatchConfig,
         spectrum_fields: SpectrumFieldVisitors,
         encryption_properties: HashMap<String, Arc<FileEncryptionProperties>>,
@@ -717,26 +717,20 @@ impl<
             spectrum_data_encryption_props,
         );
 
-        let separate_peak_writer = if let Some(peak_buffer_builder) = store_peaks_and_profiles_apart
-        {
-            let peak_buffer_file =
-                tempfile::tempfile().expect("Failed to create temporary file to write peaks to");
-            let writer = Self::make_peaks_writer(
-                peak_buffer_file,
-                peak_buffer_builder,
-                write_batch_config,
-                compression,
-                spectrum_buffers.include_time(),
-                shuffle_mz,
-                buffer_size,
-                &encryption_properties,
-            )
-            .map_err(|e| log::error!("Failed to open peak writer: {e}"))
-            .ok();
-            writer
-        } else {
-            None
-        };
+        let peak_buffer_file =
+            tempfile::tempfile().expect("Failed to create temporary file to write peaks to");
+        let separate_peak_writer = Self::make_peaks_writer(
+            peak_buffer_file,
+            spectrum_peak_buffers_builder,
+            write_batch_config,
+            compression,
+            spectrum_buffers.include_time(),
+            shuffle_mz,
+            buffer_size,
+            &encryption_properties,
+        )
+        .map_err(|e| log::error!("Failed to open peak writer: {e}"))
+        .ok();
 
         let mut this = Self {
             archive_writer: Some(

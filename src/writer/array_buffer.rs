@@ -839,9 +839,11 @@ impl ArrayBuffersBuilder {
 
     pub fn chunking_strategy(mut self, chunking_strategy: Option<ChunkingStrategy>) -> Self {
         let no_change = self.chunking_strategy == chunking_strategy;
+        let previous = self.chunking_strategy;
         self.chunking_strategy = chunking_strategy;
         if !no_change && !self.array_fields.is_empty() {
             log::warn!("Chunking strategy changed, invalidating previous array fields");
+            log::debug!("Chunking strategy changed from {previous:?}, invalidating previous array fields to {:?}", self.chunking_strategy);
             self.array_fields.clear();
         }
         self

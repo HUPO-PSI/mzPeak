@@ -46,14 +46,14 @@ pub struct SpectrumFieldVisitors {
 pub struct MzPeakWriterBuilder {
     pub(crate) spectrum_arrays: ArrayBuffersBuilder,
     pub(crate) chromatogram_arrays: ArrayBuffersBuilder,
+    // The schema to store peaks under, separate from the profile data (if any)
+    pub(crate) spectrum_peak_arrays: ArrayBuffersBuilder,
     pub(crate) buffer_size: usize,
     pub(crate) shuffle_mz: bool,
     pub(crate) chunked_encoding: Option<ChunkingStrategy>,
     pub(crate) peaks_chunked_encoding: Option<ChunkingStrategy>,
     pub(crate) chromatogram_chunked_encoding: Option<ChunkingStrategy>,
     pub(crate) compression: Compression,
-    // The schema to store peaks under, separate from the profile data (if any)
-    pub(crate) store_peaks_and_profiles_apart: Option<ArrayBuffersBuilder>,
     pub(crate) write_batch_config: WriteBatchConfig,
     pub(crate) spectrum_fields: Vec<SpectrumVisitor>,
     pub(crate) spectrum_selected_ion_fields: Vec<Box<dyn StructVisitorBuilder<SelectedIon>>>,
@@ -71,13 +71,15 @@ impl Default for MzPeakWriterBuilder {
             chromatogram_arrays: ArrayBuffersBuilder::default()
                 .prefix("point")
                 .with_context(BufferContext::Chromatogram),
+            spectrum_peak_arrays: ArrayBuffersBuilder::default()
+                    .prefix("point")
+                    .with_context(BufferContext::Spectrum),
             buffer_size: 5_000,
             shuffle_mz: false,
             chunked_encoding: None,
             peaks_chunked_encoding: None,
             chromatogram_chunked_encoding: None,
             compression: Compression::ZSTD(ZstdLevel::default()),
-            store_peaks_and_profiles_apart: None,
             write_batch_config: Default::default(),
             spectrum_fields: Vec::new(),
             spectrum_selected_ion_fields: Vec::new(),
@@ -113,14 +115,16 @@ impl MzPeakWriterBuilder {
     /// Use the chunked representation for spectrum peak data using the provided chunking strategy
     /// if `Some`, otherwise use the point list representation.
     pub fn peaks_chunked_encoding(mut self, value: Option<ChunkingStrategy>) -> Self {
+        log::debug!("Setting spectrum peak encoding: {value:?}");
         self.peaks_chunked_encoding = value.clone();
-        self.store_peaks_and_profiles_apart = self.store_peaks_and_profiles_apart.map(|v| v.chunking_strategy(value));
+        self.spectrum_peak_arrays = self.spectrum_peak_arrays.chunking_strategy(value);
         self
     }
 
     /// Use the chunked representation for spectrum data using the provided chunking strategy
     /// if `Some`, otherwise use the point list representation.
     pub fn chunked_encoding(mut self, value: Option<ChunkingStrategy>) -> Self {
+        log::debug!("Setting spectrum data encoding: {value:?}");
         self.chunked_encoding = value;
         self.spectrum_arrays = self.spectrum_arrays.chunking_strategy(value);
         self
@@ -129,6 +133,7 @@ impl MzPeakWriterBuilder {
     /// Use the chunked representation for chromatogram data using the provided chunking strategy
     /// if `Some`, otherwise use the point list representation.
     pub fn chromatogram_chunked_encoding(mut self, value: Option<ChunkingStrategy>) -> Self {
+        log::debug!("Setting chromatogram data encoding: {value:?}");
         self.chromatogram_chunked_encoding = value;
         self.chromatogram_arrays = self.chromatogram_arrays.chunking_strategy(value);
         self
@@ -138,10 +143,11 @@ impl MzPeakWriterBuilder {
     /// spectrum data.
     pub fn add_spectrum_array_override(
         mut self,
-        from: impl Into<BufferName>,
-        to: impl Into<BufferName>,
+        from: impl Into<BufferName> + Clone,
+        to: impl Into<BufferName> + Clone,
     ) -> Self {
-        self.spectrum_arrays = self.spectrum_arrays.add_override(from, to);
+        self.spectrum_arrays = self.spectrum_arrays.add_override(from.clone(), to.clone());
+        self.spectrum_peak_arrays = self.spectrum_peak_arrays.add_override(from, to);
         self
     }
 
@@ -158,16 +164,16 @@ impl MzPeakWriterBuilder {
         self
     }
 
-    /// Set a separate array buffer schema for storing peak data in addition to profile data in the
-    /// main sequence of spectrum data.
-    ///
-    /// If set to a non-`None` value, a separate file will be used.
-    pub fn store_peaks_and_profiles_apart(mut self, value: Option<ArrayBuffersBuilder>) -> Self {
-        self.store_peaks_and_profiles_apart = value.map(|v| {
-            v.chunking_strategy(self.peaks_chunked_encoding.clone())
-        });
-        self
-    }
+    // /// Set a separate array buffer schema for storing peak data in addition to profile data in the
+    // /// main sequence of spectrum data.
+    // ///
+    // /// If set to a non-`None` value, a separate file will be used.
+    // pub fn store_peaks_and_profiles_apart(mut self, value: Option<ArrayBuffersBuilder>) -> Self {
+    //     self.spectrum_peak_arrays = value.map(|v| {
+    //         v.chunking_strategy(self.peaks_chunked_encoding.clone())
+    //     });
+    //     self
+    // }
 
     /// Add a rule to store the `from` buffer as the type given by the `to` buffer name for the
     /// chromatogram data.
@@ -275,7 +281,7 @@ impl MzPeakWriterBuilder {
             self.chunked_encoding,
             self.chromatogram_chunked_encoding,
             self.compression,
-            self.store_peaks_and_profiles_apart,
+            self.spectrum_peak_arrays,
             self.write_batch_config,
             spectrum_fields,
         )
@@ -304,7 +310,7 @@ impl MzPeakWriterBuilder {
             self.chunked_encoding,
             self.chromatogram_chunked_encoding,
             self.compression,
-            self.store_peaks_and_profiles_apart,
+            self.spectrum_peak_arrays,
             self.write_batch_config,
             spectrum_fields,
             self.encryption_properties,
