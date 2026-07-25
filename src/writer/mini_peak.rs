@@ -40,6 +40,10 @@ impl<W: Write + Send + Seek> MiniPeakWriterType<W> {
         this
     }
 
+    pub fn buffers(&self) -> &ArrayBufferWriterVariants {
+        &self.buffers
+    }
+
     pub fn append_key_value_metadata(
         &mut self,
         key: impl Into<String>,

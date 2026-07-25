@@ -521,6 +521,10 @@ impl<
         self.use_chromatogram_chunked_encoding.as_ref()
     }
 
+    fn use_chunked_encoding_for_peaks(&self) -> Option<&ChunkingStrategy> {
+        self.spectrum_peaks_writer.as_ref().and_then(|v| v.buffers().chunking_strategy())
+    }
+
     fn spectrum_entry_buffer_mut(&mut self) -> &mut SpectrumBuilder {
         &mut self.spectrum_metadata_buffer
     }

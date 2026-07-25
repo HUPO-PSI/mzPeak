@@ -180,6 +180,10 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
     fn controlled_vocabularies_mut(&mut self) -> &mut Vec<crate::param::ControlledVocabularyEntry> {
         &mut self.controlled_vocabularies
     }
+
+    fn use_chunked_encoding_for_peaks(&self) -> Option<&ChunkingStrategy> {
+        self.separate_peak_writer.as_ref().and_then(|v| v.buffers().chunking_strategy())
+    }
 }
 
 impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPeakDataSeries>

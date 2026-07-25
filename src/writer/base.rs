@@ -447,8 +447,11 @@ pub trait AbstractMzPeakWriter {
         Ok(())
     }
 
-    /// Whether or not a chunking strategy is being used for spectra
+    /// Whether or not a chunking strategy is being used for spectra data
     fn use_chunked_encoding(&self) -> Option<&ChunkingStrategy>;
+
+    /// Whether or not a chunking strategy is being used for spectra peaks
+    fn use_chunked_encoding_for_peaks(&self) -> Option<&ChunkingStrategy>;
 
     /// Whether or not a chunking strategy is being used for chromatograms
     fn use_chromatogram_chunked_encoding(&self) -> Option<&ChunkingStrategy>;
