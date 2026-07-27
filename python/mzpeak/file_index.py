@@ -1,8 +1,7 @@
-from typing import ClassVar
+from collections.abc import MutableSequence
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
-from collections.abc import MutableSequence
-
+from typing import ClassVar
 
 OTHER = "other"
 
@@ -153,7 +152,9 @@ class MetadataColumn:
     unit: str | None = None
 
     def to_json(self):
-        return asdict(self)
+        state = asdict(self)
+        state.pop("index", None)
+        return state
 
 
 @dataclass
@@ -263,4 +264,4 @@ class FileIndex(MutableSequence[FileEntry]):
         return cls(files, data.get('metadata', {}))
 
 
-__all__ = ["FileIndex", "FileEntry", "EntityType", "DataKind"]
+__all__ = ["DataKind", "EntityType", "FileEntry", "FileIndex"]

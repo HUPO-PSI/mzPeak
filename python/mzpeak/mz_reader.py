@@ -1,8 +1,9 @@
-from dataclasses import dataclass
+from dataclasses import dataclass  # noqa: I001
 import logging
 import json
 
-from typing import Any, Iterator, Sequence
+from typing import Any
+from collections.abc import Iterator, Sequence
 from enum import Enum
 
 import numpy as np
@@ -13,7 +14,7 @@ try:
 except ImportError:
     pynumpress = None
 
-from pyarrow import compute as pc
+from pyarrow import compute as pc  # noqa: I001
 from pyarrow import parquet as pq
 
 from .util import _SeekableIter, _SeekableMixin, Span, _slice_to_range, DTYPES
@@ -142,14 +143,14 @@ class _DataIndex:
                         self.row_group_index_ranges.append(None)
 
         index = json.loads(
-            self.meta.metadata[f"{self.namespace}_array_index".encode("utf8")]
+            self.meta.metadata[f"{self.namespace}_array_index".encode("utf8")]  # noqa: UP012
         )
         self.array_index = {
             entry["path"].rsplit(".")[-1]: entry for entry in index["entries"]
         }
         try:
             self.n_entries = int(
-                self.meta.metadata[f"{self.namespace}_count".encode("utf8")]
+                self.meta.metadata[f"{self.namespace}_count".encode("utf8")]  # noqa: UP012
             )
         except KeyError:
             self.n_entries = max_index
@@ -176,8 +177,7 @@ class _DataIndex:
             col_idx = rg.column(self.index_i)
             if col_idx.statistics.has_min_max:
                 if (
-                    col_idx.statistics.min <= query_index
-                    and query_index <= col_idx.statistics.max
+                    col_idx.statistics.min <= query_index <= col_idx.statistics.max
                 ):
                     rgs.append(i)
                 if col_idx.statistics.min > query_index:
@@ -283,7 +283,7 @@ class _BatchIterator(Iterator[tuple[int, pa.RecordBatch]]):
     def __init__(
         self,
         it: Iterator[pa.StructArray],
-        current_index: int = None,
+        current_index: int | None = None,
         index_column: str = "spectrum_index",
     ):
         self.it = it
@@ -526,7 +526,7 @@ class _PointBatchCleaner(_BatchCleanerBase):
             data.pop(fields[i])
 
         for k, v in {
-            k: v["array_name"] for k, v in self.array_index.items() if k in data.keys()
+            k: v["array_name"] for k, v in self.array_index.items() if k in data
         }.items():
             data[v] = data.pop(k)
 
@@ -699,7 +699,7 @@ class _ChunkBatchCleaner(_BatchCleanerBase):
         self, n: int, chunks: list[dict[str, Any]]
     ) -> dict[str, np.ndarray]:
         arrays_of = {}
-        for k, v in chunks[0].items():
+        for k in chunks[0]:
             if k == self.index_name:
                 if not self.drop_index:
                     arrays_of[k] = np.zeros(n, dtype=np.uint64)
@@ -936,7 +936,7 @@ class MzPeakArrayDataReader(Sequence[_SpectrumArrays]):
 
     def _infer_schema_idx(self):
         index = json.loads(
-            self.meta.metadata[f"{self._namespace}_array_index".encode("utf8")]
+            self.meta.metadata[f"{self._namespace}_array_index".encode("utf8")]  # noqa: UP012
         )
         self.array_index = {
             entry["path"].rsplit(".")[-1]: entry for entry in index["entries"]

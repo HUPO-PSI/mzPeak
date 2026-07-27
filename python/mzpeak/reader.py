@@ -1,4 +1,4 @@
-import logging
+import logging  # noqa: I001
 import json
 import zipfile
 import zlib
@@ -6,7 +6,8 @@ import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Iterable, Sequence
-from typing import IO, Any, Iterator, Optional, TYPE_CHECKING, Callable
+from typing import IO, Any, ClassVar, Optional, TYPE_CHECKING
+from collections.abc import Iterator, Callable
 from enum import Enum, auto
 
 import numpy as np
@@ -29,7 +30,7 @@ except ImportError:
     from pathlib import Path as UPath
 
 if TYPE_CHECKING:
-    from upath import UPath
+    from upath import UPath  # noqa: TC004
 
 
 
@@ -77,7 +78,7 @@ class RTLocator:
             (index, _) = hit
             return index
 
-    def _get_scan_by_time(self, time: float) -> Optional[tuple[int, float]]:
+    def _get_scan_by_time(self, time: float) -> tuple[int, float] | None:
         """
         Retrieve the scan object for the specified scan time.
 
@@ -165,7 +166,7 @@ class _AuxiliaryArrayDecoder:
     A helper class for decoding extra arrays packed in with the metadata table.
     """
 
-    compression = {
+    compression: ClassVar[dict[str, Callable]] = {
         "MS:1000576": lambda x: x,
         "MS:1000574": zlib.decompress,
         "MS:1002314": pynumpress.decode_slof,
@@ -228,7 +229,7 @@ class AuxiliaryArray:
     name: str
     values: np.ndarray
     parameters: list[dict]
-    unit: Optional[str] = None
+    unit: str | None = None
 
 
 class _DataPointCountMixin:
@@ -1380,7 +1381,7 @@ class MzPeakFile(_EntityCollectionMixin):
                     archive = zipfile.ZipFile(path.open('rb'))
                     self._from_zip_archive(archive)
                     return
-                except (ValueError, IOError):
+                except (OSError, ValueError):
                     pass
             self._from_directory(path)
         else:

@@ -1,9 +1,10 @@
-import re
+import re  # noqa: I001
 import logging
 
 from dataclasses import dataclass, field
 from numbers import Number
-from typing import Any, Callable, Generic, Mapping, TypeVar, Iterator
+from typing import Any, Generic, TypeVar
+from collections.abc import Callable, Mapping, Iterator
 
 import numpy as np
 import pandas as pd
@@ -29,7 +30,7 @@ class Span(Generic[Q]):
         self.end = end
 
     def __contains__(self, val: Q) -> bool:
-        return self.start <= val and val <= self.end
+        return self.start <= val <= self.end
 
     def overlaps(self, other: "Span[Q]") -> bool:
         return self.end >= other.start and other.end >= self.start
@@ -109,7 +110,7 @@ def parse_inflected_cv_name(name: str) -> ColumnName:
     return ColumnName(curie, rest, False)
 
 
-class MappingProxy(object):
+class MappingProxy:
     """An object that proxies :meth:`__getitem__` to another object which is loaded lazily through a callable :attr:`loader`."""
 
     def __init__(self, loader):
@@ -146,7 +147,8 @@ def _lazy_load_psims():
         from psims.controlled_vocabulary.controlled_vocabulary import load_psims
         logger.debug("Loading PSI-MS controlled vocabulary")
         cv = load_psims()
-    except Exception:  # pragma: no cover
+    except Exception as e:  # pragma: no cover
+        logger.debug("Failed to load psims CV: %s", e, exc_info=True)
         cv = None
     return cv
 
@@ -157,7 +159,8 @@ def _lazy_load_uo():
 
         logger.debug("Loading UO controlled vocabulary")
         cv = load_uo()
-    except Exception:  # pragma: no cover
+    except Exception as e:  # pragma: no cover
+        logger.debug("Failed to load unit CV: %s", e, exc_info=True)
         cv = None
     return cv
 
@@ -265,7 +268,7 @@ class _NameCleaningNode:
     def __post_init__(self):
         if self.field is not None:
             self.field = self.field.with_name(self.mapper(self.field.name))
-            if self.children:
+            if self.children:  # noqa: SIM102
                 if self.is_struct():
                     new_fields = [f.field for f in self.children]
                     self.field = self.field.with_type(pa.struct(new_fields))
@@ -362,7 +365,7 @@ class _NameCleaningNode:
 T = TypeVar('T')
 
 
-class _PeekableIter(Generic[T], Iterator[tuple[int, T]]):
+class _PeekableIter(Iterator[tuple[int, T]], Generic[T]):
     _peek: tuple[int, T] | None
     inner: Iterator[tuple[int, T]]
 
@@ -436,10 +439,10 @@ class _SeekableIter(_PeekableIter[T], _SeekableMixin[T]):
 
 
 __all__ = [
+    "OntologyMapper",
     "Span",
+    "_PeekableIter",
+    "_SeekableIter",
     "_slice_to_range",
     "parse_inflected_cv_name",
-    "OntologyMapper",
-    "_SeekableIter",
-    "_PeekableIter",
 ]

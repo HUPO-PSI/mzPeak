@@ -1,8 +1,9 @@
-import logging
+import logging  # noqa: I001
 
-from typing import Iterator, Sequence, NamedTuple
-from numbers import Number
+from collections.abc import Iterator, Sequence
 from enum import Enum, auto
+from numbers import Number
+from typing import NamedTuple
 
 import numpy as np
 import pyarrow as pa
@@ -130,8 +131,6 @@ class DeltaCurveRegressionModel(DeltaModelBase):
 
         if weights is None:
             weights = np.ones(len(mz_array))
-        else:
-            weights = weights
 
         if threshold is None:
             threshold = 1.0
@@ -270,7 +269,7 @@ def fill_nulls_simple(
                 chunk[0] = chunk[1] - dx
                 chunk[2] = chunk[1] + dx
             else:
-                raise Exception()
+                raise ValueError(f"Impossible state {chunk}")
         else:
             # Otherwise this is a run of values, so we can estimate a more accurate
             # delta directly from the data
@@ -353,7 +352,7 @@ def fill_nulls(data: pa.Array, common_delta: DeltaModelBase | Number) -> "np.typ
                 buffer.append((val - common_delta(val), val, val + common_delta(val)))
             elif not length:
                 # The empty slice needs nothing, but this should not happen per
-                logger.warn("An empty slice was found: %r", token)
+                logger.warning("An empty slice was found: %r", token)
                 continue
             else:
                 local_delta, _ = estimate_median_delta(real_values)
@@ -512,7 +511,7 @@ class NullTokenizer:
         # Or else we hit an unpaired null, a single null followed by a run of values that is
         # not a terminal.
         else:
-            raise Exception(f"Malformed unpaired null sequence at {prev}-{self.index}")
+            raise ValueError(f"Malformed unpaired null sequence at {prev}-{self.index}")
 
     def _initialize_state(self):
         self.index = 0
