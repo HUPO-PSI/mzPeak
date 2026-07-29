@@ -21,89 +21,67 @@
       "column_mapping": [
         {
           "name": "ms level",
-          "path": [
-            "ms_level"
-          ],
+          "path": "ms_level",
           "accession": "MS:1000511",
           "unit": null
         },
         {
           "name": "scan polarity",
-          "path": [
-            "scan_polarity"
-          ],
+          "path": "scan_polarity",
           "accession": "MS:1000465",
           "unit": null
         },
         {
           "name": "spectrum representation",
-          "path": [
-            "spectrum_representation"
-          ],
+          "path": "spectrum_representation",
           "accession": "MS:1000525",
           "unit": null
         },
         {
           "name": "spectrum type",
-          "path": [
-            "spectrum_type"
-          ],
+          "path": "spectrum_type",
           "accession": "MS:1000559",
           "unit": null
         },
         {
           "name": "lowest observed m/z",
-          "path": [
-            "lowest_observed_mz"
-          ],
+          "path": "lowest_observed_mz",
           "accession": "MS:1000528",
           "unit": "MS:1000040"
         },
         {
           "name": "highest observed m/z",
-          "path": [
-            "highest_observed_mz"
-          ],
+          "path": "highest_observed_mz",
           "accession": "MS:1000527",
           "unit": "MS:1000040"
         },
         {
           "name": "number of data points",
-          "path": [
-            "number_of_data_points"
-          ],
+          "path": "number_of_data_points",
           "accession": "MS:1003060",
           "unit": null
         },
         {
           "name": "number of peaks",
-          "path": [
-            "number_of_peaks"
-          ],
+          "path": "number_of_peaks",
           "accession": "MS:1003059",
           "unit": null
         },
         {
           "name": "base peak m/z",
-          "path": [
-            "base_peak_mz"
-          ],
+          "path": "base_peak_mz",
           "accession": "MS:1000504",
           "unit": "MS:1000040"
         },
         {
           "name": "base peak intensity",
-          "path": [
-            "base_peak_intensity"
-          ],
+          "path": "base_peak_intensity",
           "accession": "MS:1000505",
           "unit": "MS:1000131"
         },
         {
           "name": "total ion current",
-          "path": [
-            "total_ion_current"
-          ],
+          "path": "total_ion_current",
           "accession": "MS:1000285",
           "unit": "MS:1000131"
         }
@@ -117,51 +95,37 @@
       "column_mapping": [
         {
           "name": "scan start time",
-          "path": [
-            "scan_start_time"
-          ],
+          "path": "scan_start_time",
           "accession": "MS:1000016",
           "unit": "UO:0000031"
         },
         {
           "name": "preset scan configuration",
-          "path": [
-            "preset_scan_configuration"
-          ],
+          "path": "preset_scan_configuration",
           "accession": "MS:1000616",
           "unit": null
         },
         {
           "name": "filter string",
-          "path": [
-            "filter_string"
-          ],
+          "path": "filter_string",
           "accession": "MS:1000512",
           "unit": null
         },
         {
           "name": "ion injection time",
-          "path": [
-            "ion_injection_time"
-          ],
+          "path": "ion_injection_time",
           "accession": "MS:1000927",
           "unit": "UO:0000028"
         },
         {
           "name": "scan window lower limit",
-          "path": [
-            "scan_windows",
-            "scan_window_lower_limit"
-          ],
+          "path": "scan_windows.scan_window_lower_limit",
           "accession": "MS:1000501",
           "unit": "MS:1000040"
         },
         {
           "name": "scan window upper limit",
-          "path": [
-            "scan_windows",
-            "scan_window_upper_limit"
-          ],
+          "path": "scan_windows.scan_window_upper_limit",
           "accession": "MS:1000500",
           "unit": "MS:1000040"
         }
@@ -175,28 +139,19 @@
       "column_mapping": [
         {
           "name": "isolation window target m/z",
-          "path": [
-            "isolation_window",
-            "isolation_window_target"
-          ],
+          "path": "isolation_window.isolation_window_target",
           "accession": "MS:1000827",
           "unit": "MS:1000040"
         },
         {
           "name": "isolation window lower offset",
-          "path": [
-            "isolation_window",
-            "isolation_window_lower_offset"
-          ],
+          "path": "isolation_window.isolation_window_lower_offset",
           "accession": "MS:1000828",
           "unit": "MS:1000040"
         },
         {
           "name": "isolation window upper offset",
-          "path": [
-            "isolation_window",
-            "isolation_window_upper_offset"
-          ],
+          "path": "isolation_window.isolation_window_upper_offset",
           "accession": "MS:1000829",
           "unit": "MS:1000040"
         }
@@ -210,25 +165,19 @@
       "column_mapping": [
         {
           "name": "selected ion m/z",
-          "path": [
-            "selected_ion_mz"
-          ],
+          "path": "selected_ion_mz",
           "accession": "MS:1000744",
           "unit": "MS:1000040"
         },
         {
           "name": "charge state",
-          "path": [
-            "charge_state"
-          ],
+          "path": "charge_state",
           "accession": "MS:1000041",
           "unit": null
         },
         {
           "name": "intensity",
-          "path": [
-            "intensity"
-          ],
+          "path": "peak_intensity",
           "accession": "MS:1000042",
           "unit": "MS:1000131"
         }
@@ -242,25 +191,19 @@
       "column_mapping": [
         {
           "name": "scan polarity",
-          "path": [
-            "scan_polarity"
-          ],
+          "path": "scan_polarity",
           "accession": "MS:1000465",
           "unit": null
         },
         {
           "name": "chromatogram type",
-          "path": [
-            "chromatogram_type"
-          ],
+          "path": "chromatogram_type",
           "accession": "MS:1000626",
           "unit": null
         },
         {
           "name": "number of data points",
-          "path": [
-            "number_of_data_points"
-          ],
+          "path": "number_of_data_points",
           "accession": "MS:1003060",
           "unit": null
         }
@@ -274,28 +217,19 @@
       "column_mapping": [
         {
           "name": "isolation window target m/z",
-          "path": [
-            "isolation_window",
-            "isolation_window_target"
-          ],
+          "path": "isolation_window.isolation_window_target",
           "accession": "MS:1000827",
           "unit": "MS:1000040"
         },
         {
           "name": "isolation window lower offset",
-          "path": [
-            "isolation_window",
-            "isolation_window_lower_offset"
-          ],
+          "path": "isolation_window.isolation_window_lower_offset",
           "accession": "MS:1000828",
           "unit": "MS:1000040"
         },
         {
           "name": "isolation window upper offset",
-          "path": [
-            "isolation_window",
-            "isolation_window_upper_offset"
-          ],
+          "path": "isolation_window.isolation_window_upper_offset",
           "accession": "MS:1000829",
           "unit": "MS:1000040"
         }
@@ -309,25 +243,19 @@
       "column_mapping": [
         {
           "name": "selected ion m/z",
-          "path": [
-            "selected_ion_mz"
-          ],
+          "path": "selected_ion_mz",
           "accession": "MS:1000744",
           "unit": "MS:1000040"
         },
         {
           "name": "charge state",
-          "path": [
-            "charge_state"
-          ],
+          "path": "charge_state",
           "accession": "MS:1000041",
           "unit": null
         },
         {
           "name": "intensity",
-          "path": [
-            "intensity"
-          ],
+          "path": "peak_intensity",
           "accession": "MS:1000042",
           "unit": "MS:1000131"
         }
@@ -343,21 +271,87 @@
     }
   ],
   "metadata": {
+    "scan_settings_list": [],
     "version": "0.9.0",
-    "cv_list": [
+    "data_processing_method_list": [
       {
-        "full_name": "Proteomics Standards Initiative Mass Spectrometry Ontology",
-        "id": "MS",
-        "uri": "http://purl.obolibrary.org/obo/ms/4.1.249/psi-ms.obo",
-        "version": "4.1.249"
+        "id": "pwiz_Reader_Thermo_conversion",
+        "methods": [
+          {
+            "order": 0,
+            "parameters": [
+              {
+                "accession": "MS:1000544",
+                "name": "Conversion to mzML",
+                "unit": null,
+                "value": null
+              }
+            ],
+            "software_reference": "pwiz"
+          }
+        ]
       },
       {
-        "full_name": "Units of measurement ontology",
-        "id": "UO",
-        "uri": "http://purl.obolibrary.org/obo/uo/releases/2026-01-16/uo.obo",
-        "version": "2026-01-16"
+        "id": "mzpeak_conversion1",
+        "methods": [
+          {
+            "order": 1,
+            "parameters": [
+              {
+                "accession": null,
+                "name": "conversion options",
+                "unit": null,
+                "value": "-y -z -u small.mzML -o small.mzpeak"
+              }
+            ],
+            "software_reference": "mzpeak_prototyping_convert1"
+          }
+        ]
       }
     ],
+    "file_description": {
+      "contents": [
+        {
+          "accession": "MS:1000579",
+          "name": "MS1 spectrum",
+          "unit": null,
+          "value": null
+        },
+        {
+          "accession": "MS:1000580",
+          "name": "MSn spectrum",
+          "unit": null,
+          "value": null
+        }
+      ],
+      "source_files": [
+        {
+          "id": "RAW1",
+          "location": "file:///C:\\Users\\Joshua\\Dev\\learn-rust\\ffirawfilereader\\tests\\data",
+          "name": "small.RAW",
+          "parameters": [
+            {
+              "accession": "MS:1000569",
+              "name": "SHA-1",
+              "unit": null,
+              "value": "b43e9286b40e8b5dbc0dfa2e428495769ca96a96"
+            },
+            {
+              "accession": "MS:1000563",
+              "name": "Thermo RAW format",
+              "unit": null,
+              "value": null
+            },
+            {
+              "accession": "MS:1000768",
+              "name": "Thermo nativeID format",
+              "unit": null,
+              "value": null
+            }
+          ]
+        }
+      ]
+    },
     "software_list": [
       {
         "id": "Xcalibur",
@@ -396,69 +390,14 @@
         "version": "0.1.0"
       }
     ],
+    "run": {
+      "default_data_processing_id": "pwiz_Reader_Thermo_conversion",
+      "default_instrument_id": 0,
+      "default_source_file_id": "RAW1",
+      "id": "small",
+      "start_time": "2005-07-20T19:44:22Z"
+    },
     "instrument_configuration_list": [
-      {
-        "components": [
-          {
-            "component_type": "ionsource",
-            "order": 1,
-            "parameters": [
-              {
-                "accession": "MS:1000073",
-                "name": "electrospray ionization",
-                "unit": null,
-                "value": null
-              },
-              {
-                "accession": "MS:1000057",
-                "name": "electrospray inlet",
-                "unit": null,
-                "value": null
-              }
-            ]
-          },
-          {
-            "component_type": "analyzer",
-            "order": 2,
-            "parameters": [
-              {
-                "accession": "MS:1000079",
-                "name": "fourier transform ion cyclotron resonance mass spectrometer",
-                "unit": null,
-                "value": null
-              }
-            ]
-          },
-          {
-            "component_type": "detector",
-            "order": 3,
-            "parameters": [
-              {
-                "accession": "MS:1000624",
-                "name": "inductive detector",
-                "unit": null,
-                "value": null
-              }
-            ]
-          }
-        ],
-        "id": 0,
-        "parameters": [
-          {
-            "accession": "MS:1000448",
-            "name": "LTQ FT",
-            "unit": null,
-            "value": null
-          },
-          {
-            "accession": "MS:1000529",
-            "name": "instrument serial number",
-            "unit": null,
-            "value": "SN06061F"
-          }
-        ],
-        "software_reference": "Xcalibur"
-      },
       {
         "components": [
           {
@@ -520,6 +459,82 @@
           }
         ],
         "software_reference": "Xcalibur"
+      },
+      {
+        "components": [
+          {
+            "component_type": "ionsource",
+            "order": 1,
+            "parameters": [
+              {
+                "accession": "MS:1000073",
+                "name": "electrospray ionization",
+                "unit": null,
+                "value": null
+              },
+              {
+                "accession": "MS:1000057",
+                "name": "electrospray inlet",
+                "unit": null,
+                "value": null
+              }
+            ]
+          },
+          {
+            "component_type": "analyzer",
+            "order": 2,
+            "parameters": [
+              {
+                "accession": "MS:1000079",
+                "name": "fourier transform ion cyclotron resonance mass spectrometer",
+                "unit": null,
+                "value": null
+              }
+            ]
+          },
+          {
+            "component_type": "detector",
+            "order": 3,
+            "parameters": [
+              {
+                "accession": "MS:1000624",
+                "name": "inductive detector",
+                "unit": null,
+                "value": null
+              }
+            ]
+          }
+        ],
+        "id": 0,
+        "parameters": [
+          {
+            "accession": "MS:1000448",
+            "name": "LTQ FT",
+            "unit": null,
+            "value": null
+          },
+          {
+            "accession": "MS:1000529",
+            "name": "instrument serial number",
+            "unit": null,
+            "value": "SN06061F"
+          }
+        ],
+        "software_reference": "Xcalibur"
+      }
+    ],
+    "cv_list": [
+      {
+        "full_name": "Proteomics Standards Initiative Mass Spectrometry Ontology",
+        "id": "MS",
+        "uri": "http://purl.obolibrary.org/obo/ms/4.1.249/psi-ms.obo",
+        "version": "4.1.249"
+      },
+      {
+        "full_name": "Units of measurement ontology",
+        "id": "UO",
+        "uri": "http://purl.obolibrary.org/obo/uo/releases/2026-01-16/uo.obo",
+        "version": "2026-01-16"
       }
     ],
     "sample_list": [
@@ -532,93 +547,6 @@
             "name": "sample name",
             "unit": null,
             "value": 1
-          }
-        ]
-      }
-    ],
-    "scan_settings_list": [],
-    "run": {
-      "default_data_processing_id": "pwiz_Reader_Thermo_conversion",
-      "default_instrument_id": 0,
-      "default_source_file_id": "RAW1",
-      "id": "small",
-      "start_time": "2005-07-20T19:44:22Z"
-    },
-    "file_description": {
-      "contents": [
-        {
-          "accession": "MS:1000579",
-          "name": "MS1 spectrum",
-          "unit": null,
-          "value": null
-        },
-        {
-          "accession": "MS:1000580",
-          "name": "MSn spectrum",
-          "unit": null,
-          "value": null
-        }
-      ],
-      "source_files": [
-        {
-          "id": "RAW1",
-          "location": "file:///C:\\Users\\Joshua\\Dev\\learn-rust\\ffirawfilereader\\tests\\data",
-          "name": "small.RAW",
-          "parameters": [
-            {
-              "accession": "MS:1000569",
-              "name": "SHA-1",
-              "unit": null,
-              "value": "b43e9286b40e8b5dbc0dfa2e428495769ca96a96"
-            },
-            {
-              "accession": "MS:1000563",
-              "name": "Thermo RAW format",
-              "unit": null,
-              "value": null
-            },
-            {
-              "accession": "MS:1000768",
-              "name": "Thermo nativeID format",
-              "unit": null,
-              "value": null
-            }
-          ]
-        }
-      ]
-    },
-    "data_processing_method_list": [
-      {
-        "id": "pwiz_Reader_Thermo_conversion",
-        "methods": [
-          {
-            "order": 0,
-            "parameters": [
-              {
-                "accession": "MS:1000544",
-                "name": "Conversion to mzML",
-                "unit": null,
-                "value": null
-              }
-            ],
-            "software_reference": "pwiz"
-          }
-        ]
-      },
-      {
-        "id": "mzpeak_conversion1",
-        "methods": [
-          {
-            "order": 1,
-            "parameters": [
-              {
-                "accession": null,
-                "name": "conversion options",
-                "unit": null,
-                "value": "-y -z -u small.mzML -o small.mzpeak"
-              }
-            ],
-            "software_reference": "mzpeak_prototyping_convert1"
           }
         ]
       }

@@ -805,11 +805,38 @@ impl From<Vec<String>> for PathOrCURIE {
     }
 }
 
+pub(crate) fn dot_path_ser<S>(path: &[String], serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
+    serializer.serialize_str(path.join(".").as_str())
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum DotPath {
+    Path(String),
+    PathSegments(Vec<String>)
+}
+
+pub(crate) fn dot_path_de<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de> {
+        eprintln!("Starting to deserialize dot path");
+
+        let res = DotPath::deserialize(deserializer)?;
+        match res {
+            DotPath::Path(v) => Ok(v.split('.').map(|v| v.to_string()).collect()),
+            DotPath::PathSegments(items) => Ok(items),
+        }
+}
+
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetadataColumn {
     /// A human-readable name for the parameter
     pub name: String,
     /// The path to the column in the Parquet file
+    #[serde(
+        serialize_with = "dot_path_ser",
+        deserialize_with = "dot_path_de"
+    )]
     pub path: Vec<String>,
     /// The CURIE for the term this column refers to, if any
     #[serde(

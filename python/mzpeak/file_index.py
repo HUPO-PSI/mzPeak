@@ -151,8 +151,13 @@ class MetadataColumn:
     accession: str | None = None
     unit: str | None = None
 
+    def __post_init__(self):
+        if isinstance(self.path, str):
+            self.path = self.path.split(".")
+
     def to_json(self):
         state = asdict(self)
+        state['path'] = '.'.join(state['path'])
         state.pop("index", None)
         return state
 
