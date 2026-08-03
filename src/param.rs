@@ -5,7 +5,12 @@ use std::{
     vec,
 };
 
+use arrow::array::{
+    ArrayBuilder, ArrayRef, BinaryBuilder, BooleanBuilder, Float32Builder, Float64Builder,
+    Int32Builder, Int64Builder,
+};
 use mzdata::params::{ParamDescribed, ParamLike, Unit};
+use parquet::arrow::{ProjectionMask, arrow_reader::ArrowReaderBuilder};
 use serde::{Deserialize, Serialize, ser::SerializeSeq};
 
 /// A list of ion mobility point measures for scans
@@ -805,7 +810,10 @@ impl From<Vec<String>> for PathOrCURIE {
     }
 }
 
-pub(crate) fn dot_path_ser<S>(path: &[String], serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
+pub(crate) fn dot_path_ser<S>(path: &[String], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
     serializer.serialize_str(path.join(".").as_str())
 }
 
@@ -813,19 +821,18 @@ pub(crate) fn dot_path_ser<S>(path: &[String], serializer: S) -> Result<S::Ok, S
 #[serde(untagged)]
 enum DotPath {
     Path(String),
-    PathSegments(Vec<String>)
+    PathSegments(Vec<String>),
 }
 
 pub(crate) fn dot_path_de<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
-    D: serde::Deserializer<'de> {
-        eprintln!("Starting to deserialize dot path");
-
-        let res = DotPath::deserialize(deserializer)?;
-        match res {
-            DotPath::Path(v) => Ok(v.split('.').map(|v| v.to_string()).collect()),
-            DotPath::PathSegments(items) => Ok(items),
-        }
+    D: serde::Deserializer<'de>,
+{
+    let res = DotPath::deserialize(deserializer)?;
+    match res {
+        DotPath::Path(v) => Ok(v.split('.').map(|v| v.to_string()).collect()),
+        DotPath::PathSegments(items) => Ok(items),
+    }
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -833,10 +840,7 @@ pub struct MetadataColumn {
     /// A human-readable name for the parameter
     pub name: String,
     /// The path to the column in the Parquet file
-    #[serde(
-        serialize_with = "dot_path_ser",
-        deserialize_with = "dot_path_de"
-    )]
+    #[serde(serialize_with = "dot_path_ser", deserialize_with = "dot_path_de")]
     pub path: Vec<String>,
     /// The CURIE for the term this column refers to, if any
     #[serde(
@@ -863,36 +867,258 @@ impl MetadataColumn {
         }
     }
 
+    /// Specify the unit definition
     pub fn with_unit(mut self, value: impl Into<PathOrCURIE>) -> Self {
         self.unit = value.into();
         self
     }
 
+    /// Get the last element in the path
     pub fn leaf(&self) -> Option<&str> {
         self.path.last().map(|s| s.as_str())
     }
+
+    /// Get a "."-joined path as a string
+    pub fn path_string(&self) -> String {
+        self.path.join(".")
+    }
+
+    /// Create a [`ProjectionMask`] for the mapped column, plus `num_indices` index columns
+    /// in the beginning of the schema.
+    pub fn as_projection_mask<T>(
+        &self,
+        builder: &ArrowReaderBuilder<T>,
+        num_indices: usize,
+    ) -> ProjectionMask {
+        let schema = builder.parquet_schema().clone();
+        let mut cols = Vec::with_capacity(num_indices + 1);
+        for i in 0..=num_indices {
+            let path = schema.column(i).path().string();
+            cols.push(path);
+        }
+        cols.push(self.path_string());
+        ProjectionMask::columns(&schema, cols.iter().map(|s| s.as_str()))
+    }
+
+    /// Retrieve Parquet metadata statistics from an [`ArrowReaderBuilder`]
+    pub fn parquet_statistics<T>(
+        &self,
+        builder: &ArrowReaderBuilder<T>,
+    ) -> (Option<ArrayRef>, Option<ArrayRef>) {
+        let meta = builder.metadata();
+        let schema = builder.parquet_schema();
+        let mut min_builder: Option<Box<dyn ArrayBuilder>> = None;
+        let mut max_builder: Option<Box<dyn ArrayBuilder>> = None;
+
+        if let Some((i, _col)) = schema
+            .columns()
+            .iter()
+            .enumerate()
+            .find(|(_, v)| v.path().parts() == self.path.as_slice())
+        {
+            for rg in meta.row_groups() {
+                let col_meta = rg.column(i);
+                if let Some(stats) = col_meta.statistics() {
+                    match stats {
+                        parquet::file::statistics::Statistics::Boolean(value_statistics) => {
+                            if min_builder.is_none() {
+                                min_builder = Some(Box::new(BooleanBuilder::new()));
+                                max_builder = Some(Box::new(BooleanBuilder::new()));
+                            }
+                            min_builder
+                                .as_mut()
+                                .unwrap()
+                                .as_any_mut()
+                                .downcast_mut::<BooleanBuilder>()
+                                .unwrap()
+                                .append_option(value_statistics.min_opt().copied());
+                            max_builder
+                                .as_mut()
+                                .unwrap()
+                                .as_any_mut()
+                                .downcast_mut::<BooleanBuilder>()
+                                .unwrap()
+                                .append_option(value_statistics.max_opt().copied());
+                        }
+                        parquet::file::statistics::Statistics::Int32(value_statistics) => {
+                            if min_builder.is_none() {
+                                min_builder = Some(Box::new(Int32Builder::new()));
+                                max_builder = Some(Box::new(Int32Builder::new()));
+                            }
+                            min_builder
+                                .as_mut()
+                                .unwrap()
+                                .as_any_mut()
+                                .downcast_mut::<Int32Builder>()
+                                .unwrap()
+                                .append_option(value_statistics.min_opt().copied());
+                            max_builder
+                                .as_mut()
+                                .unwrap()
+                                .as_any_mut()
+                                .downcast_mut::<Int32Builder>()
+                                .unwrap()
+                                .append_option(value_statistics.max_opt().copied());
+                        }
+                        parquet::file::statistics::Statistics::Int64(value_statistics) => {
+                            if min_builder.is_none() {
+                                min_builder = Some(Box::new(Int64Builder::new()));
+                                max_builder = Some(Box::new(Int64Builder::new()));
+                            }
+                            min_builder
+                                .as_mut()
+                                .unwrap()
+                                .as_any_mut()
+                                .downcast_mut::<Int64Builder>()
+                                .unwrap()
+                                .append_option(value_statistics.min_opt().copied());
+                            max_builder
+                                .as_mut()
+                                .unwrap()
+                                .as_any_mut()
+                                .downcast_mut::<Int64Builder>()
+                                .unwrap()
+                                .append_option(value_statistics.max_opt().copied());
+                        }
+                        parquet::file::statistics::Statistics::Int96(_value_statistics) => todo!(),
+                        parquet::file::statistics::Statistics::Float(value_statistics) => {
+                            if min_builder.is_none() {
+                                min_builder = Some(Box::new(Float32Builder::new()));
+                                max_builder = Some(Box::new(Float32Builder::new()));
+                            }
+                            min_builder
+                                .as_mut()
+                                .unwrap()
+                                .as_any_mut()
+                                .downcast_mut::<Float32Builder>()
+                                .unwrap()
+                                .append_option(value_statistics.min_opt().copied());
+                            max_builder
+                                .as_mut()
+                                .unwrap()
+                                .as_any_mut()
+                                .downcast_mut::<Float32Builder>()
+                                .unwrap()
+                                .append_option(value_statistics.max_opt().copied());
+                        }
+                        parquet::file::statistics::Statistics::Double(value_statistics) => {
+                            if min_builder.is_none() {
+                                min_builder = Some(Box::new(Float64Builder::new()));
+                                max_builder = Some(Box::new(Float64Builder::new()));
+                            }
+                            min_builder
+                                .as_mut()
+                                .unwrap()
+                                .as_any_mut()
+                                .downcast_mut::<Float64Builder>()
+                                .unwrap()
+                                .append_option(value_statistics.min_opt().copied());
+                            max_builder
+                                .as_mut()
+                                .unwrap()
+                                .as_any_mut()
+                                .downcast_mut::<Float64Builder>()
+                                .unwrap()
+                                .append_option(value_statistics.max_opt().copied());
+                        }
+                        parquet::file::statistics::Statistics::ByteArray(value_statistics) => {
+                            if min_builder.is_none() {
+                                min_builder = Some(Box::new(BinaryBuilder::new()));
+                                max_builder = Some(Box::new(BinaryBuilder::new()));
+                            }
+                            min_builder
+                                .as_mut()
+                                .unwrap()
+                                .as_any_mut()
+                                .downcast_mut::<BinaryBuilder>()
+                                .unwrap()
+                                .append_option(value_statistics.min_opt());
+                            max_builder
+                                .as_mut()
+                                .unwrap()
+                                .as_any_mut()
+                                .downcast_mut::<BinaryBuilder>()
+                                .unwrap()
+                                .append_option(value_statistics.max_opt());
+                        }
+                        parquet::file::statistics::Statistics::FixedLenByteArray(
+                            value_statistics,
+                        ) => {
+                            if min_builder.is_none() {
+                                min_builder = Some(Box::new(BinaryBuilder::new()));
+                                max_builder = Some(Box::new(BinaryBuilder::new()));
+                            }
+                            min_builder
+                                .as_mut()
+                                .unwrap()
+                                .as_any_mut()
+                                .downcast_mut::<BinaryBuilder>()
+                                .unwrap()
+                                .append_option(value_statistics.min_opt());
+                            max_builder
+                                .as_mut()
+                                .unwrap()
+                                .as_any_mut()
+                                .downcast_mut::<BinaryBuilder>()
+                                .unwrap()
+                                .append_option(value_statistics.max_opt());
+                        }
+                    }
+                }
+            }
+        }
+        (
+            min_builder.map(|mut v| v.finish()),
+            max_builder.map(|mut v| v.finish()),
+        )
+    }
 }
 
+/// A thin wrapper around `Vec<MetadataColumn>` with added functionality
+///
+/// Implements [`Deref`] for immutable operations on the underlying data,
+/// but uses [`AsMut`] for mutable ones.
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct MetadataColumnCollection(Vec<MetadataColumn>);
 
 impl MetadataColumnCollection {
+    /// Find a column by it's [`CURIE`].
+    ///
+    /// This is short-hand for [`Iterator::find`]:
+    /// ```no_test
+    /// self.iter().find(|c| c.accession == Some(curie))
+    /// ```
     pub fn find(&self, curie: CURIE) -> Option<&MetadataColumn> {
         self.0.iter().find(|c| c.accession == Some(curie))
     }
 
-    pub fn as_definition_map(&self) -> HashMap<String, MetadataColumn> {
-        let mut table = HashMap::with_capacity(self.len());
-        for col in self.iter().cloned() {
-            let key = col.path.last().unwrap().clone();
-            table.insert(key, col);
-        }
-        table
-    }
-
+    /// See [`Vec::push`]
     pub fn push(&mut self, value: MetadataColumn) {
         self.0.push(value)
+    }
+
+    /// Create a [`ProjectionMask`] for the columns mapped by the elements of this collection, plus `num_indices` index columns
+    /// in the beginning of the schema.
+    ///
+    /// # Warning
+    /// The order of columns in the resulting [`RecordBatch`](arrow::array::RecordBatch) will match the order
+    /// of the columns in the Parquet file's schema, *not* the order of the columns in this collection.
+    pub fn as_projection_mask<T>(
+        &self,
+        builder: &ArrowReaderBuilder<T>,
+        num_indices: usize,
+    ) -> ProjectionMask {
+        let schema = builder.parquet_schema().clone();
+        let mut cols = Vec::with_capacity(num_indices + self.len());
+        for i in 0..=num_indices {
+            let path = schema.column(i).path().string();
+            cols.push(path);
+        }
+        for c in self.iter() {
+            cols.push(c.path_string());
+        }
+        ProjectionMask::columns(&schema, cols.iter().map(|s| s.as_str()))
     }
 }
 
@@ -936,6 +1162,8 @@ impl AsMut<Vec<MetadataColumn>> for MetadataColumnCollection {
     }
 }
 
+/// A hierarchical version of [`MetadataColumnCollection`] that handles nested columns
+/// more effectively.
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MetadataMapping {
     columns: MetadataColumnCollection,
@@ -1163,6 +1391,11 @@ impl IntoIterator for MetadataMapping {
 
 #[cfg(test)]
 mod test {
+    use arrow::{
+        array::AsArray,
+        datatypes::{DataType, Float64Type},
+    };
+
     use super::*;
     use std::io;
 
@@ -1202,5 +1435,105 @@ mod test {
         assert_eq!(window_mapping.columns.len(), 2);
         assert_eq!(window_mapping.columns.len() + mapping.columns.len(), n);
         assert_eq!(window_mapping.path, vec!["scan_windows"]);
+    }
+
+    use crate::{archive::AnyArchiveReader, param::MetadataColumnCollection};
+
+    #[test_log::test]
+    #[rstest::rstest]
+    fn test_archive_slice_projection() -> io::Result<()> {
+        let archive = AnyArchiveReader::from_path("small.mzpeak".into())?;
+        let builder = archive.spectrum_metadata_selected_ions()?;
+        let target = MetadataColumn::new(
+            "selected ion m/z".into(),
+            vec!["selected_ion_mz".into()],
+            Some(curie!(MS:1000744)),
+        );
+
+        let mask = target.as_projection_mask(&builder, 2);
+        let reader = builder.with_projection(mask).with_batch_size(10).build()?;
+
+        let mut k = 0;
+        for batch in reader.flatten() {
+            assert_eq!(batch.num_columns(), 3);
+            k += batch.num_rows();
+            assert_eq!(batch.column(0).data_type().clone(), DataType::UInt64);
+            assert_eq!(batch.column(1).data_type().clone(), DataType::UInt64);
+            assert_eq!(batch.column(2).data_type().clone(), DataType::Float64);
+        }
+        assert_eq!(k, 34);
+        Ok(())
+    }
+
+    #[test_log::test]
+    fn test_archive_statistics() -> io::Result<()> {
+        let archive = AnyArchiveReader::from_path("small.mzpeak".into())?;
+        let builder = archive.spectrum_metadata_selected_ions()?;
+        let target = MetadataColumn::new(
+            "selected ion m/z".into(),
+            vec!["selected_ion_mz".into()],
+            Some(curie!(MS:1000744)),
+        );
+        let (min, max) = target.parquet_statistics(&builder);
+        assert!(min.is_some());
+        assert!(max.is_some());
+
+        let min = min.unwrap();
+        let max = max.unwrap();
+        assert_eq!(min.len(), 1);
+        assert_eq!(max.len(), 1);
+        let min_val = min
+            .as_primitive::<Float64Type>()
+            .iter()
+            .min_by(|a, b| a.unwrap().total_cmp(&b.unwrap()))
+            .unwrap()
+            .unwrap();
+        let max_val = max
+            .as_primitive::<Float64Type>()
+            .iter()
+            .max_by(|a, b| a.unwrap().total_cmp(&b.unwrap()))
+            .unwrap()
+            .unwrap();
+        let e = min_val - 558.749389648438 ;
+        assert!(e.abs() < 1e-6, "{min_val} error {e} > 1e-6");
+        let e = max_val - 882.535034179688 ;
+        assert!(e.abs() < 1e-6, "{max_val} error {e} > 1e-6");
+        Ok(())
+    }
+
+    #[test_log::test]
+    #[rstest::rstest]
+    fn test_archive_slice_projection_multiple() -> io::Result<()> {
+        let archive = AnyArchiveReader::from_path("small.mzpeak".into())?;
+        let builder = archive.spectrum_metadata_selected_ions()?;
+
+        let target1 = MetadataColumn::new(
+            "selected ion m/z".into(),
+            vec!["selected_ion_mz".into()],
+            Some(curie!(MS:1000744)),
+        );
+
+        let target2 = MetadataColumn::new(
+            "intensity".into(),
+            vec!["peak_intensity".into()],
+            Some(curie!(MS:1000042)),
+        );
+
+        let target = MetadataColumnCollection::from(vec![target2, target1]);
+
+        let mask = target.as_projection_mask(&builder, 2);
+        let reader = builder.with_projection(mask).with_batch_size(10).build()?;
+
+        let mut k = 0;
+        for batch in reader.flatten() {
+            assert_eq!(batch.num_columns(), 4);
+            k += batch.num_rows();
+            assert_eq!(batch.column(0).data_type().clone(), DataType::UInt64);
+            assert_eq!(batch.column(1).data_type().clone(), DataType::UInt64);
+            assert_eq!(batch.column(2).data_type().clone(), DataType::Float64);
+            assert_eq!(batch.column(3).data_type().clone(), DataType::Float32);
+        }
+        assert_eq!(k, 34);
+        Ok(())
     }
 }
