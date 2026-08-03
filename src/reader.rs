@@ -10,11 +10,16 @@ use arrow::array::{AsArray, UInt64Array};
 
 use identity_hash::BuildIdentityHasher;
 use mzdata::{
-    curie, io::{DetailLevel, OffsetIndex}, meta::MSDataFileMetadata, params::Unit, prelude::*, spectrum::{
+    curie,
+    io::{DetailLevel, OffsetIndex},
+    meta::MSDataFileMetadata,
+    params::Unit,
+    prelude::*,
+    spectrum::{
         ArrayType, BinaryArrayMap, Chromatogram, ChromatogramDescription, ChromatogramType,
         DataArray, MultiLayerSpectrum, PeakDataLevel, SpectrumDescription,
         bindata::BuildFromArrayMap,
-    }
+    },
 };
 use mzpeaks::{
     CentroidPeak, DeconvolutedCentroidLike, DeconvolutedPeak, coordinate::SimpleInterval,
@@ -34,7 +39,8 @@ use parquet::{
 use crate::{
     BufferContext,
     archive::{
-        ArchiveReader, ArchiveSource, DataKind, DirectorySource, DispatchArchiveSource, EntityType, SplittingZipArchiveSource, ZipArchiveBytesSource
+        ArchiveReader, ArchiveSource, DataKind, DirectorySource, DispatchArchiveSource, EntityType,
+        SplittingZipArchiveSource, ZipArchiveBytesSource,
     },
     reader::{
         chunk::ChunkDataReader,
@@ -146,10 +152,16 @@ impl<
     }
 
     fn count_chromatograms(&self) -> usize {
-        self.handle.chromatograms_metadata()
-            .map(|v| v.metadata().row_groups().iter().map(|rg| rg.num_rows()).sum::<i64>() as usize)
+        self.handle
+            .chromatograms_metadata()
+            .map(|v| {
+                v.metadata()
+                    .row_groups()
+                    .iter()
+                    .map(|rg| rg.num_rows())
+                    .sum::<i64>() as usize
+            })
             .unwrap_or(2)
-
     }
 }
 
@@ -550,14 +562,14 @@ impl<
                     let name = col.leaf().unwrap().to_string();
                     columns_for_predicate.push(name);
                 } else {
-                    return Err(io::Error::other("ms_level column not found"))
+                    return Err(io::Error::other("ms_level column not found"));
                 }
             }
         }
 
         let predicate_mask = ProjectionMask::columns(
             builder.parquet_schema(),
-            columns_for_predicate.iter().map(|s| s.as_str())
+            columns_for_predicate.iter().map(|s| s.as_str()),
         );
 
         let predicate = ArrowPredicateFn::new(predicate_mask, move |batch| {
@@ -576,10 +588,7 @@ impl<
             }
         });
 
-        let proj = ProjectionMask::columns(
-            builder.parquet_schema(),
-            ["index", "time"],
-        );
+        let proj = ProjectionMask::columns(builder.parquet_schema(), ["index", "time"]);
 
         let reader = builder
             .with_row_selection(rows)
@@ -860,8 +869,10 @@ impl<
                 )? {
                     Some(block) => block,
                     None => {
-                        log::trace!("No peak cache block retrieved for {index} @ {row_group_index}");
-                        return Ok(None)
+                        log::trace!(
+                            "No peak cache block retrieved for {index} @ {row_group_index}"
+                        );
+                        return Ok(None);
                     }
                 };
                 self.spectrum_peak_cache.accept(block);
@@ -878,18 +889,24 @@ impl<
         } else {
             match meta_index.query_index {
                 index::GenericDataIndex::Point(ref _query_index) => {
-                    PointDataReader(builder, BufferContext::Spectrum).get_peak_list_for(index, meta_index)
+                    PointDataReader(builder, BufferContext::Spectrum)
+                        .get_peak_list_for(index, meta_index)
                 }
                 index::GenericDataIndex::Chunk(ref query_index) => {
                     let reader = ChunkDataReader::new(builder, BufferContext::Spectrum);
-                    let out = reader.read_chunks_for(index, query_index, &meta_index.array_indices, None, None)?;
+                    let out = reader.read_chunks_for(
+                        index,
+                        query_index,
+                        &meta_index.array_indices,
+                        None,
+                        None,
+                    )?;
                     match PeakDataLevel::try_from(&out) {
                         Ok(val) => return Ok(Some(val)),
                         Err(e) => return Err(e.into()),
                     }
-                },
+                }
             }
-
         }
     }
 
@@ -982,7 +999,6 @@ impl<
                     }
                 }
                 {
-
                     let reader = reader.query_points(
                         index_range,
                         mz_range,
@@ -1049,7 +1065,8 @@ impl<
                 let it: BatchIterator<'_> = if let Some(ion_mobility_range) = ion_mobility_range {
                     // If there is an ion mobility array constraint, the chunked encoding doesn't support filtering on this
                     // dimension directly.
-                    if let Some(im_name) = meta_index.array_indices
+                    if let Some(im_name) = meta_index
+                        .array_indices
                         .iter()
                         .find(|v| v.is_ion_mobility())
                     {
@@ -1061,7 +1078,7 @@ impl<
                     it
                 };
                 return Ok((it, time_index));
-            },
+            }
         }
     }
 
@@ -1072,7 +1089,8 @@ impl<
         }
 
         let builder = SpectrumMetadataReader(self.handle.spectrum_metadata()?);
-        let rows = builder.prepare_rows_for(index, &self.query_indices.spectrum, DataKind::Metadata);
+        let rows =
+            builder.prepare_rows_for(index, &self.query_indices.spectrum, DataKind::Metadata);
         let predicate = builder.prepare_predicate_for(index);
         let reader = builder
             .0
@@ -1108,7 +1126,8 @@ impl<
         }
 
         let builder = SpectrumMetadataReader(self.handle.spectrum_metadata_precursors()?);
-        let rows = builder.prepare_rows_for(index, &self.query_indices.spectrum, DataKind::Precursors);
+        let rows =
+            builder.prepare_rows_for(index, &self.query_indices.spectrum, DataKind::Precursors);
         let predicate = builder.prepare_predicate_for(index);
         let reader = builder
             .0
@@ -1125,7 +1144,8 @@ impl<
         }
 
         let builder = SpectrumMetadataReader(self.handle.spectrum_metadata_selected_ions()?);
-        let rows = builder.prepare_rows_for(index, &self.query_indices.spectrum, DataKind::SelectedIons);
+        let rows =
+            builder.prepare_rows_for(index, &self.query_indices.spectrum, DataKind::SelectedIons);
         let predicate = builder.prepare_predicate_for(index);
         let reader = builder
             .0
@@ -1327,7 +1347,8 @@ impl<
     pub(crate) fn load_delta_models(&mut self) -> io::Result<()> {
         let builder = self.handle.spectrum_metadata()?;
 
-        let mut decoder = PeakInfoDecoder::new(self.metadata.spectra.primary_metadata_map().unwrap());
+        let mut decoder =
+            PeakInfoDecoder::new(self.metadata.spectra.primary_metadata_map().unwrap());
         let proj = match decoder.build_projection(&builder) {
             Some(proj) => proj,
             None => return Ok(()),
@@ -1405,7 +1426,8 @@ impl<
 
         let builder = self.handle.spectrum_metadata_selected_ions()?;
         let builder = SpectrumMetadataReader(builder);
-        let rows = builder.prepare_rows_for_all(&self.query_indices.spectrum, DataKind::SelectedIons);
+        let rows =
+            builder.prepare_rows_for_all(&self.query_indices.spectrum, DataKind::SelectedIons);
         let predicate = builder.prepare_predicate_for_all();
         let reader = builder
             .0
@@ -1459,7 +1481,8 @@ impl<
             decoder.decode_batch_precursor(batch);
         }
 
-        let builder = ChromatogramMetadataReader(self.handle.chromatograms_metadata_selected_ions()?);
+        let builder =
+            ChromatogramMetadataReader(self.handle.chromatograms_metadata_selected_ions()?);
         let predicate = builder.prepare_predicate_for_all();
         let reader = builder
             .0
@@ -1731,11 +1754,7 @@ impl<
 
         let proj = ProjectionMask::columns(
             builder.parquet_schema(),
-            [
-                "time",
-                "base_peak_intensity",
-                bp_path.as_str(),
-            ],
+            ["time", "base_peak_intensity", bp_path.as_str()],
         );
 
         let reader = builder
@@ -1812,13 +1831,8 @@ fn load_auxiliary_arrays_for_from<T: ChunkReader + 'static>(
     mut builder: ParquetRecordBatchReaderBuilder<T>,
     index: u64,
 ) -> io::Result<Vec<DataArray>> {
-    let predicate_mask = ProjectionMask::columns(
-        builder.parquet_schema(),
-        [
-            "index",
-            "auxiliary_arrays",
-        ],
-    );
+    let predicate_mask =
+        ProjectionMask::columns(builder.parquet_schema(), ["index", "auxiliary_arrays"]);
 
     let proj = predicate_mask.clone();
 
@@ -1882,9 +1896,15 @@ pub trait MzPeakSpectrumFacet: Sized {
         &self,
     ) -> io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>;
 
-    fn metadata_scan_reader(&self) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>>;
-    fn metadata_precursor_reader(&self) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>>;
-    fn metadata_selected_ion_reader(&self) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>>;
+    fn metadata_scan_reader(
+        &self,
+    ) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>>;
+    fn metadata_precursor_reader(
+        &self,
+    ) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>>;
+    fn metadata_selected_ion_reader(
+        &self,
+    ) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>>;
 
     /// Get a raw [`ParquetRecordBatchReaderBuilder`] for the signal data table
     fn data_reader(
@@ -1951,7 +1971,8 @@ pub trait MzPeakSpectrumFacet: Sized {
 
         if let Some(builder) = self.metadata_selected_ion_reader() {
             let builder = SpectrumMetadataReader(builder?);
-            let rows = builder.prepare_rows_for(index, self.metadata_index(), DataKind::SelectedIons);
+            let rows =
+                builder.prepare_rows_for(index, self.metadata_index(), DataKind::SelectedIons);
             let predicate = builder.prepare_predicate_for(index);
             let reader = builder
                 .0
@@ -2229,15 +2250,24 @@ impl<
         MultiLayerSpectrum::new(description, Some(arrays), None, None)
     }
 
-    fn metadata_scan_reader(&self) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>> {
+    fn metadata_scan_reader(
+        &self,
+    ) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>>
+    {
         self.0.handle.wavelength_spectrum_metadata_scans()
     }
 
-    fn metadata_precursor_reader(&self) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>> {
+    fn metadata_precursor_reader(
+        &self,
+    ) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>>
+    {
         None
     }
 
-    fn metadata_selected_ion_reader(&self) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>> {
+    fn metadata_selected_ion_reader(
+        &self,
+    ) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>>
+    {
         None
     }
 }
@@ -2310,15 +2340,24 @@ impl<
         MultiLayerSpectrum::new(description, Some(arrays), None, None)
     }
 
-    fn metadata_scan_reader(&self) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>> {
+    fn metadata_scan_reader(
+        &self,
+    ) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>>
+    {
         Some(self.0.handle.spectrum_metadata_scans())
     }
 
-    fn metadata_precursor_reader(&self) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>> {
+    fn metadata_precursor_reader(
+        &self,
+    ) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>>
+    {
         Some(self.0.handle.spectrum_metadata_precursors())
     }
 
-    fn metadata_selected_ion_reader(&self) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>> {
+    fn metadata_selected_ion_reader(
+        &self,
+    ) -> Option<io::Result<ParquetRecordBatchReaderBuilder<<Self::Source as ArchiveSource>::File>>>
+    {
         Some(self.0.handle.spectrum_metadata_selected_ions())
     }
 }
@@ -2567,7 +2606,13 @@ mod test {
     #[test_log::test]
     fn test_eic_chunked() -> io::Result<()> {
         let mut reader = MzPeakReader::new("small.chunked.mzpeak")?;
-        let k_models_defined = reader.metadata.spectra.mz_model_deltas.iter().filter(|v| v.is_some()).count();
+        let k_models_defined = reader
+            .metadata
+            .spectra
+            .mz_model_deltas
+            .iter()
+            .filter(|v| v.is_some())
+            .count();
         assert!(k_models_defined > 0);
         let (it, _time_index) =
             reader.extract_signal((0.3..0.4).into(), Some((800.0..820.0).into()), None, None)?;

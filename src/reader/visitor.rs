@@ -133,7 +133,7 @@ impl<'a> ParameterVisitor<'a> {
     }
 }
 
-pub(crate) struct MzSpectrumVisitor<'a> {
+pub struct MzSpectrumVisitor<'a> {
     pub(crate) descriptions: &'a mut [SpectrumDescription],
     pub(crate) metadata_map: &'a MetadataMapping,
     pub(crate) base_offset: usize,
@@ -190,7 +190,7 @@ impl<'a> VisitorBuilderBase<'a, SpectrumDescription> for MzSpectrumVisitor<'a> {
 impl<'a> VisitorBuilder1<'a, SpectrumDescription> for MzSpectrumVisitor<'a> {}
 
 impl<'a> MzSpectrumVisitor<'a> {
-    pub(crate) fn new(
+    pub fn new(
         descriptions: &'a mut [SpectrumDescription],
         metadata_map: &'a MetadataMapping,
         base_offset: usize,
@@ -506,7 +506,7 @@ impl<'a> MzSpectrumVisitor<'a> {
         }
     }
 
-    pub(crate) fn visit(&mut self, spec_arr: &StructArray) -> usize {
+    pub fn visit(&mut self, spec_arr: &StructArray) -> usize {
         let names = spec_arr.column_names();
         let mut visited = vec![false; spec_arr.num_columns()];
 
@@ -552,8 +552,12 @@ impl<'a> MzSpectrumVisitor<'a> {
                         curie!(MS:1000528) => self.visit_lowest_mz(spec_arr, index),
                         curie!(MS:1000527) => self.visit_highest_mz(spec_arr, index),
                         curie!(MS:1000504) => self.visit_base_peak_mz(spec_arr, index),
-                        curie!(MS:1000505) => self.visit_base_peak_intensity(spec_arr, index, colspec),
-                        curie!(MS:1000285) => self.visit_total_ion_current(spec_arr, index, colspec),
+                        curie!(MS:1000505) => {
+                            self.visit_base_peak_intensity(spec_arr, index, colspec)
+                        }
+                        curie!(MS:1000285) => {
+                            self.visit_total_ion_current(spec_arr, index, colspec)
+                        }
                         curie!(MS:1003060) | curie!(MS:1003059) => {} // number of data points | number of peak
                         _ => self.visit_as_param(spec_arr, index, colspec),
                     }
@@ -954,12 +958,12 @@ impl<'a> UnitCollection<'a> {
 }
 
 /// A type alias over a tuple of (primary source id, <entity>)
-pub(crate) type Indexed<T> = (u64, T);
+pub type Indexed<T> = (u64, T);
 /// A type alias over a tuple of (primary source id, optional secondary id, <entity>)
-pub(crate) type DoubleIndexed<T> = (u64, Option<u64>, T);
+pub type DoubleIndexed<T> = (u64, Option<u64>, T);
 
 /// A helper trait for handling (multi-)-relationship keyed visitors over type `T`
-pub(crate) trait CompoundIndexVisitor<T> {
+pub trait CompoundIndexVisitor<T> {
     /// The primary source entity's id key
     fn source_index_mut(&mut self) -> &mut u64;
 
@@ -1045,7 +1049,7 @@ impl<T> CompoundIndexVisitor<T> for DoubleIndexed<T> {
 
 /// Enclose the parallel arrays of "descriptions" and their offsets so that the borrow
 /// checker knows that method calls on this instance aren't tied to the owning objects
-struct OffsetCollection<'a, T> {
+pub struct OffsetCollection<'a, T> {
     pub(crate) descriptions: &'a mut [T],
     pub(crate) offsets: &'a [usize],
 }
@@ -1071,13 +1075,13 @@ impl<'a, T> OffsetCollection<'a, T> {
     }
 }
 
-trait VisitorBuilderBase<'a, T> {
+pub trait VisitorBuilderBase<'a, T> {
     fn iter_instances(&mut self) -> OffsetCollection<'_, T>;
     #[allow(unused)]
     fn metadata_map(&self) -> &'a MetadataMapping;
 }
 
-trait VisitorBuilder1<'a, T: ParamDescribed>: VisitorBuilderBase<'a, T> {
+pub trait VisitorBuilder1<'a, T: ParamDescribed>: VisitorBuilderBase<'a, T> {
     fn visit_parameters(&mut self, struct_arr: &StructArray, skip_params: &[CURIE]) {
         let params_array = struct_arr.column_by_name("parameters").unwrap();
         macro_rules! process {
@@ -1186,7 +1190,7 @@ trait VisitorBuilder1<'a, T: ParamDescribed>: VisitorBuilderBase<'a, T> {
     }
 }
 
-trait VisitorBuilder2<'a, T: ParamDescribed>: VisitorBuilderBase<'a, Indexed<T>>
+pub trait VisitorBuilder2<'a, T: ParamDescribed>: VisitorBuilderBase<'a, Indexed<T>>
 where
     Indexed<T>: CompoundIndexVisitor<T>,
 {
@@ -1255,10 +1259,7 @@ where
                 } else if let Some(arr) = arr.as_string_opt::<i32>() {
                     convert!(arr);
                 } else {
-                    panic!(
-                        "Unsupported data type: {:?}",
-                        arr.data_type()
-                    );
+                    panic!("Unsupported data type: {:?}", arr.data_type());
                 }
             }
             DataType::UInt32 => {
@@ -1301,7 +1302,7 @@ where
     }
 }
 
-trait VisitorBuilder3<'a, T>: VisitorBuilderBase<'a, DoubleIndexed<T>>
+pub trait VisitorBuilder3<'a, T>: VisitorBuilderBase<'a, DoubleIndexed<T>>
 where
     DoubleIndexed<T>: CompoundIndexVisitor<T>,
 {
@@ -1432,7 +1433,7 @@ where
     }
 }
 
-pub(crate) struct MzScanVisitor<'a> {
+pub struct MzScanVisitor<'a> {
     pub(crate) descriptions: &'a mut [Indexed<ScanEvent>],
     pub(crate) metadata_map: &'a MetadataMapping,
     pub(crate) base_offset: usize,
@@ -1478,7 +1479,7 @@ impl ScanWindowSchema {
 }
 
 impl<'a> MzScanVisitor<'a> {
-    pub(crate) fn new(
+    pub fn new(
         descriptions: &'a mut [(u64, ScanEvent)],
         metadata_map: &'a MetadataMapping,
         base_offset: usize,
@@ -1888,14 +1889,11 @@ impl<'a> MzScanVisitor<'a> {
         }
     }
 
-    pub(crate) fn visit(&mut self, spec_arr: &StructArray) {
+    pub fn visit(&mut self, spec_arr: &StructArray) {
         let names = spec_arr.column_names();
         let mut visited = vec![false; spec_arr.num_columns()];
         // Must visit the index first, to infer null spacing
-        if let Some(i) = names
-            .iter()
-            .position(|v| *v == "source_index")
-        {
+        if let Some(i) = names.iter().position(|v| *v == "source_index") {
             self.visit_index(spec_arr, i);
             visited[i] = true;
         } else {
@@ -1938,14 +1936,18 @@ impl<'a> MzScanVisitor<'a> {
                     "parameters" => self.visit_parameters(spec_arr),
                     "scan_index" => {}
                     "spectrum_reference" => self.visit_spectrum_reference(spec_arr, index),
-                    "instrument_configuration_ref" | "instrument_configuration_id" => self.visit_instrument_configuration_ref(spec_arr, index),
+                    "instrument_configuration_ref" | "instrument_configuration_id" => {
+                        self.visit_instrument_configuration_ref(spec_arr, index)
+                    }
                     "scan_windows" => self.visit_scan_windows(spec_arr, index),
                     "ion_mobility_value" => ion_mobility_value_index = Some(index),
                     "ion_mobility_type" => ion_mobility_type_index = Some(index),
                     "scan_start_time" => self.visit_scan_start_time(spec_arr, index, None),
                     "injection_time" => self.visit_injection_time(spec_arr, index),
                     "filter_string" => self.visit_filter_string(spec_arr, index),
-                    "preset_scan_configuration" => self.visit_preset_scan_configuration(spec_arr, index),
+                    "preset_scan_configuration" => {
+                        self.visit_preset_scan_configuration(spec_arr, index)
+                    }
                     _ => {
                         log::trace!("Visited unspecified column {colname}");
                         let metacol = MetadataColumn::new(
@@ -1967,7 +1969,7 @@ impl<'a> MzScanVisitor<'a> {
     }
 }
 
-pub(crate) struct MzPrecursorVisitor<'a> {
+pub struct MzPrecursorVisitor<'a> {
     pub(crate) descriptions: &'a mut [DoubleIndexed<Precursor>],
     pub(crate) metadata_map: &'a MetadataMapping,
     pub(crate) base_offset: usize,
@@ -1987,7 +1989,7 @@ impl<'a> VisitorBuilderBase<'a, DoubleIndexed<Precursor>> for MzPrecursorVisitor
 impl<'a> VisitorBuilder3<'a, Precursor> for MzPrecursorVisitor<'a> {}
 
 impl<'a> MzPrecursorVisitor<'a> {
-    pub(crate) fn new(
+    pub fn new(
         descriptions: &'a mut [DoubleIndexed<Precursor>],
         metadata_map: &'a MetadataMapping,
         base_offset: usize,
@@ -2176,14 +2178,11 @@ impl<'a> MzPrecursorVisitor<'a> {
         }
     }
 
-    pub(crate) fn visit(&mut self, spec_arr: &StructArray) {
+    pub fn visit(&mut self, spec_arr: &StructArray) {
         let names = spec_arr.column_names();
         let mut visited = vec![false; spec_arr.num_columns()];
         // Must visit the index first, to infer null spacing
-        if let Some(i) = names
-            .iter()
-            .position(|v| *v == "source_index")
-        {
+        if let Some(i) = names.iter().position(|v| *v == "source_index") {
             self.visit_source_index(spec_arr, i);
             visited[i] = true;
         } else {
@@ -2216,7 +2215,7 @@ impl<'a> MzPrecursorVisitor<'a> {
     }
 }
 
-pub(crate) struct MzSelectedIonVisitor<'a> {
+pub struct MzSelectedIonVisitor<'a> {
     pub(crate) descriptions: &'a mut [(u64, Option<u64>, SelectedIon)],
     pub(crate) metadata_map: &'a MetadataMapping,
     pub(crate) base_offset: usize,
@@ -2236,7 +2235,7 @@ impl<'a> VisitorBuilderBase<'a, (u64, Option<u64>, SelectedIon)> for MzSelectedI
 impl<'a> VisitorBuilder3<'a, SelectedIon> for MzSelectedIonVisitor<'a> {}
 
 impl<'a> MzSelectedIonVisitor<'a> {
-    pub(crate) fn new(
+    pub fn new(
         descriptions: &'a mut [DoubleIndexed<SelectedIon>],
         metadata_map: &'a MetadataMapping,
         base_offset: usize,
@@ -2433,15 +2432,12 @@ impl<'a> MzSelectedIonVisitor<'a> {
         }
     }
 
-    pub(crate) fn visit(&mut self, spec_arr: &StructArray) {
+    pub fn visit(&mut self, spec_arr: &StructArray) {
         let names = spec_arr.column_names();
         let mut visited = vec![false; spec_arr.num_columns()];
 
         // Must visit the index first, to infer null spacing
-        if let Some(i) = names
-            .iter()
-            .position(|v| *v == "source_index")
-        {
+        if let Some(i) = names.iter().position(|v| *v == "source_index") {
             self.visit_source_index(spec_arr, i);
             visited[i] = true;
         } else {
@@ -2486,11 +2482,7 @@ impl<'a> MzSelectedIonVisitor<'a> {
                     "intensity" => self.visit_peak_intensity(spec_arr, index),
                     _ => {
                         log::trace!("Visited unspecified column {colname}");
-                        let metacol = MetadataColumn::new(
-                            colname.to_string(),
-                            vec![],
-                            None,
-                        );
+                        let metacol = MetadataColumn::new(colname.to_string(), vec![], None);
                         self.visit_as_param(spec_arr, index, Some(&metacol), Some(colname));
                     }
                 }
@@ -2505,7 +2497,7 @@ impl<'a> MzSelectedIonVisitor<'a> {
     }
 }
 
-pub(crate) struct MzChromatogramBuilder<'a> {
+pub struct MzChromatogramBuilder<'a> {
     pub(crate) descriptions: &'a mut [ChromatogramDescription],
     pub(crate) metadata_map: &'a MetadataMapping,
     pub(crate) base_offset: usize,
@@ -2525,7 +2517,7 @@ impl<'a> VisitorBuilderBase<'a, ChromatogramDescription> for MzChromatogramBuild
 impl<'a> VisitorBuilder1<'a, ChromatogramDescription> for MzChromatogramBuilder<'a> {}
 
 impl<'a> MzChromatogramBuilder<'a> {
-    pub(crate) fn new(
+    pub fn new(
         descriptions: &'a mut [ChromatogramDescription],
         metadata_map: &'a MetadataMapping,
         base_offset: usize,
@@ -2630,7 +2622,7 @@ impl<'a> MzChromatogramBuilder<'a> {
         }
     }
 
-    pub(crate) fn visit(&mut self, chrom_arr: &StructArray) -> usize {
+    pub fn visit(&mut self, chrom_arr: &StructArray) -> usize {
         // Must visit the index first, to infer null spacing
         self.visit_index(chrom_arr, 0);
         self.visit_id(chrom_arr, 1);
@@ -2682,7 +2674,7 @@ impl<'a> MzChromatogramBuilder<'a> {
 }
 
 #[derive(Default, Debug)]
-pub(crate) struct AuxiliaryArrayVisitor(Vec<DataArray>);
+pub struct AuxiliaryArrayVisitor(Vec<DataArray>);
 
 impl AuxiliaryArrayVisitor {
     fn visit_data(&mut self, index: usize, arrays: &StructArray) {
