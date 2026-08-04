@@ -1,7 +1,11 @@
 from collections.abc import MutableSequence
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    import pyarrow.parquet
+
 
 OTHER = "other"
 
@@ -161,6 +165,18 @@ class MetadataColumn:
         state.pop("index", None)
         return state
 
+    def find_column(
+        self, schema: "pyarrow.parquet.ParquetSchema"
+    ) -> tuple[int, "pyarrow.parquet.ColumnChunkMetaData"] | None:
+        col: pyarrow.parquet.ColumnChunkMetaData
+        self_path = '.'.join(self.path)
+        for (i, col) in enumerate(schema):
+            if col.path == self_path:
+                return (i, col)
+        self_path_prefix = '.'.join(self.path[:-1])
+        for (i, col) in enumerate(schema):
+            if col.path.startswith(self_path_prefix) and col.path.split(".")[-1] == self.path[-1]:
+                return (i, col)
 
 @dataclass
 class FileEntry:
@@ -184,6 +200,18 @@ class FileEntry:
             "column_mapping": [c.to_json() for c in self.column_mapping],
             "parameters": self.parameters,
         }
+
+    def mapping(self, name: str | None = None, accession: str | None = None) -> MetadataColumn | None:
+        if name is None and accession is None:
+            raise ValueError("one of `name` and `accession` must be provided")
+        if name is not None:
+            for col in self.column_mapping:
+                if col.name == name:
+                    return col
+        if accession is not None:
+            for col in self.column_mapping:
+                if col.accession == accession:
+                    return col
 
     def rename_columns(self, columns: list[str]) -> list[str]:
         name_map = {c.path[-1]: c.name for c in self.column_mapping}

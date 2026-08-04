@@ -1,12 +1,12 @@
 import json
 from pathlib import Path
+import zipfile
 
 import pandas as pd
 import pytest
-
 from mzpeak import MzPeakFile
-from mzpeak.mz_reader import BufferFormat
 from mzpeak.file_index import FileIndex
+from mzpeak.mz_reader import BufferFormat
 
 point_path = Path("small.mzpeak")
 chunk_path = Path("small.chunked.mzpeak")
@@ -28,6 +28,12 @@ def common_checks(reader: MzPeakFile, subtests: pytest.Subtests):
         assert len(reader.selected_ions) == 34
         assert len(reader.precursors) == 34
 
+        min_mz, max_mz = reader.observed_mz_range()
+        expected_min = 162.24594116210938
+        assert abs(expected_min - min_mz) < 1e-6
+        expected_max = 2000.0099466203774
+        assert abs(expected_max - max_mz) < 1e-6
+
         assert reader.file_metadata.keys() == {
             "cv_list",
             "version",
@@ -45,6 +51,8 @@ def common_checks(reader: MzPeakFile, subtests: pytest.Subtests):
         assert len(reader.chromatograms) == 1
         assert len(reader.extract_bpc()[0]) == 48
         assert len(reader.read_chromatogram(0)['time array']) == 48
+        assert len(reader.read_chromatogram(slice(0, 1))) == 1
+        assert len(reader.read_chromatogram([0])) == 1
 
     with subtests.test("spectrum 0"):
         spec = reader[0]
@@ -103,6 +111,13 @@ def check_iterator(reader: MzPeakFile, n: int=10):
 
 def test_load_base_point(subtests: pytest.Subtests):
     reader = MzPeakFile(point_path)
+    assert reader.spectrum_data.buffer_format() == BufferFormat.Point
+    common_checks(reader, subtests)
+    with subtests.test("iterator"):
+        check_iterator(reader)
+
+def test_load_base_point_open_zipfile(subtests: pytest.Subtests):
+    reader = MzPeakFile(zipfile.ZipFile(point_path))
     assert reader.spectrum_data.buffer_format() == BufferFormat.Point
     common_checks(reader, subtests)
     with subtests.test("iterator"):

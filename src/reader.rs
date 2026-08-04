@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use arrow::array::{AsArray, UInt64Array};
+use arrow::{array::{AsArray, UInt64Array}, datatypes::{DataType, Float32Type, Float64Type}};
 
 use identity_hash::BuildIdentityHasher;
 use mzdata::{
@@ -787,6 +787,45 @@ impl<
     /// Test if there are no mass spectra in the archive
     pub fn is_empty(&self) -> bool {
         self.metadata.spectra.id_index.is_empty()
+    }
+
+    /// Query the spectrum metadata to obtain the lowest and highest observed m/z as reported
+    /// by columns mapped to `MS:1000528` and `MS:1000527`.
+    ///
+    /// This queries Parquet row group statistics.
+    pub fn observed_mz_range(&self) -> (Option<f64>, Option<f64>) {
+        let arc = match self.handle.spectrum_metadata() {
+            Ok(arc) => arc,
+            Err(e) => {
+                log::error!("Failed to locate spectrum metadata file in archive: {e}");
+                return (None, None)
+            }
+        };
+        if let Some(fentry) = self.file_index().iter().find(|v| v.entity_type == EntityType::Spectrum && v.data_kind == DataKind::Metadata) {
+            let lowest_obs = fentry.column_mapping_for(curie!(MS:1000528)).and_then(|c| c.parquet_statistics(&arc).0);
+            let highest_obs = fentry.column_mapping_for(curie!(MS:1000527)).and_then(|c| c.parquet_statistics(&arc).1);
+            let mut min_mz: Option<f64> = None;
+            let mut max_mz: Option<f64> = None;
+            if let Some(lowest_obs) = lowest_obs {
+                min_mz = match lowest_obs.data_type() {
+                    DataType::Float32 => arrow::compute::min(lowest_obs.as_primitive::<Float32Type>()).map(|v| v as f64),
+                    DataType::Float64 => arrow::compute::min(lowest_obs.as_primitive::<Float64Type>()),
+                    dtype => unimplemented!("Lowest observed m/z type {dtype:?} not yet implemented")
+                };
+            }
+
+            if let Some(highest_obs) = highest_obs {
+                max_mz = match highest_obs.data_type() {
+                    DataType::Float32 => arrow::compute::max(highest_obs.as_primitive::<Float32Type>()).map(|v| v as f64),
+                    DataType::Float64 => arrow::compute::max(highest_obs.as_primitive::<Float64Type>()),
+                    dtype => unimplemented!("Lowest observed m/z type {dtype:?} not yet implemented")
+                };
+            }
+
+            (min_mz, max_mz)
+        } else {
+            (None, None)
+        }
     }
 
     /// Get an iterator over wavelength spectra
@@ -2507,6 +2546,27 @@ mod test {
         let bpc = reader.encoded_bpc()?;
         assert_eq!(bpc.index(), 1);
         assert_eq!(bpc.time()?.len(), 48);
+        Ok(())
+    }
+
+    #[test_log::test]
+    #[rstest::rstest]
+    #[case::packed("small.mzpeak")]
+    #[case::unpacked("small.unpacked.mzpeak")]
+    #[case::packed_chunks("small.chunked.mzpeak")]
+    fn test_read_mz_range(#[case] path: &str) -> io::Result<()> {
+        let reader = MzPeakReader::new(path).unwrap();
+        let (min, max)= reader.observed_mz_range();
+        let expected_min = 162.24594116210938;
+        let expected_max = 2000.0099466203774;
+        assert!(min.is_some());
+        let min = min.unwrap();
+        let err = (min - expected_min).abs();
+        assert!(err < 1e-6, "The observed error {err} from |{min} - {expected_min}| is too large");
+        assert!(max.is_some());
+        let max = max.unwrap();
+        let err = (max - expected_max).abs();
+        assert!(err < 1e-6, "The observed error {err} from |{max} - {expected_min}| is too large");
         Ok(())
     }
 

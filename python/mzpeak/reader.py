@@ -356,68 +356,6 @@ class _PrecursorReadMixin:
     precursors: pd.DataFrame
     selected_ions: pd.DataFrame
 
-    def _read_precursors(self):
-        blocks = []
-        if self.precursor_index_i is not None:
-            for i in range(self.meta.num_row_groups):
-                rg = self.meta.row_group(i)
-                col_idx = rg.column(self.precursor_index_i)
-                if col_idx.statistics and col_idx.statistics.has_min_max:
-                    table: pa.Table = self.handle.read_row_group(i, columns=["precursor"])
-                    bats = table["precursor"].chunks
-                    for bat in bats:
-                        blocks.append(bat.filter(bat.field(0).is_valid()))
-
-        if blocks:
-            bat = pa.Table.from_struct_array(pa.chunked_array(blocks))
-            if "spectrum_index" in bat.column_names:
-                index_col = "spectrum_index"
-            else:
-                index_col = "source_index"
-            bat = CV_MAPPER.clean_schema(bat)
-            self.precursors = _clean_frame(
-                bat.to_pandas(types_mapper=pd.ArrowDtype).set_index(index_col)
-            )
-        else:
-            self.precursors = pd.DataFrame(
-                [],
-                columns=[
-                    "source_index",
-                    "precursor_index",
-                ],
-            )
-
-    def _read_selected_ions(self):
-        blocks = []
-        if self.selected_ion_i is not None:
-            for i in range(self.meta.num_row_groups):
-                rg = self.meta.row_group(i)
-                col_idx = rg.column(self.selected_ion_i)
-                if col_idx.statistics and col_idx.statistics.has_min_max:
-                    table = self.handle.read_row_group(i, columns=["selected_ion"])
-                    bats = table["selected_ion"].chunks
-                    for bat in bats:
-                        blocks.append(bat.filter(bat.field(0).is_valid()))
-
-        if blocks:
-            bat = pa.Table.from_struct_array(pa.chunked_array(blocks))
-            if "spectrum_index" in bat.column_names:
-                index_col = "spectrum_index"
-            else:
-                index_col = "source_index"
-            bat = CV_MAPPER.clean_schema(bat)
-            self.selected_ions = _clean_frame(
-                bat.to_pandas(types_mapper=pd.ArrowDtype).set_index(index_col)
-            )
-        else:
-            self.selected_ions = pd.DataFrame(
-                [],
-                columns=[
-                    "source_index",
-                    "precursor_index",
-                ],
-            )
-
     def _unpack_precursors(self, spec: dict, i: int):
         precursors_of = self.precursors.loc[[i]]
         precursors_of["activation"] = precursors_of["activation"].apply(
@@ -468,7 +406,7 @@ class MzPeakNamespaceAggregation:
 
     def storage_reader(self):
         if self.is_concatenated_storage():
-            return ConcatenatedStorage(self.metadata)
+            raise NotImplementedError("Old concatenated storage layout not supported")
         else:
             return MultiFileStorage(self, self.entity_type)
 
@@ -626,178 +564,6 @@ class MultiFileStorage(StorageStrategyBase):
 
     def _read_chromatograms(self):
         return self._read_spectra()
-
-
-class ConcatenatedStorage(_PrecursorReadMixin, StorageStrategyBase):
-    spectrum_index_i: int
-    chromatogram_index_i : int
-    scan_index_i: int
-    precursor_index_i: int
-    selected_ion_i: int
-
-    handle: pq.ParquetFile
-    meta: pq.FileMetaData
-
-    def __init__(self, handle: pq.ParquetFile):
-        self.handle = handle
-        self.meta = handle.metadata
-        self._infer_schema_idx()
-
-    def _infer_schema_idx(self):
-        self.selected_ion_i = None
-        self.precursor_index_i = None
-        self.scan_index_i = None
-        self.spectrum_index_i = None
-        self.chromatogram_index_i = None
-        if self.meta.num_row_groups:
-            rg = self.meta.row_group(0)
-            for i in range(rg.num_columns):
-                col = rg.column(i)
-                if col.path_in_schema == "spectrum.index":
-                    self.spectrum_index_i = i
-                elif col.path_in_schema in ("scan.spectrum_index", "scan.source_index"):
-                    self.scan_index_i = i
-                elif col.path_in_schema in (
-                    "precursor.spectrum_index",
-                    "precursor.source_index",
-                ):
-                    self.precursor_index_i = i
-                elif col.path_in_schema in (
-                    "selected_ion.spectrum_index",
-                    "selected_ion.source_index",
-                ):
-                    self.selected_ion_i = i
-                elif col.path_in_schema == "chromataogram.index":
-                    self.chromatogram_index_i = i
-
-    def _read_spectra(self):
-        blocks = []
-        if self.spectrum_index_i is not None:
-            for i in range(self.meta.num_row_groups):
-                rg = self.meta.row_group(i)
-                col_idx = rg.column(self.spectrum_index_i)
-                if col_idx.statistics and col_idx.statistics.has_min_max:
-                    table = self.handle.read_row_group(i, columns=["spectrum"])
-                    bats = table["spectrum"].chunks
-                    for bat in bats:
-                        # TODO: filter or slice this if there *are* nulls, otherwise avoid copying
-                        blocks.append(bat.filter(bat.field(0).is_valid()))
-
-        if not blocks:
-            spectra = pd.DataFrame(
-                [],
-                columns=[
-                    "index",
-                    "id",
-                ],
-            )
-        else:
-            bat = pa.Table.from_struct_array(pa.chunked_array(blocks))
-            bat = CV_MAPPER.clean_schema(bat)
-            spectra = _clean_frame(
-                bat.to_pandas(types_mapper=pd.ArrowDtype).set_index("index")
-            )
-            if (np.diff(spectra.index) == 1).all():
-                spectra.index = pd.RangeIndex(
-                    spectra.index[0],
-                    spectra.index[-1] + 1,
-                    name="index",
-                )
-        if "id" in spectra.columns:
-            id_index = spectra[["id"]].reset_index().set_index("id")["index"]
-        else:
-            id_index = pd.Series()
-        return spectra, id_index
-
-    def _read_scans(self):
-        blocks = []
-        if self.scan_index_i is not None:
-            for i in range(self.meta.num_row_groups):
-                rg = self.meta.row_group(i)
-                col_idx = rg.column(self.scan_index_i)
-                if col_idx.statistics and col_idx.statistics.has_min_max:
-                    table = self.handle.read_row_group(i, columns=["scan"])
-                    bats = table["scan"].chunks
-                    for bat in bats:
-                        blocks.append(bat.filter(bat.field(0).is_valid()))
-
-        if blocks:
-            bat = pa.Table.from_struct_array(pa.chunked_array(blocks))
-            if "spectrum_index" in bat.column_names:
-                index_col = "spectrum_index"
-            else:
-                index_col = "source_index"
-            bat = CV_MAPPER.clean_schema(bat)
-            scans = _clean_frame(
-                bat.to_pandas(types_mapper=pd.ArrowDtype).set_index(index_col)
-            )
-            if (np.diff(scans.index) == 1).all():
-                scans.index = pd.RangeIndex(
-                    scans.index[0],
-                    scans.index[-1] + 1,
-                )
-                scans.index.name = "source_index"
-        else:
-            scans = pd.DataFrame(
-                [],
-                columns=[
-                    "source_index",
-                ],
-            )
-        return scans
-
-    def _read_chromatograms(self):
-        if self.chromatogram_index_i is None:
-            chromatograms = pd.DataFrame(
-                [],
-                columns=[
-                    "index",
-                    "id",
-                ],
-            )
-            id_index = pd.Series()
-            return chromatograms, id_index
-
-        chromatograms = []
-        for i in range(self.meta.num_row_groups):
-            rg = self.meta.row_group(i)
-            col_idx = rg.column(self.chromatogram_index_i)
-            if col_idx.statistics and col_idx.statistics.has_min_max:
-                table = self.handle.read_row_group(i, columns=["chromatogram"])
-                bats = table["chromatogram"].chunks
-                for bat in bats:
-                    chromatograms.append(bat.filter(bat.field(0).is_valid()))
-
-        if not chromatograms:
-            chromatograms = pd.DataFrame(
-                [],
-                columns=[
-                    "index",
-                    "id",
-                ],
-            )
-        else:
-            bat = pa.Table.from_struct_array(pa.chunked_array(chromatograms))
-            bat = CV_MAPPER.clean_schema(bat)
-            chromatograms = _clean_frame(
-                bat.to_pandas(types_mapper=pd.ArrowDtype).set_index("index")
-            )
-
-        if "id" in chromatograms.columns:
-            id_index = (
-                chromatograms[["id"]].reset_index().set_index("id")["index"]
-            )
-        else:
-            id_index = pd.Series()
-        return chromatograms, id_index
-
-    def _read_precursors(self):
-        super()._read_precursors()
-        return self.precursors
-
-    def _read_selected_ions(self):
-        super()._read_selected_ions()
-        return self.selected_ions
 
 
 class MzPeakSpectrumMetadataReader(_PrecursorReadMixin, _DataPointCountMixin):
@@ -963,36 +729,6 @@ class MzPeakChromatogramMetadataReader(_PrecursorReadMixin, _DataPointCountMixin
         self.chromatograms, self.id_index = storage._read_chromatograms()
         self.precursors = storage._read_precursors()
         self.selected_ions = storage._read_selected_ions()
-
-    def _read_chromatograms(self):
-        chromatograms = []
-        for i in range(self.meta.num_row_groups):
-            rg = self.meta.row_group(i)
-            col_idx = rg.column(self.chromatogram_index_i)
-            if col_idx.statistics and col_idx.statistics.has_min_max:
-                table = self.handle.read_row_group(i, columns=["chromatogram"])
-                bats = table["chromatogram"].chunks
-                for bat in bats:
-                    chromatograms.append(bat.filter(bat.field(0).is_valid()))
-
-        if not chromatograms:
-            self.chromatograms = pd.DataFrame(
-                [],
-                columns=[
-                    "index",
-                    "id",
-                ],
-            )
-        else:
-            bat = pa.Table.from_struct_array(pa.chunked_array(chromatograms))
-            bat = CV_MAPPER.clean_schema(bat)
-            self.chromatograms = _clean_frame(bat.to_pandas(types_mapper=pd.ArrowDtype).set_index("index"))
-        if 'id' in self.chromatograms.columns:
-            self.id_index = (
-                self.chromatograms[["id"]].reset_index().set_index("id")["index"]
-            )
-        else:
-            self.id_index = pd.Series()
 
     def _table(self) -> pd.DataFrame:
         return self.chromatograms
@@ -1521,6 +1257,46 @@ class MzPeakFile(_EntityCollectionMixin):
             step = index.step or 1
             chrom = self.read_chromatogram(range(start, end, step))
         return chrom
+
+    def observed_mz_range(self) -> tuple[float | None, float | None]:
+        """
+        Query the spectrum metadata to obtain the lowest and highest observed m/z as reported
+        by columns mapped to `MS:1000528` and `MS:1000527`.
+
+        This queries Parquet row group statistics.
+
+        Returns
+        -------
+        min_mz : float | None
+            The lowest observed m/z
+        max_mz : float | None
+            The highest observed m/z
+        """
+        ns = self.spectrum_metadata.namespace
+        fi = ns.file_index.find(EntityType.Spectrum, DataKind.Metadata)
+        lowest = fi.mapping(accession="MS:1000528")
+        highest = fi.mapping(accession="MS:1000527")
+        pq_meta: pq.FileMetaData = ns.metadata.metadata
+        lowest_q = lowest.find_column(pq_meta.schema)
+        highest_q = highest.find_column(pq_meta.schema)
+        if not lowest_q or not highest_q:
+            return (None, None)
+        min_mz = None
+        max_mz = None
+        for i in range(pq_meta.num_row_groups):
+            rg: pq.RowGroupMetaData = pq_meta.row_group(i)
+
+            col_meta: pq.ColumnChunkMetaData = rg.column(lowest_q[0])
+            stats = col_meta.statistics
+            if stats:
+                min_mz = stats.min if min_mz is None else min(min_mz, stats.min)
+
+            col_meta: pq.ColumnChunkMetaData = rg.column(highest_q[0])
+            stats = col_meta.statistics
+            if stats:
+                max_mz = stats.max if max_mz is None else max(max_mz, stats.max)
+        return (min_mz, max_mz)
+
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.filename!r}, prefer_peaks={self.prefer_peaks})"
