@@ -3,14 +3,12 @@ import logging
 
 from dataclasses import dataclass, field
 from numbers import Number
-from typing import Any, Generic, TypeVar
-from collections.abc import Callable, Mapping, Iterator
+from typing import Generic, TypeVar
+from collections.abc import Callable, Iterator
 
 import numpy as np
-import pandas as pd
 import pyarrow as pa
 
-from .file_index import MetadataColumn
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -59,55 +57,6 @@ def _slice_to_range(slice_val: slice, n: int) -> range:
 NOT_ALLOWED_IN_COLNAME_PATTERN = re.compile("[^a-zA-Z0-9_\\\\-]+")
 
 PERMITTED_CV_NAMES = ('MS', 'UO', )
-
-
-@dataclass(frozen=True)
-class ColumnName:
-    accession: str | None
-    name: str
-    is_unit: bool | str = field(default=False)
-
-    def has_unit_curie(self) -> bool:
-        return isinstance(self.is_unit, str)
-
-    def is_unit_column(self) -> bool:
-        return self.is_unit and isinstance(self.is_unit, bool)
-
-    def __iter__(self):
-        yield self.accession
-        yield self.name
-        yield self.is_unit
-
-
-def parse_inflected_cv_name(name: str) -> ColumnName:
-    tokens = iter(name.split("_"))
-    if tokens[0] == 'opt':
-        tokens = tokens[1:]
-    try:
-        prefix = next(tokens)
-        accession = next(tokens)
-        rest = '_'.join(tokens)
-    except StopIteration:
-        return ColumnName(None, name, False)
-
-    if not rest or prefix not in PERMITTED_CV_NAMES:
-        return ColumnName(None, name, False)
-
-    curie = f"{prefix}:{accession}"
-
-    if rest.endswith("_unit"):
-        return ColumnName(curie, rest, True)
-
-    if "_unit_" in rest:
-        try:
-            (rest, unit) = rest.rsplit("_unit_", 1)
-            (unit_cv, unit_accession) = unit.split("_", 1)
-            unit_curie = f"{unit_cv}:{unit_accession}"
-            return ColumnName(curie, rest, unit_curie)
-        except ValueError:
-            pass
-
-    return ColumnName(curie, rest, False)
 
 
 class MappingProxy:
@@ -169,80 +118,6 @@ CV_PSIMS = MappingProxy(_lazy_load_psims)
 CV_UO = MappingProxy(_lazy_load_uo)
 
 
-class OntologyMapper:
-    cv_psims: Mapping[str, Any]
-    cv_uo: Mapping[str, Any]
-    overrides: dict[str, str]
-
-    def __init__(self, cv_psims=CV_PSIMS, cv_uo=CV_UO, overrides: dict[str, str] | None = None):
-        self.cv_psims = cv_psims
-        self.cv_uo = cv_uo
-        self.overrides = overrides or {}
-
-    def with_overrides(self, overrides: dict[str, str] | None = None):
-        return self.__class__(
-            self.cv_psims,
-            self.cv_uo,
-            overrides
-        )
-
-    def with_overrides_from(self, metacolumns: list[MetadataColumn]):
-        return self.with_overrides({
-            c.path[-1]: c.name for c in metacolumns
-        })
-
-    def __getitem__(self, value: str):
-        colname = parse_inflected_cv_name(value)
-        accession, name, _unit = colname
-        suffix = ' unit' if colname.is_unit_column() else ''
-        if accession is None:
-            alt_name = name.replace("_", " ").replace("mz", 'm/z')
-            alt_term = self.cv_psims.get(alt_name)
-            if alt_term and alt_name not in ('id', 'index', 'name', 'activation', 'precursor'):
-                logger.log(TRACE, 'Mapped %r to %s|%s', name, alt_term['id'], alt_term['name'])
-                return alt_term['name']
-            return self.overrides.get(name, name) + suffix
-        cv_id = accession.split(":")[0]
-        if cv_id == "MS":
-            term = self.cv_psims[accession]
-            logger.log(TRACE, "Mapped %r to %s|%s", name, term["id"], term["name"])
-            return term["name"] + suffix
-        elif cv_id == "UO":
-            term = self.cv_uo[accession]
-            logger.log(TRACE, "Mapped %r to %s|%s", name, term["id"], term["name"])
-            return term["name"] + suffix
-        else:
-            logger.warning("Unknown prefix %r from %r", cv_id, value)
-            return self.overrides.get(name, name) + suffix
-
-    def __call__(self, value: str):
-        return self[value]
-
-    def clean_column_names(self, df: pd.DataFrame):
-        df.columns = df.columns.map(self)
-        return df
-
-    def clean_schema(self, table: pa.Table) -> pa.Table:
-        blocks = []
-        fields = []
-        for f, block in zip(table.schema, table):
-            chunks = []
-            clean_f = None
-            for chunk in block.chunks:
-                node = _NameCleaningNode.from_array(f, chunk, self)
-                clean_f, clean_chunk = node.clean()
-                chunks.append(clean_chunk)
-            fields.append(clean_f)
-            blocks.append(chunks)
-
-        chunks = []
-        for block in zip(*blocks):
-            chunks.append(pa.StructArray.from_arrays(block, fields=fields))
-        return pa.Table.from_struct_array(
-            pa.chunked_array(chunks)
-        )
-
-
 @dataclass
 class _NameCleaningNode:
     """
@@ -295,7 +170,7 @@ class _NameCleaningNode:
         return isinstance(self.field.type, pa.LargeListType)
 
     @classmethod
-    def from_array(cls, field: pa.Field, array: pa.Array, mapper: OntologyMapper):
+    def from_array(cls, field: pa.Field, array: pa.Array, mapper: Callable[[str], str]):
         '''The main entry point'''
         if isinstance(array.type, pa.StructType):
             return cls.from_struct_array(field, array, mapper)
@@ -305,7 +180,7 @@ class _NameCleaningNode:
 
     @classmethod
     def from_struct_array(
-        cls, field: pa.Field, arrays: pa.StructArray, mapper: OntologyMapper
+        cls, field: pa.Field, arrays: pa.StructArray, mapper: Callable[[str], str]
     ):
         nodes = []
         for f, a in zip(arrays.type.fields, arrays.flatten()):
@@ -314,7 +189,7 @@ class _NameCleaningNode:
 
     @classmethod
     def from_list_array(
-        cls, field: pa.Field, arrays: pa.ListArray, mapper: OntologyMapper
+        cls, field: pa.Field, arrays: pa.ListArray, mapper: Callable[[str], str]
     ):
         nodes = []
         nodes.append(
@@ -439,10 +314,8 @@ class _SeekableIter(_PeekableIter[T], _SeekableMixin[T]):
 
 
 __all__ = [
-    "OntologyMapper",
     "Span",
     "_PeekableIter",
     "_SeekableIter",
     "_slice_to_range",
-    "parse_inflected_cv_name",
 ]

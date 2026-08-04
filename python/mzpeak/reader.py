@@ -20,7 +20,7 @@ from pyarrow import parquet as pq
 
 from .mz_reader import _DataBatchIter, MzPeakArrayDataReader, _SpectrumArrays
 from .file_index import FileEntry, FileIndex, DataKind, EntityType
-from .util import _SeekableIter, OntologyMapper, DTYPES, _NameCleaningNode
+from .util import _SeekableIter, DTYPES, _NameCleaningNode
 
 try:
     has_upath = True
@@ -33,13 +33,8 @@ if TYPE_CHECKING:
     from upath import UPath  # noqa: TC004
 
 
-
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
-
-CV_MAPPER = OntologyMapper(
-    overrides={"mz_signal_continuity": "spectrum representation"}
-)
 
 
 class ArchiveStorage(Enum):
@@ -156,8 +151,8 @@ def _format_param(param: dict):
 def _clean_frame(df: pd.DataFrame, clean_columns: bool = True):
     columns = df.columns[~df.isna().all(axis=0)]
     df = df[columns]
-    if clean_columns:
-        df = CV_MAPPER.clean_column_names(df)
+    # if clean_columns:
+    #     df = CV_MAPPER.clean_column_names(df)
     return df
 
 
