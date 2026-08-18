@@ -15,7 +15,7 @@ use object_store::{ObjectMeta, ObjectStore, path::Path as ObjectPath};
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncSeek, ReadBuf};
 use url::Url;
 
-use crate::archive::FileIndex;
+use crate::archive::{DataKind, EntityType, FileIndex};
 
 use super::sync::{MzPeakArchiveEntry, MzPeakArchiveType, SchemaMetadataManager};
 
@@ -425,6 +425,18 @@ impl<T: AsyncArchiveSource + 'static> AsyncArchiveReader<T> {
         let store = Arc::new(object_store_opendal::OpendalStore::new(op));
         let source = T::from_store_path(store, path.into()).await?;
         AsyncArchiveReader::init_from_archive(source).await
+    }
+
+    pub async fn read_entry(&self, entity_type: &EntityType, data_kind: &DataKind) -> io::Result<ParquetRecordBatchStreamBuilder<T::File>> {
+        if let Some(entry) = self.members.find_entry_for(entity_type, data_kind) {
+            return self.archive.read_index(entry.entry_index, entry.metadata.clone()).await
+        }
+        if let Some(entry) = self.file_index().find_entry(entity_type, data_kind) {
+            let handle = self.open_stream(&entry.name).await?;
+            return ParquetRecordBatchStreamBuilder::new(handle).await.map_err(|e| e.into())
+        } else {
+            return Err(io::Error::new(io::ErrorKind::NotFound, format!("{entity_type:?} {data_kind:?} not found")));
+        }
     }
 
     pub async fn chromatograms_metadata(

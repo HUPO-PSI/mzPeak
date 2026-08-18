@@ -1,8 +1,7 @@
 use std::{collections::HashMap, io, marker::PhantomData, sync::Arc};
 
 use arrow::{
-    array::{Array, AsArray, RecordBatch, UInt64Array},
-    error::ArrowError,
+    array::{Array, ArrayRef, AsArray, RecordBatch, UInt64Array}, datatypes::{DataType, Float32Type, Float64Type}, error::ArrowError,
 };
 use futures::{StreamExt, stream::BoxStream};
 use identity_hash::BuildIdentityHasher;
@@ -31,11 +30,7 @@ use parquet::{
 use url::Url;
 
 use crate::{
-    BufferContext,
-    archive::{AsyncArchiveReader, AsyncArchiveSource, AsyncZipArchiveSource, DataKind},
-    constants::{CHROMATOGRAM, SPECTRUM},
-    filter::RegressionDeltaModel,
-    reader::{
+    BufferContext, CURIE, archive::{AsyncArchiveReader, AsyncArchiveSource, AsyncZipArchiveSource, DataKind, EntityType}, constants::{CHROMATOGRAM, SPECTRUM}, filter::RegressionDeltaModel, reader::{
         ReaderMetadata,
         cache::CHUNK_CACHE_BLOCK_SIZE,
         chunk::{AsyncChunkReader, ChunkDataCacheBlock},
@@ -464,6 +459,111 @@ impl<
 
     pub fn url(&self) -> Option<&Url> {
         self.url.as_ref()
+    }
+
+    /// Check if a specific [`CURIE`] has been mapped to a column
+    pub fn has_column_for_accession(
+        &self,
+        entity_type: &EntityType,
+        data_kind: &DataKind,
+        accession: CURIE,
+    ) -> Option<&crate::param::MetadataColumn> {
+        self.file_index()
+            .find_entry(entity_type, data_kind)
+            .and_then(|v| v.column_mapping.find(accession))
+    }
+
+    /// Read a specific [`MetadataColumn`] from an [`EntityType`] and [`DataKind`] into Arrow [`ParquetRecordBatchStreamBuilder`]
+    ///
+    /// The builder may be customized further before invoking [`ParquetRecordBatchStreamBuilder::build`] and processing the
+    /// resulting [`Iterator`] of [`RecordBatch`](arrow::array::RecordBatch)
+    pub async fn extract_column_for(
+        &self,
+        entity_type: &EntityType,
+        data_kind: &DataKind,
+        metadata_column: &crate::param::MetadataColumn,
+    ) -> io::Result<ParquetRecordBatchStreamBuilder<T::File>> {
+        let builder = self.open_parquet_entry(entity_type, data_kind).await?;
+        let mask = metadata_column.as_projection_mask(
+            &builder,
+            match data_kind {
+                DataKind::Metadata | DataKind::DataArray | DataKind::Peaks => 1,
+                _ => 2,
+            },
+        );
+        let reader = builder.with_projection(mask);
+        Ok(reader)
+    }
+
+    /// Read a specific [`MetadataColumn`] from an [`EntityType`] and [`DataKind`] into Arrow [`ArrayRef`] of
+    /// row group minimum and maximum values.
+    pub async fn extract_row_group_statistics_for(
+        &self,
+        entity_type: &EntityType,
+        data_kind: &DataKind,
+        metadata_column: &crate::param::MetadataColumn,
+    ) -> io::Result<(Option<ArrayRef>, Option<ArrayRef>)> {
+        let builder = self.open_parquet_entry(entity_type, data_kind).await?;
+        Ok(metadata_column.parquet_statistics(&builder))
+    }
+
+    /// Query the spectrum metadata to obtain the lowest and highest observed m/z as reported
+    /// by columns mapped to `MS:1000528` and `MS:1000527`.
+    ///
+    /// This queries Parquet row group statistics.
+    pub async fn observed_mz_range(&self) -> (Option<f64>, Option<f64>) {
+        let arc = match self.handle.spectrum_metadata().await {
+            Ok(arc) => arc,
+            Err(e) => {
+                log::error!("Failed to locate spectrum metadata file in archive: {e}");
+                return (None, None);
+            }
+        };
+        if let Some(fentry) = self
+            .file_index()
+            .iter()
+            .find(|v| v.entity_type == EntityType::Spectrum && v.data_kind == DataKind::Metadata)
+        {
+            let lowest_obs = fentry
+                .column_mapping_for(curie!(MS:1000528))
+                .and_then(|c| c.parquet_statistics(&arc).0);
+            let highest_obs = fentry
+                .column_mapping_for(curie!(MS:1000527))
+                .and_then(|c| c.parquet_statistics(&arc).1);
+            let mut min_mz: Option<f64> = None;
+            let mut max_mz: Option<f64> = None;
+            if let Some(lowest_obs) = lowest_obs {
+                min_mz = match lowest_obs.data_type() {
+                    DataType::Float32 => {
+                        arrow::compute::min(lowest_obs.as_primitive::<Float32Type>())
+                            .map(|v| v as f64)
+                    }
+                    DataType::Float64 => {
+                        arrow::compute::min(lowest_obs.as_primitive::<Float64Type>())
+                    }
+                    dtype => {
+                        unimplemented!("Lowest observed m/z type {dtype:?} not yet implemented")
+                    }
+                };
+            }
+            if let Some(highest_obs) = highest_obs {
+                max_mz = match highest_obs.data_type() {
+                    DataType::Float32 => {
+                        arrow::compute::max(highest_obs.as_primitive::<Float32Type>())
+                            .map(|v| v as f64)
+                    }
+                    DataType::Float64 => {
+                        arrow::compute::max(highest_obs.as_primitive::<Float64Type>())
+                    }
+                    dtype => {
+                        unimplemented!("Lowest observed m/z type {dtype:?} not yet implemented")
+                    }
+                };
+            }
+            (min_mz, max_mz)
+        } else {
+            (None, None)
+        }
     }
 
     /// Load the descriptive metadata for all spectra
@@ -1318,19 +1418,41 @@ impl<
         }
     }
 
+    /// Access the saved file index which classifies the files in the archive
     pub fn file_index(&self) -> &crate::archive::FileIndex {
         self.handle.file_index()
     }
 
+    /// Get the list of file names in the archive. This may exceed what is in the file index
     pub fn list_files(&self) -> &[String] {
         self.handle.list_files()
     }
 
+    /// Open a file stream by it's name
     pub fn open_stream(
         &self,
         name: &str,
     ) -> impl Future<Output = Result<<T as AsyncArchiveSource>::File, io::Error>> {
         self.handle.open_stream(name)
+    }
+
+    /// Open a [`ParquetRecordBatchStreamBuilder`] by it's name
+    pub async fn open_parquet(
+        &self,
+        name: &str,
+    ) -> Result<ParquetRecordBatchStreamBuilder<<T as AsyncArchiveSource>::File>, io::Error> {
+        let stream = self.handle.open_stream(name).await?;
+        let builder = parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder::new(stream).await.map_err(|e| io::Error::other(e))?;
+        Ok(builder)
+    }
+
+    /// Open a [`ParquetRecordBatchStreamBuilder`] by it's [`EntityType`] and [`DataKind`]
+    pub async fn open_parquet_entry(
+        &self,
+        entity_type: &EntityType,
+        data_kind: &DataKind,
+    ) -> Result<ParquetRecordBatchStreamBuilder<<T as AsyncArchiveSource>::File>, io::Error> {
+        self.handle.read_entry(entity_type, data_kind).await
     }
 }
 

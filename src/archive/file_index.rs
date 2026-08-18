@@ -205,6 +205,42 @@ impl FileEntry {
     }
 }
 
+
+pub(crate) const fn entity_data_kind_to_archive_type(entity_type: &EntityType, data_kind: &DataKind) -> super::MzPeakArchiveType {
+    match entity_type {
+            EntityType::Spectrum => match data_kind {
+                DataKind::DataArray => super::MzPeakArchiveType::SpectrumDataArrays,
+                DataKind::Peaks => super::MzPeakArchiveType::SpectrumPeakDataArrays,
+                DataKind::Metadata => super::MzPeakArchiveType::SpectrumMetadata,
+                DataKind::Scans => super::MzPeakArchiveType::SpectrumMetadataScans,
+                DataKind::Precursors => super::MzPeakArchiveType::SpectrumMetadataPrecursors,
+                DataKind::SelectedIons => super::MzPeakArchiveType::SpectrumMetadataSelectedIons,
+                _ => super::MzPeakArchiveType::Other,
+            },
+            EntityType::Chromatogram => match data_kind {
+                DataKind::DataArray => super::MzPeakArchiveType::ChromatogramDataArrays,
+                DataKind::Metadata => super::MzPeakArchiveType::ChromatogramMetadata,
+                DataKind::Precursors => super::MzPeakArchiveType::ChromatogramMetadataPrecursors,
+                DataKind::SelectedIons => super::MzPeakArchiveType::ChromatogramMetadataSelectedIons,
+                _ => super::MzPeakArchiveType::Other,
+            },
+            EntityType::WavelengthSpectrum => match data_kind {
+                DataKind::DataArray => super::MzPeakArchiveType::WavelengthSpectrumDataArrays,
+                DataKind::Metadata => super::MzPeakArchiveType::WavelengthSpectrumMetadata,
+                DataKind::Scans => super::MzPeakArchiveType::WavelengthSpectrumMetadataScans,
+                _ => super::MzPeakArchiveType::Other,
+            },
+            EntityType::Other(_) => super::MzPeakArchiveType::Other,
+        }
+}
+
+
+impl From<(EntityType, DataKind)> for super::MzPeakArchiveType {
+    fn from(value: (EntityType, DataKind)) -> Self {
+        entity_data_kind_to_archive_type(&value.0, &value.1)
+    }
+}
+
 impl From<super::MzPeakArchiveType> for FileEntry {
     fn from(value: super::MzPeakArchiveType) -> Self {
         match value {
@@ -296,6 +332,10 @@ impl FileIndex {
         value: serde_json::Value,
     ) -> Option<serde_json::Value> {
         self.metadata.insert(key.to_string(), value)
+    }
+
+    pub fn find_entry(&self, entity_type: &EntityType, data_kind: &DataKind) -> Option<&FileEntry> {
+        self.files.iter().find(|e| e.entity_type == *entity_type && e.data_kind == *data_kind)
     }
 
     pub fn remove_metadata(&mut self, key: &str) -> Option<serde_json::Value> {

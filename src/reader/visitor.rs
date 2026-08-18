@@ -13,7 +13,7 @@ use arrow::{
 use mzdata::{
     curie,
     meta::SpectrumType,
-    params::{CURIE, ControlledVocabulary, Unit},
+    params::{CURIE, ControlledVocabulary, Unit, ParamBuilder as MemParamBuilder},
     prelude::*,
     spectrum::{
         ArrayType, BinaryDataArrayType, ChromatogramDescription, ChromatogramType, DataArray,
@@ -186,8 +186,6 @@ impl<'a> VisitorBuilderBase<'a, SpectrumDescription> for MzSpectrumVisitor<'a> {
         self.metadata_map
     }
 }
-
-impl<'a> VisitorBuilder1<'a, SpectrumDescription> for MzSpectrumVisitor<'a> {}
 
 impl<'a> MzSpectrumVisitor<'a> {
     pub fn new(
@@ -559,10 +557,10 @@ impl<'a> MzSpectrumVisitor<'a> {
                             self.visit_total_ion_current(spec_arr, index, colspec)
                         }
                         curie!(MS:1003060) | curie!(MS:1003059) => {} // number of data points | number of peak
-                        _ => self.visit_as_param(spec_arr, index, colspec),
+                        _ => self.visit_as_param(spec_arr, index, Some(colspec), None),
                     }
                 } else {
-                    self.visit_as_param(spec_arr, index, colspec);
+                    self.visit_as_param(spec_arr, index, Some(colspec), None);
                 }
             } else {
                 match colname {
@@ -581,23 +579,13 @@ impl<'a> MzSpectrumVisitor<'a> {
                     "base_peak_intensity" => self.visit_base_peak_intensity(
                         spec_arr,
                         index,
-                        &MetadataColumn {
-                            name: "".into(),
-                            path: vec![],
-                            accession: None,
-                            unit: Unit::DetectorCounts.into(),
-                        },
+                        &MetadataColumn::named("", Unit::DetectorCounts)
                     ),
                     "total_ion_current" => {
                         self.visit_total_ion_current(
                             spec_arr,
                             index,
-                            &MetadataColumn {
-                                name: "".into(),
-                                path: vec![],
-                                accession: None,
-                                unit: Unit::DetectorCounts.into(),
-                            },
+                            &MetadataColumn::named("", Unit::DetectorCounts),
                         );
                     }
                     "parameters" => {
@@ -606,12 +594,12 @@ impl<'a> MzSpectrumVisitor<'a> {
                     "data_processing_ref" | "data_processing_id" => {} // TODO: Add a slot for this in the `mzdata` data model
                     _ => {
                         log::trace!("Visited unspecified column {colname}");
-                        let metacol = MetadataColumn::new(
-                            colname.to_string(),
-                            vec![colname.to_string()],
-                            None,
-                        );
-                        self.visit_as_param(spec_arr, index, &metacol);
+                        // let metacol = MetadataColumn::new(
+                        //     colname.to_string(),
+                        //     vec![colname.to_string()],
+                        //     None,
+                        // );
+                        self.visit_as_param(spec_arr, index, None, Some(&colname));
                     }
                 }
             }
@@ -958,9 +946,11 @@ impl<'a> UnitCollection<'a> {
 }
 
 /// A type alias over a tuple of (primary source id, <entity>)
-pub type Indexed<T> = (u64, T);
+#[derive(Debug, Clone, Default)]
+pub struct Indexed<T>(pub u64, pub T);
 /// A type alias over a tuple of (primary source id, optional secondary id, <entity>)
-pub type DoubleIndexed<T> = (u64, Option<u64>, T);
+#[derive(Debug, Clone, Default)]
+pub struct DoubleIndexed<T>(pub u64, pub Option<u64>, pub T);
 
 /// A helper trait for handling (multi-)-relationship keyed visitors over type `T`
 pub trait CompoundIndexVisitor<T> {
@@ -1047,6 +1037,26 @@ impl<T> CompoundIndexVisitor<T> for DoubleIndexed<T> {
     }
 }
 
+impl<T: ParamDescribed> ParamDescribed for Indexed<T> {
+    fn params(&self) -> &[mzdata::Param] {
+        self.1.params()
+    }
+
+    fn params_mut(&mut self) -> &mut mzdata::ParamList {
+        self.1.params_mut()
+    }
+}
+
+impl<T: ParamDescribed> ParamDescribed for DoubleIndexed<T> {
+    fn params(&self) -> &[mzdata::Param] {
+        self.2.params()
+    }
+
+    fn params_mut(&mut self) -> &mut mzdata::ParamList {
+        self.2.params_mut()
+    }
+}
+
 /// Enclose the parallel arrays of "descriptions" and their offsets so that the borrow
 /// checker knows that method calls on this instance aren't tied to the owning objects
 pub struct OffsetCollection<'a, T> {
@@ -1077,12 +1087,152 @@ impl<'a, T> OffsetCollection<'a, T> {
 
 pub trait VisitorBuilderBase<'a, T> {
     fn iter_instances(&mut self) -> OffsetCollection<'_, T>;
-    #[allow(unused)]
-    fn metadata_map(&self) -> &'a MetadataMapping;
-}
 
-pub trait VisitorBuilder1<'a, T: ParamDescribed>: VisitorBuilderBase<'a, T> {
-    fn visit_parameters(&mut self, struct_arr: &StructArray, skip_params: &[CURIE]) {
+    fn metadata_map(&self) -> &'a MetadataMapping;
+
+    fn visit_as_param(
+        &mut self,
+        spec_arr: &StructArray,
+        index: usize,
+        metacol: Option<&MetadataColumn>,
+        name: Option<&str>,
+    ) where
+        T: ParamDescribed,
+    {
+        let arr = spec_arr.column(index);
+        if arr.null_count() == arr.len() {
+            return;
+        }
+
+        let (name, unit, accession, term_marker) = if let Some(metacol) = metacol {
+            let unit = extract_unit!(metacol, spec_arr);
+            let accession: Option<CURIE> = metacol.accession;
+            (metacol.name.as_str(), unit, accession, metacol.term_marker)
+        } else if let Some(name) = name {
+            (name, Default::default(), None, false)
+        } else {
+            panic!("One of `metacol` or `name` must be defined")
+        };
+
+        macro_rules! convert {
+            ($arr:ident) => {
+                if term_marker {
+                    for (i, descr) in self.iter_instances() {
+                        if $arr.is_null(i) {
+                            continue;
+                        };
+                        let mut p = mzdata::Param::builder();
+                        p = p.name(&name);
+                        if let Some(acc) = accession {
+                            p = p.curie(acc)
+                        }
+                        descr.add_param(p.build());
+                    }
+                }
+                else {
+                    for (i, descr) in self.iter_instances() {
+                        if $arr.is_null(i) {
+                            continue;
+                        };
+                        let mut p = mzdata::Param::builder();
+                        p = p
+                            .name(&name)
+                            .value($arr.value(i))
+                            .unit(unit.value(i));
+                        if let Some(acc) = accession {
+                            p = p.curie(acc)
+                        }
+                        descr.add_param(p.build());
+                    }
+                }
+            };
+            ($arr:ident, $value_name:ident => $filter_exp:expr, $value_exp:expr) => {
+                if term_marker {
+                    for (i, descr) in self.iter_instances() {
+                        if $arr.is_null(i) {
+                            continue;
+                        };
+                        let $value_name = $arr.value(i);
+                        if !$filter_exp {
+                            continue
+                        }
+                        let mut p = mzdata::Param::builder();
+                        p = p.name(&name);
+                        if let Some(acc) = accession {
+                            p = p.curie(acc)
+                        }
+                        p = $value_exp($value_name, p);
+
+                        descr.add_param(p.build());
+                    }
+                }
+                else {
+                    for (i, descr) in self.iter_instances() {
+                        if $arr.is_null(i) {
+                            continue;
+                        };
+                        let mut p = mzdata::Param::builder();
+                        p = p
+                            .name(&name)
+                            .value($arr.value(i))
+                            .unit(unit.value(i));
+                        if let Some(acc) = accession {
+                            p = p.curie(acc)
+                        }
+                        descr.add_param(p.build());
+                    }
+                }
+            }
+        }
+
+        match arr.data_type() {
+            DataType::Int32 => {
+                let arr: &Int32Array = spec_arr.column(index).as_primitive();
+                convert!(arr);
+            }
+            DataType::Int64 => {
+                let arr: &Int64Array = spec_arr.column(index).as_primitive();
+                convert!(arr);
+            }
+            DataType::Float32 => {
+                let arr: &Float32Array = spec_arr.column(index).as_primitive();
+                convert!(arr);
+            }
+            DataType::Float64 => {
+                let arr: &Float64Array = spec_arr.column(index).as_primitive();
+                convert!(arr);
+            }
+            DataType::Boolean => {
+                let arr: &BooleanArray = arr.as_boolean();
+                convert!(arr, value => { value }, |value: bool, builder: MemParamBuilder| { builder.value(value) });
+            }
+            DataType::Utf8 => {
+                if let Some(arr) = spec_arr.column(index).as_string_opt::<i64>() {
+                    convert!(arr, value => { true }, string_to_curie_or_value);
+                } else if let Some(arr) = spec_arr.column(index).as_string_opt::<i32>() {
+                    convert!(arr, value => { true }, string_to_curie_or_value);
+                } else {
+                    panic!(
+                        "Unsupported data type: {:?} for {metacol:?}",
+                        spec_arr.column(index).data_type()
+                    );
+                }
+            }
+            DataType::UInt32 => {
+                let arr: &UInt32Array = spec_arr.column(index).as_primitive();
+                convert!(arr);
+            }
+            DataType::UInt64 => {
+                let arr: &UInt64Array = spec_arr.column(index).as_primitive();
+                convert!(arr);
+            }
+            _ => {
+                todo!("Unsupported data type {:?}", arr.data_type())
+            }
+        }
+    }
+
+    fn visit_parameters(&mut self, struct_arr: &StructArray, skip_params: &[CURIE]) where T: ParamDescribed {
         let params_array = struct_arr.column_by_name("parameters").unwrap();
         macro_rules! process {
             ($params_array:expr) => {
@@ -1110,316 +1260,25 @@ pub trait VisitorBuilder1<'a, T: ParamDescribed>: VisitorBuilderBase<'a, T> {
             panic!("{:?} not supported", params_array.data_type());
         }
     }
+}
 
-    fn visit_as_param(&mut self, spec_arr: &StructArray, index: usize, metacol: &MetadataColumn) {
-        let arr = spec_arr.column(index);
-        if arr.null_count() == arr.len() {
-            return;
-        }
-
-        let units = extract_unit!(metacol, spec_arr);
-        let accession: Option<CURIE> = metacol.accession;
-
-        macro_rules! convert {
-            ($arr:ident) => {
-                for (i, descr) in self.iter_instances() {
-                    if $arr.is_null(i) {
-                        continue;
-                    };
-                    let mut p = mzdata::Param::builder();
-                    p = p
-                        .name(&metacol.name)
-                        .value($arr.value(i))
-                        .unit(units.value(i));
-                    if let Some(acc) = accession {
-                        p = p.curie(acc)
-                    }
-                    descr.add_param(p.build());
-                }
-            };
-        }
-
-        match arr.data_type() {
-            DataType::Int32 => {
-                let arr: &Int32Array = spec_arr.column(index).as_primitive();
-                convert!(arr);
-            }
-            DataType::Int64 => {
-                let arr: &Int64Array = spec_arr.column(index).as_primitive();
-                convert!(arr);
-            }
-            DataType::Float32 => {
-                let arr: &Float32Array = spec_arr.column(index).as_primitive();
-                convert!(arr);
-            }
-            DataType::Float64 => {
-                let arr: &Float64Array = spec_arr.column(index).as_primitive();
-                convert!(arr);
-            }
-            DataType::Boolean => {
-                let arr: &BooleanArray = spec_arr.column(index).as_boolean();
-                convert!(arr);
-            }
-            DataType::Utf8 => {
-                if let Some(arr) = spec_arr.column(index).as_string_opt::<i64>() {
-                    convert!(arr);
-                } else if let Some(arr) = spec_arr.column(index).as_string_opt::<i32>() {
-                    convert!(arr);
-                } else {
-                    panic!(
-                        "Unsupported data type: {:?} for {metacol:?}",
-                        spec_arr.column(index).data_type()
-                    );
-                }
-            }
-            DataType::UInt32 => {
-                let arr: &UInt32Array = spec_arr.column(index).as_primitive();
-                convert!(arr);
-            }
-            DataType::UInt64 => {
-                let arr: &UInt64Array = spec_arr.column(index).as_primitive();
-                convert!(arr);
-            }
-            _ => {
-                todo!(
-                    "Unsupported data type {:?} for {metacol:?}",
-                    arr.data_type()
-                )
-            }
-        }
+// TODO: Use the parsed CURIE to also get the correct term name.
+// Figure out how to do proper context piping to let this use a
+// faster local cache.
+#[inline(always)]
+fn string_to_curie_or_value(value: &str, builder: MemParamBuilder) -> MemParamBuilder {
+    if let Ok(acc) = value.parse::<CURIE>() {
+        builder.curie(acc)
+    } else {
+        builder.value(value)
     }
 }
 
-pub trait VisitorBuilder2<'a, T: ParamDescribed>: VisitorBuilderBase<'a, Indexed<T>>
-where
-    Indexed<T>: CompoundIndexVisitor<T>,
-{
-    fn visit_as_param(
-        &mut self,
-        spec_arr: &StructArray,
-        index: usize,
-        metacol: Option<&MetadataColumn>,
-        name: Option<&str>,
-    ) {
-        let arr = spec_arr.column(index);
-        if arr.null_count() == arr.len() {
-            return;
-        }
-
-        let (name, unit, accession) = if let Some(metacol) = metacol {
-            let accession: Option<CURIE> = metacol.accession;
-            let units = extract_unit!(metacol, spec_arr);
-            (metacol.name.as_str(), units, accession)
-        } else if let Some(name) = name {
-            (name, UnitCollection::unknown(), None)
-        } else {
-            panic!("One of `metacol` or `name` must be defined")
-        };
-
-        macro_rules! convert {
-            ($arr:ident) => {
-                for (i, descr) in self.iter_instances() {
-                    if $arr.is_null(i) {
-                        continue;
-                    };
-                    let mut p = mzdata::Param::builder();
-                    p = p.name(&name).value($arr.value(i)).unit(unit.value(i));
-                    if let Some(acc) = accession {
-                        p = p.curie(acc)
-                    }
-                    descr.description_mut().add_param(p.build());
-                }
-            };
-        }
-
-        match arr.data_type() {
-            DataType::Int32 => {
-                let arr: &Int32Array = arr.as_primitive();
-                convert!(arr);
-            }
-            DataType::Int64 => {
-                let arr: &Int64Array = arr.as_primitive();
-                convert!(arr);
-            }
-            DataType::Float32 => {
-                let arr: &Float32Array = arr.as_primitive();
-                convert!(arr);
-            }
-            DataType::Float64 => {
-                let arr: &Float64Array = arr.as_primitive();
-                convert!(arr);
-            }
-            DataType::Boolean => {
-                let arr: &BooleanArray = arr.as_boolean();
-                convert!(arr);
-            }
-            DataType::Utf8 => {
-                if let Some(arr) = arr.as_string_opt::<i64>() {
-                    convert!(arr);
-                } else if let Some(arr) = arr.as_string_opt::<i32>() {
-                    convert!(arr);
-                } else {
-                    panic!("Unsupported data type: {:?}", arr.data_type());
-                }
-            }
-            DataType::UInt32 => {
-                let arr: &UInt32Array = arr.as_primitive();
-                convert!(arr);
-            }
-            DataType::UInt64 => {
-                let arr: &UInt64Array = arr.as_primitive();
-                convert!(arr);
-            }
-            _ => {
-                todo!("Unsupported data type {:?}", arr.data_type())
-            }
-        }
-    }
-
-    fn visit_parameters(&mut self, spec_arr: &StructArray) {
-        let params_array = spec_arr.column_by_name("parameters").unwrap();
-
-        macro_rules! process {
-            ($params_array:expr) => {
-                for (i, (_, descr)) in self.iter_instances() {
-                    let params = $params_array.value(i);
-                    let params = ParameterVisitor::new(params.as_struct()).build();
-
-                    for p in params {
-                        descr.add_param(p);
-                    }
-                }
-            };
-        }
-
-        if let Some(arr) = params_array.as_list_opt::<i64>() {
-            process!(arr);
-        } else if let Some(arr) = params_array.as_list_opt::<i32>() {
-            process!(arr);
-        } else {
-            panic!("Unsupported data type: {:?}", params_array.data_type());
-        }
-    }
-}
 
 pub trait VisitorBuilder3<'a, T>: VisitorBuilderBase<'a, DoubleIndexed<T>>
 where
     DoubleIndexed<T>: CompoundIndexVisitor<T>,
 {
-    fn visit_as_param(
-        &mut self,
-        spec_arr: &StructArray,
-        index: usize,
-        metacol: Option<&MetadataColumn>,
-        name: Option<&str>,
-    ) where
-        T: ParamDescribed,
-    {
-        let arr = spec_arr.column(index);
-        if arr.null_count() == arr.len() {
-            return;
-        }
-
-        let (name, unit, accession) = if let Some(metacol) = metacol {
-            let unit = extract_unit!(metacol, spec_arr);
-            let accession: Option<CURIE> = metacol.accession;
-            (metacol.name.as_str(), unit, accession)
-        } else if let Some(name) = name {
-            (name, Default::default(), None)
-        } else {
-            panic!("One of `metacol` or `name` must be defined")
-        };
-
-        macro_rules! convert {
-            ($arr:ident) => {
-                for (i, descr) in self.iter_instances() {
-                    if $arr.is_null(i) {
-                        continue;
-                    };
-                    let mut p = mzdata::Param::builder();
-                    p = p.name(&name).value($arr.value(i)).unit(unit.value(i));
-                    if let Some(acc) = accession {
-                        p = p.curie(acc)
-                    }
-                    descr.description_mut().add_param(p.build());
-                }
-            };
-        }
-
-        match arr.data_type() {
-            DataType::Int32 => {
-                let arr: &Int32Array = spec_arr.column(index).as_primitive();
-                convert!(arr);
-            }
-            DataType::Int64 => {
-                let arr: &Int64Array = spec_arr.column(index).as_primitive();
-                convert!(arr);
-            }
-            DataType::Float32 => {
-                let arr: &Float32Array = spec_arr.column(index).as_primitive();
-                convert!(arr);
-            }
-            DataType::Float64 => {
-                let arr: &Float64Array = spec_arr.column(index).as_primitive();
-                convert!(arr);
-            }
-            DataType::Boolean => {
-                let arr: &BooleanArray = spec_arr.column(index).as_boolean();
-                convert!(arr);
-            }
-            DataType::Utf8 => {
-                if let Some(arr) = spec_arr.column(index).as_string_opt::<i64>() {
-                    convert!(arr);
-                } else if let Some(arr) = spec_arr.column(index).as_string_opt::<i32>() {
-                    convert!(arr);
-                } else {
-                    panic!(
-                        "Unsupported data type: {:?}",
-                        spec_arr.column(index).data_type()
-                    );
-                }
-            }
-            DataType::UInt32 => {
-                let arr: &UInt32Array = spec_arr.column(index).as_primitive();
-                convert!(arr);
-            }
-            DataType::UInt64 => {
-                let arr: &UInt64Array = spec_arr.column(index).as_primitive();
-                convert!(arr);
-            }
-            _ => {
-                todo!("Unsupported data type {:?}", arr.data_type())
-            }
-        }
-    }
-
-    fn visit_parameters(&mut self, spec_arr: &StructArray)
-    where
-        T: ParamDescribed,
-    {
-        let params_array = spec_arr.column_by_name("parameters").unwrap();
-
-        macro_rules! process {
-            ($params_array:expr) => {
-                for (i, (_, _, descr)) in self.iter_instances() {
-                    let params = $params_array.value(i);
-                    let params = ParameterVisitor::new(params.as_struct()).build();
-
-                    for p in params {
-                        descr.add_param(p);
-                    }
-                }
-            };
-        }
-
-        if let Some(arr) = params_array.as_list_opt::<i64>() {
-            process!(arr);
-        } else if let Some(arr) = params_array.as_list_opt::<i32>() {
-            process!(arr);
-        } else {
-            panic!("Unsupported data type: {:?}", params_array.data_type());
-        }
-    }
 
     fn visit_precursor_index(&mut self, spec_arr: &StructArray, index: usize) {
         let arr = spec_arr.column(index).as_primitive::<UInt64Type>();
@@ -1450,8 +1309,6 @@ impl<'a> VisitorBuilderBase<'a, Indexed<ScanEvent>> for MzScanVisitor<'a> {
     }
 }
 
-impl<'a> VisitorBuilder2<'a, ScanEvent> for MzScanVisitor<'a> {}
-
 #[derive(Debug, Clone, Copy, Default)]
 struct ScanWindowSchema {
     lower_limit: Option<usize>,
@@ -1480,7 +1337,7 @@ impl ScanWindowSchema {
 
 impl<'a> MzScanVisitor<'a> {
     pub fn new(
-        descriptions: &'a mut [(u64, ScanEvent)],
+        descriptions: &'a mut [Indexed<ScanEvent>],
         metadata_map: &'a MetadataMapping,
         base_offset: usize,
         offsets: Vec<usize>,
@@ -1500,7 +1357,7 @@ impl<'a> MzScanVisitor<'a> {
     fn visit_instrument_configuration_ref(&mut self, spec_arr: &StructArray, index: usize) {
         macro_rules! pack {
             ($arr:ident) => {
-                for (i, (_, descr)) in self
+                for (i, Indexed(_, descr)) in self
                     .offsets
                     .iter()
                     .copied()
@@ -1532,7 +1389,7 @@ impl<'a> MzScanVisitor<'a> {
     fn visit_preset_scan_configuration(&mut self, spec_arr: &StructArray, index: usize) {
         macro_rules! pack {
             ($arr:ident) => {
-                for (i, (_, descr)) in self
+                for (i, Indexed(_, descr)) in self
                     .offsets
                     .iter()
                     .copied()
@@ -1570,7 +1427,7 @@ impl<'a> MzScanVisitor<'a> {
     fn visit_filter_string(&mut self, spec_arr: &StructArray, index: usize) {
         macro_rules! pack {
             ($arr:ident) => {
-                for (i, (_, descr)) in self
+                for (i, Indexed(_, descr)) in self
                     .offsets
                     .iter()
                     .copied()
@@ -1619,7 +1476,7 @@ impl<'a> MzScanVisitor<'a> {
         };
         macro_rules! pack {
             ($arr:ident) => {
-                for (i, (_, descr)) in self
+                for (i, Indexed(_, descr)) in self
                     .offsets
                     .iter()
                     .copied()
@@ -1652,7 +1509,7 @@ impl<'a> MzScanVisitor<'a> {
         }
         macro_rules! pack {
             ($arr:ident) => {
-                for (i, (_, descr)) in self
+                for (i, Indexed(_, descr)) in self
                     .offsets
                     .iter()
                     .copied()
@@ -1720,7 +1577,7 @@ impl<'a> MzScanVisitor<'a> {
         let arr = spec_arr.column(index);
         macro_rules! pack {
             ($arr:ident, $spec:expr) => {
-                for (i, (_, descr)) in self
+                for (i, Indexed(_, descr)) in self
                     .offsets
                     .iter()
                     .copied()
@@ -1791,7 +1648,7 @@ impl<'a> MzScanVisitor<'a> {
 
         macro_rules! pack {
             ($arr:ident) => {
-                        for (i, (_, descr)) in self
+                        for (i, Indexed(_, descr)) in self
             .offsets
             .iter()
             .copied()
@@ -1867,7 +1724,7 @@ impl<'a> MzScanVisitor<'a> {
         }
         macro_rules! pack {
             ($arr:ident) => {
-                for (i, (_, descr)) in self
+                for (i, Indexed(_, descr)) in self
                     .offsets
                     .iter()
                     .copied()
@@ -1933,7 +1790,7 @@ impl<'a> MzScanVisitor<'a> {
             } else {
                 log::trace!("Visiting scan {colname} ({index})");
                 match colname {
-                    "parameters" => self.visit_parameters(spec_arr),
+                    "parameters" => self.visit_parameters(spec_arr, &[]),
                     "scan_index" => {}
                     "spectrum_reference" => self.visit_spectrum_reference(spec_arr, index),
                     "instrument_configuration_ref" | "instrument_configuration_id" => {
@@ -2216,14 +2073,14 @@ impl<'a> MzPrecursorVisitor<'a> {
 }
 
 pub struct MzSelectedIonVisitor<'a> {
-    pub(crate) descriptions: &'a mut [(u64, Option<u64>, SelectedIon)],
+    pub(crate) descriptions: &'a mut [DoubleIndexed<SelectedIon>],
     pub(crate) metadata_map: &'a MetadataMapping,
     pub(crate) base_offset: usize,
     pub(crate) offsets: Vec<usize>,
 }
 
-impl<'a> VisitorBuilderBase<'a, (u64, Option<u64>, SelectedIon)> for MzSelectedIonVisitor<'a> {
-    fn iter_instances(&mut self) -> OffsetCollection<'_, (u64, Option<u64>, SelectedIon)> {
+impl<'a> VisitorBuilderBase<'a, DoubleIndexed<SelectedIon>> for MzSelectedIonVisitor<'a> {
+    fn iter_instances(&mut self) -> OffsetCollection<'_, DoubleIndexed<SelectedIon>> {
         OffsetCollection::new(self.descriptions, &self.offsets)
     }
 
@@ -2474,7 +2331,7 @@ impl<'a> MzSelectedIonVisitor<'a> {
             } else {
                 log::trace!("Visiting selected ion {colname} ({index})");
                 match colname {
-                    "parameters" => self.visit_parameters(spec_arr),
+                    "parameters" => self.visit_parameters(spec_arr, &[]),
                     "ion_mobility_value" => ion_mobility_value_index = Some(index),
                     "ion_mobility_type" => ion_mobility_type_index = Some(index),
                     "selected_ion_mz" => self.visit_selected_ion_mz(spec_arr, index),
@@ -2482,8 +2339,7 @@ impl<'a> MzSelectedIonVisitor<'a> {
                     "intensity" => self.visit_peak_intensity(spec_arr, index),
                     _ => {
                         log::trace!("Visited unspecified column {colname}");
-                        let metacol = MetadataColumn::new(colname.to_string(), vec![], None);
-                        self.visit_as_param(spec_arr, index, Some(&metacol), Some(colname));
+                        self.visit_as_param(spec_arr, index, None, Some(colname));
                     }
                 }
             }
@@ -2513,8 +2369,6 @@ impl<'a> VisitorBuilderBase<'a, ChromatogramDescription> for MzChromatogramBuild
         self.metadata_map
     }
 }
-
-impl<'a> VisitorBuilder1<'a, ChromatogramDescription> for MzChromatogramBuilder<'a> {}
 
 impl<'a> MzChromatogramBuilder<'a> {
     pub fn new(
@@ -2643,10 +2497,10 @@ impl<'a> MzChromatogramBuilder<'a> {
                         curie!(MS:1000465) => self.visit_polarity(chrom_arr, index),
                         curie!(MS:1000626) => self.visit_chromatogram_type(chrom_arr, index), // chromatogram type
                         curie!(MS:1003060) => {} // number of data points
-                        _ => self.visit_as_param(chrom_arr, index, col),
+                        _ => self.visit_as_param(chrom_arr, index, Some(col), None),
                     }
                 } else {
-                    self.visit_as_param(chrom_arr, index, col);
+                    self.visit_as_param(chrom_arr, index, Some(col), None);
                 }
             } else {
                 match colname {
@@ -2659,12 +2513,7 @@ impl<'a> MzChromatogramBuilder<'a> {
                     }
                     _ => {
                         log::trace!("Visited unspecified column {colname}");
-                        let metacol = MetadataColumn::new(
-                            colname.to_string(),
-                            vec![colname.to_string()],
-                            None,
-                        );
-                        self.visit_as_param(chrom_arr, index, &metacol);
+                        self.visit_as_param(chrom_arr, index, None, Some(colname));
                     }
                 }
             }

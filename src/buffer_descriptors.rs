@@ -571,6 +571,7 @@ pub fn binary_datatype_from_accession(
 /// Compute an ordering constant for [`mzdata::spectrum::ArrayType`]
 pub const fn array_type_ordering_ordinal(array_type: &ArrayType) -> u64 {
     match array_type {
+        ArrayType::IndexArray => 0,
         ArrayType::MZArray => 1,
         ArrayType::TimeArray => 2,
         ArrayType::WavelengthArray => 3,
@@ -871,6 +872,7 @@ impl Display for BufferName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let tp_name = match &self.array_type {
             ArrayType::Unknown => Cow::Borrowed("unknown"),
+            ArrayType::IndexArray => Cow::Borrowed("index"),
             ArrayType::MZArray => Cow::Borrowed("mz"),
             ArrayType::IntensityArray => Cow::Borrowed("intensity"),
             ArrayType::ChargeArray => Cow::Borrowed("charge"),

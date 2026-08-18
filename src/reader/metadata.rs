@@ -870,7 +870,7 @@ impl<'a, T: ReaderFacetMetadataLike + 'a> SpectrumMetadataDecoder<'a, T> {
     fn load_precursors_from(
         &self,
         precursor_arr: &StructArray,
-        acc: &mut Vec<(u64, Option<u64>, Precursor)>,
+        acc: &mut Vec<DoubleIndexed<Precursor>>,
     ) {
         let n = precursor_arr
             .column_by_name(SPECTRUM_INDEX)
@@ -892,7 +892,7 @@ impl<'a, T: ReaderFacetMetadataLike + 'a> SpectrumMetadataDecoder<'a, T> {
     fn load_selected_ions_from(
         &self,
         si_arr: &StructArray,
-        acc: &mut Vec<(u64, Option<u64>, SelectedIon)>,
+        acc: &mut Vec<DoubleIndexed<SelectedIon>>,
     ) {
         let metacols = self
             .metadata
@@ -914,7 +914,7 @@ impl<'a, T: ReaderFacetMetadataLike + 'a> SpectrumMetadataDecoder<'a, T> {
     fn load_scan_events_from(
         &self,
         scan_arr: &StructArray,
-        scan_accumulator: &mut Vec<(u64, ScanEvent)>,
+        scan_accumulator: &mut Vec<Indexed<ScanEvent>>,
     ) {
         let metacols = self.metadata.scan_metadata_map().unwrap_or(&self.empty_map);
         let n = scan_arr
@@ -1095,7 +1095,7 @@ impl<'a, T: ReaderFacetMetadataLike + 'a> SpectrumMetadataDecoder<'a, T> {
         self.precursors =
             PrecursorSelectedIonAssembler::new(self.precursors, self.selected_ions).build();
 
-        for (idx, scan) in self.scan_events {
+        for Indexed(idx, scan) in self.scan_events {
             if let Some(i) = index_map.get(&idx).copied() {
                 if let Some(spec) = self.descriptions.get_mut(i) {
                     spec.acquisition.scans.push(scan);
@@ -1161,12 +1161,12 @@ impl PrecursorSelectedIonAssembler {
 
         self.last_precursor_i = 0;
         let n = self.precursors.len();
-        for (spec_idx, prec_idx, si) in self.selected_ions {
+        for DoubleIndexed(spec_idx, prec_idx, si) in self.selected_ions {
             let mut si = Some(si);
             let mut hit = false;
             self.spec_idx_match = None;
             for precursor_i in self.last_precursor_i..n {
-                if let Some((precursor_rec_spec_i, precursor_rec_prec_i, prec)) =
+                if let Some(DoubleIndexed(precursor_rec_spec_i, precursor_rec_prec_i, prec)) =
                     self.precursors.get_mut(precursor_i)
                 {
                     if *precursor_rec_spec_i == spec_idx {
@@ -1183,7 +1183,7 @@ impl PrecursorSelectedIonAssembler {
                                 "Fallback assignment of selected ion {spec_idx}:{prec_idx:?}:{si:?}"
                             );
                             if let Some(spec_idx_match) = self.spec_idx_match {
-                                if let Some((_, _, prec)) = self.precursors.get_mut(spec_idx_match)
+                                if let Some(DoubleIndexed(_, _, prec)) = self.precursors.get_mut(spec_idx_match)
                                 {
                                     prec.add_ion(si.take().unwrap());
                                     self.last_precursor_i = spec_idx_match;
@@ -1200,7 +1200,7 @@ impl PrecursorSelectedIonAssembler {
                     log::debug!(
                         "Fallback assignment of selected ion {spec_idx}:{prec_idx:?}:{si:?}"
                     );
-                    if let Some((_, _, prec)) = self.precursors.get_mut(spec_idx_match) {
+                    if let Some(DoubleIndexed(_, _, prec)) = self.precursors.get_mut(spec_idx_match) {
                         prec.add_ion(si.take().unwrap());
                         self.last_precursor_i = spec_idx_match;
                     }
@@ -1270,7 +1270,7 @@ impl<'a> ChromatogramMetadataDecoder<'a> {
     fn load_precursors_from(
         &self,
         precursor_arr: &StructArray,
-        acc: &mut Vec<(u64, Option<u64>, Precursor)>,
+        acc: &mut Vec<DoubleIndexed<Precursor>>,
     ) {
         let n = precursor_arr
             .column_by_name(SOURCE_INDEX)
@@ -1289,7 +1289,7 @@ impl<'a> ChromatogramMetadataDecoder<'a> {
     fn load_selected_ions_from(
         &self,
         si_arr: &StructArray,
-        acc: &mut Vec<(u64, Option<u64>, SelectedIon)>,
+        acc: &mut Vec<DoubleIndexed<SelectedIon>>,
     ) {
         let empty = MetadataMapping::default();
         let metacols = self
@@ -1404,7 +1404,7 @@ impl<'a> ChromatogramMetadataDecoder<'a> {
             PrecursorSelectedIonAssembler::new(self.precursors, self.selected_ions).build();
 
         // Reversed traversal to guarantee that the lowest order precursor is *last*
-        for (idx, _prec_idx, precursor) in self.precursors.into_iter().rev() {
+        for DoubleIndexed(idx, _prec_idx, precursor) in self.precursors.into_iter().rev() {
             if let Some(i) = index_map.get(&idx).copied() {
                 self.descriptions[i].precursor.push(precursor);
             }

@@ -6,14 +6,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use arrow::{array::{AsArray, UInt64Array}, datatypes::{DataType, Float32Type, Float64Type}};
+use arrow::{
+    array::{ArrayRef, AsArray, UInt64Array},
+    datatypes::{DataType, Float32Type, Float64Type},
+};
 
 use identity_hash::BuildIdentityHasher;
 use mzdata::{
     curie,
     io::{DetailLevel, OffsetIndex},
     meta::MSDataFileMetadata,
-    params::Unit,
+    params::{CURIE, Unit},
     prelude::*,
     spectrum::{
         ArrayType, BinaryArrayMap, Chromatogram, ChromatogramDescription, ChromatogramType,
@@ -399,6 +402,15 @@ impl<
         Ok(builder)
     }
 
+    /// Open a [`ParquetRecordBatchReaderBuilder`] by it's [`EntityType`] and [`DataKind`]
+    pub fn open_parquet_entry(
+        &self,
+        entity_type: &EntityType,
+        data_kind: &DataKind,
+    ) -> Result<ParquetRecordBatchReaderBuilder<<T as ArchiveSource>::File>, io::Error> {
+        self.handle.read_entry(entity_type, data_kind)
+    }
+
     /// Load the descriptive metadata for all spectra
     ///
     /// This method caches the data after its first use.
@@ -603,6 +615,39 @@ impl<
         Ok(time_indexer.finish())
     }
 
+    pub fn spectrum_time_axis(&self) -> Option<ArrayRef> {
+        let builder = self.handle.spectrum_metadata().ok()?;
+
+        let schema = builder.parquet_schema();
+        let (i, _) = schema
+            .columns()
+            .iter()
+            .enumerate()
+            .find(|(_, c)| c.name() == "time")?;
+
+        let mut chunks = Vec::with_capacity(builder.metadata().num_row_groups());
+        let mask = ProjectionMask::leaves(schema, [i]);
+        let reader = builder
+            .with_projection(mask)
+            .build()
+            .ok()?;
+
+        for batch in reader {
+            let arr = batch.ok()?.column(0).clone();
+            chunks.push(arr);
+        }
+
+        let chunks_refs: Vec<&dyn arrow::array::Array> = chunks
+            .iter()
+            .map(|a| a as &dyn arrow::array::Array)
+            .collect();
+
+        let arr = arrow::compute::concat(chunks_refs.as_slice())
+            .and_then(|arr| arrow::compute::cast(&arr, &DataType::Float64))
+            .ok()?;
+        Some(arr)
+    }
+
     /// Read all signal data within the specified `time_range`, optionally constrained to `mz_range` m/z values and/or
     /// `ion_mobility_range` IM values. This operates **only** on the profile data. See [`Self::query_peaks`] to do the
     /// same operation on centroids.
@@ -789,6 +834,104 @@ impl<
         self.metadata.spectra.id_index.is_empty()
     }
 
+    /// Check if a specific [`CURIE`] has been mapped to a column
+    pub fn has_column_for_accession(
+        &self,
+        entity_type: &EntityType,
+        data_kind: &DataKind,
+        accession: CURIE,
+    ) -> Option<&crate::param::MetadataColumn> {
+        self.file_index()
+            .find_entry(entity_type, data_kind)
+            .and_then(|v| v.column_mapping.find(accession))
+    }
+
+    /// Read a specific [`MetadataColumn`] from an [`EntityType`] and [`DataKind`] into Arrow [`ParquetRecordBatchReaderBuilder`]
+    ///
+    /// The builder may be customized further before invoking [`ParquetRecordBatchReaderBuilder::build`] and processing the
+    /// resulting [`Iterator`] of [`RecordBatch`](arrow::array::RecordBatch)
+    pub fn extract_column_for(
+        &self,
+        entity_type: &EntityType,
+        data_kind: &DataKind,
+        metadata_column: &crate::param::MetadataColumn,
+    ) -> io::Result<ParquetRecordBatchReaderBuilder<T::File>> {
+        let builder = self.open_parquet_entry(entity_type, data_kind)?;
+        let mask = metadata_column.as_projection_mask(
+            &builder,
+            match data_kind {
+                DataKind::Metadata | DataKind::DataArray | DataKind::Peaks => 1,
+                _ => 2,
+            },
+        );
+        let reader = builder.with_projection(mask);
+        Ok(reader)
+    }
+
+    /// Read a specific [`MetadataColumn`] from an [`EntityType`] and [`DataKind`] into Arrow [`ArrayRef`] of
+    /// row group minimum and maximum values.
+    pub fn extract_row_group_statistics_for(
+        &self,
+        entity_type: &EntityType,
+        data_kind: &DataKind,
+        metadata_column: &crate::param::MetadataColumn,
+    ) -> io::Result<(Option<ArrayRef>, Option<ArrayRef>)> {
+        let builder = self.open_parquet_entry(entity_type, data_kind)?;
+        Ok(metadata_column.parquet_statistics(&builder))
+    }
+
+    /// Query the spectrum metadata to obtain the lowest and highest scan start times as reported
+    /// by the column mapped to `MS:1000016`.
+    ///
+    /// This queries Parquet row group statistics.
+    pub fn observed_time_range(&self) -> (Option<f64>, Option<f64>) {
+        let arc = match self.handle.spectrum_metadata_scans() {
+            Ok(arc) => arc,
+            Err(e) => {
+                log::error!("Failed to locate spectrum metadata file in archive: {e}");
+                return (None, None);
+            }
+        };
+        if let Some(fentry) = self
+            .file_index()
+            .find_entry(&EntityType::Spectrum, &DataKind::Scans) {
+            if let Some(col) = fentry.column_mapping_for(curie!(MS:1000016)) {
+                let (min, max) = col.parquet_statistics(&arc);
+
+                let min = min.and_then(|min| match min.data_type() {
+                    DataType::Float32 => {
+                        arrow::compute::min(min.as_primitive::<Float32Type>())
+                            .map(|v| v as f64)
+                    }
+                    DataType::Float64 => {
+                        arrow::compute::min(min.as_primitive::<Float64Type>())
+                    }
+                    dtype => {
+                        unimplemented!("Lowest scan start time type {dtype:?} not yet implemented")
+                    }
+                });
+                let max = max.and_then(|max| match max.data_type() {
+                    DataType::Float32 => {
+                        arrow::compute::max(max.as_primitive::<Float32Type>())
+                            .map(|v| v as f64)
+                    }
+                    DataType::Float64 => {
+                        arrow::compute::max(max.as_primitive::<Float64Type>())
+                    }
+                    dtype => {
+                        unimplemented!("Highest scan start time type {dtype:?} not yet implemented")
+                    }
+                });
+                (min, max)
+            } else {
+                (None, None)
+            }
+        }
+        else {
+            (None, None)
+        }
+    }
+
     /// Query the spectrum metadata to obtain the lowest and highest observed m/z as reported
     /// by columns mapped to `MS:1000528` and `MS:1000527`.
     ///
@@ -798,27 +941,48 @@ impl<
             Ok(arc) => arc,
             Err(e) => {
                 log::error!("Failed to locate spectrum metadata file in archive: {e}");
-                return (None, None)
+                return (None, None);
             }
         };
-        if let Some(fentry) = self.file_index().iter().find(|v| v.entity_type == EntityType::Spectrum && v.data_kind == DataKind::Metadata) {
-            let lowest_obs = fentry.column_mapping_for(curie!(MS:1000528)).and_then(|c| c.parquet_statistics(&arc).0);
-            let highest_obs = fentry.column_mapping_for(curie!(MS:1000527)).and_then(|c| c.parquet_statistics(&arc).1);
+        if let Some(fentry) = self
+            .file_index()
+            .find_entry(&EntityType::Spectrum, &DataKind::Metadata)
+        {
+            let lowest_obs = fentry
+                .column_mapping_for(curie!(MS:1000528))
+                .and_then(|c| c.parquet_statistics(&arc).0);
+            let highest_obs = fentry
+                .column_mapping_for(curie!(MS:1000527))
+                .and_then(|c| c.parquet_statistics(&arc).1);
             let mut min_mz: Option<f64> = None;
             let mut max_mz: Option<f64> = None;
             if let Some(lowest_obs) = lowest_obs {
                 min_mz = match lowest_obs.data_type() {
-                    DataType::Float32 => arrow::compute::min(lowest_obs.as_primitive::<Float32Type>()).map(|v| v as f64),
-                    DataType::Float64 => arrow::compute::min(lowest_obs.as_primitive::<Float64Type>()),
-                    dtype => unimplemented!("Lowest observed m/z type {dtype:?} not yet implemented")
+                    DataType::Float32 => {
+                        arrow::compute::min(lowest_obs.as_primitive::<Float32Type>())
+                            .map(|v| v as f64)
+                    }
+                    DataType::Float64 => {
+                        arrow::compute::min(lowest_obs.as_primitive::<Float64Type>())
+                    }
+                    dtype => {
+                        unimplemented!("Lowest observed m/z type {dtype:?} not yet implemented")
+                    }
                 };
             }
 
             if let Some(highest_obs) = highest_obs {
                 max_mz = match highest_obs.data_type() {
-                    DataType::Float32 => arrow::compute::max(highest_obs.as_primitive::<Float32Type>()).map(|v| v as f64),
-                    DataType::Float64 => arrow::compute::max(highest_obs.as_primitive::<Float64Type>()),
-                    dtype => unimplemented!("Lowest observed m/z type {dtype:?} not yet implemented")
+                    DataType::Float32 => {
+                        arrow::compute::max(highest_obs.as_primitive::<Float32Type>())
+                            .map(|v| v as f64)
+                    }
+                    DataType::Float64 => {
+                        arrow::compute::max(highest_obs.as_primitive::<Float64Type>())
+                    }
+                    dtype => {
+                        unimplemented!("Lowest observed m/z type {dtype:?} not yet implemented")
+                    }
                 };
             }
 
@@ -869,7 +1033,7 @@ impl<
     /// # Returns
     /// - If this mzPeak archive does not have a peak data file, this method will return an Err([`io::Error`])
     /// - If this mzPeak archive does have a peak data file, but does not have an entry for the requested
-    ///   spectrum index, this method will return `Ok(None)`. There may still be peak data available in the main
+    ///   spectrum index, this method will return `Ok(None)`. There may still be signal data available in the main
     ///   spectrum data file.
     pub fn get_spectrum_peaks_for(
         &mut self,
@@ -2556,17 +2720,23 @@ mod test {
     #[case::packed_chunks("small.chunked.mzpeak")]
     fn test_read_mz_range(#[case] path: &str) -> io::Result<()> {
         let reader = MzPeakReader::new(path).unwrap();
-        let (min, max)= reader.observed_mz_range();
+        let (min, max) = reader.observed_mz_range();
         let expected_min = 162.24594116210938;
         let expected_max = 2000.0099466203774;
         assert!(min.is_some());
         let min = min.unwrap();
         let err = (min - expected_min).abs();
-        assert!(err < 1e-6, "The observed error {err} from |{min} - {expected_min}| is too large");
+        assert!(
+            err < 1e-6,
+            "The observed error {err} from |{min} - {expected_min}| is too large"
+        );
         assert!(max.is_some());
         let max = max.unwrap();
         let err = (max - expected_max).abs();
-        assert!(err < 1e-6, "The observed error {err} from |{max} - {expected_min}| is too large");
+        assert!(
+            err < 1e-6,
+            "The observed error {err} from |{max} - {expected_min}| is too large"
+        );
         Ok(())
     }
 

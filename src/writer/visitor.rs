@@ -197,6 +197,7 @@ pub struct CustomBuilderFromParameter {
     field: FieldRef,
     unit: Option<CURIEBuilder>,
     fixed_unit: Option<Unit>,
+    term_marker: bool,
 }
 
 impl Debug for CustomBuilderFromParameter {
@@ -206,6 +207,7 @@ impl Debug for CustomBuilderFromParameter {
             .field("value", &"...")
             .field("field", &self.field)
             .field("unit", if self.unit.is_some() { &"yes" } else { &"no" })
+            .field("term_marker", &self.term_marker)
             .finish()
     }
 }
@@ -235,6 +237,12 @@ impl CustomBuilderFromParameter {
         self.accession
     }
 
+    pub fn from_spec_param_marker(curie: CURIE, name: &str) -> Self {
+        let mut this = Self::from_spec(curie, name, DataType::Boolean);
+        this.term_marker = true;
+        this
+    }
+
     /// Create a new [`CustomBuilderFromParameter`] for the specified CURIE with the requested Arrow [`DataType`]
     pub fn from_spec(curie: CURIE, name: &str, dtype: DataType) -> Self {
         let original_name = name.to_string();
@@ -249,6 +257,7 @@ impl CustomBuilderFromParameter {
                 value: Box::new(NullBuilder::new()),
                 unit,
                 fixed_unit: None,
+                term_marker: false,
             },
             DataType::Boolean => Self {
                 accession: curie,
@@ -257,6 +266,7 @@ impl CustomBuilderFromParameter {
                 value: Box::new(BooleanBuilder::new()),
                 unit,
                 fixed_unit: None,
+                term_marker: false,
             },
             DataType::Int64 => Self {
                 accession: curie,
@@ -265,6 +275,7 @@ impl CustomBuilderFromParameter {
                 value: Box::new(Int64Builder::new()),
                 unit,
                 fixed_unit: None,
+                term_marker: false,
             },
             DataType::UInt32 => Self {
                 accession: curie,
@@ -273,6 +284,7 @@ impl CustomBuilderFromParameter {
                 value: Box::new(UInt32Builder::new()),
                 unit,
                 fixed_unit: None,
+                term_marker: false,
             },
             DataType::Int32 => Self {
                 accession: curie,
@@ -281,6 +293,7 @@ impl CustomBuilderFromParameter {
                 value: Box::new(Int32Builder::new()),
                 unit,
                 fixed_unit: None,
+                term_marker: false,
             },
             DataType::Float64 => Self {
                 accession: curie,
@@ -289,6 +302,7 @@ impl CustomBuilderFromParameter {
                 value: Box::new(Float64Builder::new()),
                 unit,
                 fixed_unit: None,
+                term_marker: false,
             },
             DataType::LargeUtf8 => Self {
                 accession: curie,
@@ -297,9 +311,16 @@ impl CustomBuilderFromParameter {
                 value: Box::new(LargeStringBuilder::new()),
                 unit,
                 fixed_unit: None,
+                term_marker: false,
             },
             _ => unimplemented!("{dtype:?} is not supported by CustomBuilderFromParameter"),
         }
+    }
+
+    /// Check if this column was created as a "term marker" that is `true` when the [`Param`]
+    /// is present, false otherwise.
+    pub fn term_marker(&self) -> bool {
+        self.term_marker
     }
 }
 
@@ -384,7 +405,7 @@ impl VisitorBase for CustomBuilderFromParameter {
             self.name.clone(),
             vec![self.field.name().to_string()],
             Some(self.accession()),
-        );
+        ).with_term_marker(self.term_marker);
         if self.unit.is_some() {
             columns.push(f.with_unit(vec![format!("{}_unit", self.field.name())]));
             columns.push(MetadataColumn::new(
@@ -420,7 +441,9 @@ where
                         .as_any_mut()
                         .downcast_mut::<BooleanBuilder>()
                         .unwrap()
-                        .append_option(val.to_bool().ok());
+                        .append_option(
+                            if self.term_marker { val.curie().as_ref().map(|v| *v == self.accession) }
+                            else { val.to_bool().ok() });
                 }
                 DataType::UInt32 => {
                     self.value

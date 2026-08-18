@@ -154,6 +154,7 @@ class MetadataColumn:
     index: int | None = None
     accession: str | None = None
     unit: str | None = None
+    term_marker: bool | None = None
 
     def __post_init__(self):
         if isinstance(self.path, str):

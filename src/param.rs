@@ -1014,16 +1014,35 @@ pub struct MetadataColumn {
         default
     )]
     pub unit: PathOrCURIE,
+
+    #[serde(default, skip_serializing_if="core::ops::Not::not")]
+    pub term_marker: bool,
 }
+
 
 impl MetadataColumn {
     pub fn new(name: String, path: Vec<String>, accession: Option<CURIE>) -> Self {
+        Self::create(name, path, accession)
+    }
+
+    pub fn named(name: impl Into<String>, unit: impl Into<PathOrCURIE>) -> Self {
+        let this = Self::new(name.into(), vec![], None);
+        this.with_unit(unit.into())
+    }
+
+    pub const fn create(name: String, path: Vec<String>, accession: Option<CURIE>) -> Self {
         Self {
             name,
             path,
             accession,
             unit: PathOrCURIE::None,
+            term_marker: false,
         }
+    }
+
+    pub const fn with_term_marker(mut self, value: bool) -> Self {
+        self.term_marker = value;
+        self
     }
 
     /// Specify the unit definition
@@ -1059,7 +1078,7 @@ impl MetadataColumn {
         ProjectionMask::columns(&schema, cols.iter().map(|s| s.as_str()))
     }
 
-    /// Retrieve Parquet metadata statistics from an [`ArrowReaderBuilder`]
+    /// Retrieve Parquet metadata min and max statistics from an [`ArrowReaderBuilder`]
     pub fn parquet_statistics<T>(
         &self,
         builder: &ArrowReaderBuilder<T>,

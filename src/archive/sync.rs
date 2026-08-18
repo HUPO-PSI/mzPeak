@@ -19,7 +19,7 @@ use parquet::arrow::arrow_reader::{
     ArrowReaderMetadata, ArrowReaderOptions, ParquetRecordBatchReaderBuilder,
 };
 
-use crate::archive::{FileEntry, FileIndex};
+use crate::archive::{DataKind, EntityType, FileEntry, FileIndex};
 use crate::constants::{
     CHROMATOGRAM_DATA_ARRAYS_NAME, CHROMATOGRAM_METADATA_NAME,
     CHROMATOGRAM_METADATA_PRECURSORS_NAME, CHROMATOGRAM_METADATA_PRODUCTS_NAME,
@@ -820,7 +820,7 @@ pub struct MzPeakArchiveEntry {
 }
 
 #[derive(Debug, Default, Clone)]
-pub(crate) struct SchemaMetadataManager {
+pub struct SchemaMetadataManager {
     pub(crate) spectrum_metadata: Option<MzPeakArchiveEntry>,
     pub(crate) spectrum_scan_metadata: Option<MzPeakArchiveEntry>,
     pub(crate) spectrum_precursor_metadata: Option<MzPeakArchiveEntry>,
@@ -839,6 +839,37 @@ pub(crate) struct SchemaMetadataManager {
     pub(crate) wavelength_metadata: Option<MzPeakArchiveEntry>,
     pub(crate) wavelength_scan_metadata: Option<MzPeakArchiveEntry>,
     pub(crate) wavelength_data_arrays: Option<MzPeakArchiveEntry>,
+}
+
+impl SchemaMetadataManager {
+    pub fn find_entry_for(&self, entity_type: &EntityType, data_kind: &DataKind) -> Option<&MzPeakArchiveEntry> {
+        match entity_type {
+            EntityType::Spectrum => match data_kind {
+                DataKind::DataArray => self.spectrum_data_arrays.as_ref(),
+                DataKind::Peaks => self.peaks_data_arrays.as_ref(),
+                DataKind::Metadata => self.spectrum_metadata.as_ref(),
+                DataKind::Scans => self.spectrum_scan_metadata.as_ref(),
+                DataKind::Precursors => self.spectrum_precursor_metadata.as_ref(),
+                DataKind::SelectedIons => self.spectrum_selected_ion_metadata.as_ref(),
+                _ => None
+            },
+            EntityType::Chromatogram => match data_kind {
+                DataKind::DataArray => self.chromatogram_data_arrays.as_ref(),
+                DataKind::Metadata => self.chromatogram_metadata.as_ref(),
+                DataKind::Precursors => self.chromatogram_precursor_metadata.as_ref(),
+                DataKind::SelectedIons => self.chromatogram_selected_ion_metadata.as_ref(),
+                DataKind::Products => self.chromatogram_product_metadata.as_ref(),
+                _ => None,
+            },
+            EntityType::WavelengthSpectrum => match data_kind {
+                DataKind::DataArray => self.wavelength_data_arrays.as_ref(),
+                DataKind::Metadata => self.wavelength_metadata.as_ref(),
+                DataKind::Scans => self.wavelength_scan_metadata.as_ref(),
+                _ => None,
+            },
+            EntityType::Other(_) => None,
+        }
+    }
 }
 
 impl SchemaMetadataManager {
@@ -1338,6 +1369,18 @@ impl<T: ArchiveSource + 'static> ArchiveReader<T> {
     /// Open a raw readable stream for the requested file name
     pub fn open_stream(&self, name: &str) -> Result<<T as ArchiveSource>::File, io::Error> {
         self.archive.open_stream(name)
+    }
+
+    pub fn read_entry(&self, entity_type: &EntityType, data_kind: &DataKind) -> io::Result<ParquetRecordBatchReaderBuilder<T::File>> {
+        if let Some(entry) = self.members.find_entry_for(entity_type, data_kind) {
+            return self.archive.read_index(entry.entry_index, entry.metadata.clone())
+        }
+        if let Some(entry) = self.file_index().find_entry(entity_type, data_kind) {
+            let handle = self.open_stream(&entry.name)?;
+            return ParquetRecordBatchReaderBuilder::try_new(handle).map_err(|e| e.into())
+        } else {
+            return Err(io::Error::new(io::ErrorKind::NotFound, format!("{entity_type:?} {data_kind:?} not found")));
+        }
     }
 }
 
