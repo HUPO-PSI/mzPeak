@@ -13,7 +13,10 @@ from enum import Enum, auto
 import numpy as np
 import pandas as pd
 
-import pynumpress
+try:
+    import pynumpress
+except ImportError:
+    pynumpress = None
 import pyarrow as pa
 
 from pyarrow import parquet as pq
@@ -156,6 +159,20 @@ def _clean_frame(df: pd.DataFrame, clean_columns: bool = True):
     return df
 
 
+def _require_pynumpress(name: str) -> Callable:
+    """Defer the `pynumpress` requirement until MS-Numpress data is actually decoded."""
+
+    def _decode(data):
+        if pynumpress is None:
+            raise ImportError(
+                "pynumpress is required to decode MS-Numpress compressed arrays. "
+                "Install it with `pip install mzpeak[numpress]`."
+            )
+        return getattr(pynumpress, name)(data)
+
+    return _decode
+
+
 class _AuxiliaryArrayDecoder:
     """
     A helper class for decoding extra arrays packed in with the metadata table.
@@ -164,9 +181,9 @@ class _AuxiliaryArrayDecoder:
     compression: ClassVar[dict[str, Callable]] = {
         "MS:1000576": lambda x: x,
         "MS:1000574": zlib.decompress,
-        "MS:1002314": pynumpress.decode_slof,
-        "MS:1002313": pynumpress.decode_pic,
-        "MS:1002312": pynumpress.decode_linear,
+        "MS:1002314": _require_pynumpress("decode_slof"),
+        "MS:1002313": _require_pynumpress("decode_pic"),
+        "MS:1002312": _require_pynumpress("decode_linear"),
     }
 
     dtypes = DTYPES
