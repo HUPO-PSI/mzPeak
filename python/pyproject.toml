@@ -4,7 +4,7 @@ name = "mzpeak"
 version = "0.2.0"
 
 dependencies = [
-    "pyarrow",
+    "pyarrow>=20",
     "pandas",
     "numpy",
     "scipy",
