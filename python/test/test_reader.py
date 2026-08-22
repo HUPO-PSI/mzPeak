@@ -1,13 +1,17 @@
 import json
-from pathlib import Path
 import zipfile
+from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 from mzpeak import MzPeakFile
 from mzpeak.file_index import FileIndex
+from mzpeak.filters import find_where_not_zero_run
 from mzpeak.mz_reader import BufferFormat
+from pyteomics import mzml
 
+source_mzml_path = Path("small.mzML")
 point_path = Path("small.mzpeak")
 chunk_path = Path("small.chunked.mzpeak")
 unpacked_path = Path("small.unpacked.mzpeak")
@@ -50,26 +54,28 @@ def common_checks(reader: MzPeakFile, subtests: pytest.Subtests):
     with subtests.test("chromatogram"):
         assert len(reader.chromatograms) == 1
         assert len(reader.extract_bpc()[0]) == 48
-        assert len(reader.read_chromatogram(0)['time array']) == 48
+        assert len(reader.read_chromatogram(0)["time array"]) == 48
         assert len(reader.read_chromatogram(slice(0, 1))) == 1
         assert len(reader.read_chromatogram([0])) == 1
 
     with subtests.test("spectrum 0"):
         spec = reader[0]
-        assert spec['index'] == 0
-        assert len(spec['m/z array']) == 13589
+        assert spec["index"] == 0
+        assert len(spec["m/z array"]) == 13589
         assert len(spec["intensity array"]) == 13589
 
-        if reader.has_secondary_peaks_data and not pd.isna(reader.spectrum_metadata.peak_count(0)):
+        if reader.has_secondary_peaks_data and not pd.isna(
+            reader.spectrum_metadata.peak_count(0)
+        ):
             peaks = reader.read_peaks_for(0)
-            assert len(peaks['m/z array']) == 1612
+            assert len(peaks["m/z array"]) == 1612
 
     with subtests.test("spectrum 4"):
         spec = reader[4]
         assert len(spec["m/z array"]) == 837
         assert len(spec["intensity array"]) == 837
         assert spec["spectrum representation"] == "MS:1000127"
-        assert spec['index'] == 4
+        assert spec["index"] == 4
 
     with subtests.test("read slice"):
         idx_slc = reader.time.resolve(slice(0.3, 0.4))
@@ -88,15 +94,15 @@ def common_checks(reader: MzPeakFile, subtests: pytest.Subtests):
             if name == FileIndex.FILE_NAME:
                 with reader.open_stream(name) as fh:
                     index = json.load(fh)
-                    assert index['files']
+                    assert index["files"]
 
 
-def check_iterator(reader: MzPeakFile, n: int=10):
+def check_iterator(reader: MzPeakFile, n: int = 10):
     it = iter(reader)
 
     for i in range(n):
         spec = next(it)
-        assert spec['index'] == i
+        assert spec["index"] == i
 
     it = iter(reader)
 
@@ -105,8 +111,9 @@ def check_iterator(reader: MzPeakFile, n: int=10):
         spec = next(it)
         assert spec["index"] == (i * 3)
 
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         it.seek(1)
+
 
 
 def test_load_base_point(subtests: pytest.Subtests):
@@ -115,6 +122,20 @@ def test_load_base_point(subtests: pytest.Subtests):
     common_checks(reader, subtests)
     with subtests.test("iterator"):
         check_iterator(reader)
+
+    with subtests.test("vs mzml"):
+        ref_reader = mzml.MzML(source_mzml_path.open('rb'))
+        for i, ref_s in enumerate(ref_reader):
+            s = reader[i]
+
+            if 'centroid spectrum' not in ref_s:
+                not_zero_run_ii = find_where_not_zero_run(ref_s['intensity array'])
+                ref_s["m/z array"] = ref_s["m/z array"][not_zero_run_ii]
+                ref_s["intensity array"] = ref_s["intensity array"][not_zero_run_ii]
+
+            assert len(s['m/z array']) == len(ref_s['m/z array'])
+            assert np.allclose(s['m/z array'], ref_s['m/z array'])
+            assert np.allclose(s["intensity array"], ref_s["intensity array"])
 
 def test_load_base_point_open_zipfile(subtests: pytest.Subtests):
     reader = MzPeakFile(zipfile.ZipFile(point_path))
@@ -133,6 +154,20 @@ def test_load_base_chunk(subtests: pytest.Subtests):
     with subtests.test("iterator"):
         check_iterator(reader, len(reader))
 
+    with subtests.test("vs mzml"):
+        ref_reader = mzml.MzML(source_mzml_path.open("rb"))
+        for i, ref_s in enumerate(ref_reader):
+            s = reader[i]
+
+            if "centroid spectrum" not in ref_s:
+                not_zero_run_ii = find_where_not_zero_run(ref_s["intensity array"])
+                ref_s["m/z array"] = ref_s["m/z array"][not_zero_run_ii]
+                ref_s["intensity array"] = ref_s["intensity array"][not_zero_run_ii]
+
+            assert len(s["m/z array"]) == len(ref_s["m/z array"])
+            assert np.allclose(s["m/z array"], ref_s["m/z array"])
+            assert np.allclose(s["intensity array"], ref_s["intensity array"])
+
 
 def test_load_unpacked(subtests: pytest.Subtests):
     reader = MzPeakFile(unpacked_path)
@@ -149,6 +184,20 @@ def test_load_numpress(subtests: pytest.Subtests):
     assert reader.wavelength_data is None
     common_checks(reader, subtests)
 
+    with subtests.test("vs mzml"):
+        ref_reader = mzml.MzML(source_mzml_path.open("rb"))
+        for i, ref_s in enumerate(ref_reader):
+            s = reader[i]
+
+            if "centroid spectrum" not in ref_s:
+                not_zero_run_ii = find_where_not_zero_run(ref_s["intensity array"])
+                ref_s["m/z array"] = ref_s["m/z array"][not_zero_run_ii]
+                ref_s["intensity array"] = ref_s["intensity array"][not_zero_run_ii]
+
+            assert len(s["m/z array"]) == len(ref_s["m/z array"])
+            assert np.allclose(s["m/z array"], ref_s["m/z array"])
+            assert np.all(np.abs(s["intensity array"] - ref_s["intensity array"]) <= 500)
+
 
 def test_load_uv_data(subtests: pytest.Subtests):
     reader = MzPeakFile(uv_path)
@@ -160,4 +209,3 @@ def test_load_uv_data(subtests: pytest.Subtests):
         check_iterator(reader)
     with subtests.test("wavelength iterator"):
         check_iterator(wl_reader)
-

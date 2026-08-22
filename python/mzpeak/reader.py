@@ -2,7 +2,7 @@ import logging  # noqa: I001
 import json
 import zipfile
 import zlib
-
+from functools import partial
 from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Iterable, Sequence
@@ -13,7 +13,6 @@ from enum import Enum, auto
 import numpy as np
 import pandas as pd
 
-import pynumpress
 import pyarrow as pa
 
 from pyarrow import parquet as pq
@@ -31,6 +30,17 @@ except ImportError:
 
 if TYPE_CHECKING:
     from upath import UPath  # noqa: TC004
+
+try:
+    import pynumpress
+except ImportError:
+    pynumpress = None
+
+def _needs_pynumpress(method: str):
+    raise ImportError(f"The requested compression method, {method}, requires `pynumpress`. Please install `pynumpress` to decode this array")
+
+def _pynumpress_method(method: str):
+    return getattr(pynumpress, method, partial(_needs_pynumpress, method))
 
 
 logger = logging.getLogger(__name__)
@@ -164,10 +174,11 @@ class _AuxiliaryArrayDecoder:
     compression: ClassVar[dict[str, Callable]] = {
         "MS:1000576": lambda x: x,
         "MS:1000574": zlib.decompress,
-        "MS:1002314": pynumpress.decode_slof,
-        "MS:1002313": pynumpress.decode_pic,
-        "MS:1002312": pynumpress.decode_linear,
+        "MS:1002314": _pynumpress_method("decode_slof"),
+        "MS:1002313": _pynumpress_method("decode_pic"),
+        "MS:1002312": _pynumpress_method("decode_linear"),
     }
+
 
     dtypes = DTYPES
     ascii_code = "MS:1001479"
