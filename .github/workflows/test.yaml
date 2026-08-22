@@ -52,7 +52,7 @@ jobs:
         shell: bash
         run: |
           pip install -v python/
-          pip install coverage pytest pytest-cov pytest-xdist scipy pynumpress -U
+          pip install coverage pytest pytest-cov pytest-xdist scipy pynumpress pyteomics -U
       - name: run tests
         shell: bash
         run: |
