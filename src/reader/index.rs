@@ -559,7 +559,7 @@ impl<T: PartialEq + PartialOrd + HasProximity> SpanDynNumeric for SimpleInterval
 {
 }
 impl<T: PartialEq + PartialOrd + HasProximity> SpanDynNumeric for CoordinateRange<T> where
-    <mzpeaks::coordinate::CoordinateRange<T> as mzdata::prelude::Span1D>::DimType:
+    for<'trivial_bound> <mzpeaks::coordinate::CoordinateRange<T> as mzdata::prelude::Span1D>::DimType:
         num_traits::NumCast
 {
 }
