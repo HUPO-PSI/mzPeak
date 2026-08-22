@@ -32,10 +32,10 @@ pub struct WriteBatchConfig {
 }
 
 pub struct SpectrumFieldVisitors {
-    pub(crate) spectrum_fields: Vec<SpectrumVisitor>,
-    pub(crate) spectrum_selected_ion_fields: Vec<Box<dyn StructVisitorBuilder<SelectedIon>>>,
-    pub(crate) spectrum_scan_fields: Vec<Box<dyn StructVisitorBuilder<ScanEvent>>>,
-    pub(crate) spectrum_activation_fields: Vec<Box<dyn StructVisitorBuilder<Activation>>>,
+    pub spectrum_fields: Vec<SpectrumVisitor>,
+    pub spectrum_selected_ion_fields: Vec<Box<dyn StructVisitorBuilder<SelectedIon>>>,
+    pub spectrum_scan_fields: Vec<Box<dyn StructVisitorBuilder<ScanEvent>>>,
+    pub spectrum_activation_fields: Vec<Box<dyn StructVisitorBuilder<Activation>>>,
 }
 
 /// A builder for mzPeak writers
