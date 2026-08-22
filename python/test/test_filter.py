@@ -1,19 +1,17 @@
 from pathlib import Path
 
-import pytest
-
 import numpy as np
 import pyarrow as pa
-
+import pytest
 from mzpeak.filters import (
-    find_where_not_zero_run,
-    is_zero_pair_mask,
-    null_chunk_every,
     DeltaCurveRegressionModel,
-    null_delta_encode,
     NullTokenizer,
     fill_nulls,
     fill_nulls_simple,
+    find_where_not_zero_run,
+    is_zero_pair_mask,
+    null_chunk_every,
+    null_delta_encode,
 )
 
 
