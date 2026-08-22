@@ -2416,9 +2416,9 @@ dependencies = [
 
 [[package]]
 name = "mzdata"
-version = "0.66.1"
+version = "0.66.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23851c1d066c3d08beb6e0806751a9cbf0141a2a21dacc556f116cac78f86916"
+checksum = "2e4eac143cd1e4c91f585aab9fc5686faf5b7e92d1c5824346fde97af0b98809"
 dependencies = [
  "base64-simd",
  "bitflags 2.13.1",
@@ -2457,9 +2457,9 @@ dependencies = [
 
 [[package]]
 name = "mzdata-bindata"
-version = "0.66.1"
+version = "0.66.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "570dc8b1b151755d00d6113e1144073a32c86944c0b27e34750e33887adee2bd"
+checksum = "56309d91e23422f52ed8468495174e069835cb0a40b84af9ee8a3f0361d3cedb"
 dependencies = [
  "base64-simd",
  "bytemuck",
@@ -2479,9 +2479,9 @@ dependencies = [
 
 [[package]]
 name = "mzdata-meta"
-version = "0.66.1"
+version = "0.66.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bea5d6e4b79d1984f22af14394ebf82d98ab0c156788bb3e808d96cb2d43fc5"
+checksum = "c1dc7bd39a40862add85e9c48f7fcca27dc752f9e4fd6f319c12b023c229f277"
 dependencies = [
  "bitflags 2.13.1",
  "chrono",
@@ -2498,9 +2498,9 @@ dependencies = [
 
 [[package]]
 name = "mzdata-param"
-version = "0.66.1"
+version = "0.66.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15c772b397dde152abd97928b5990d27ff6ebb809a4c7475408ec3025115de8d"
+checksum = "41a24bcf21e6813ed5d7e554ed0eceec64a7ff1500cce6974481daa238406a2c"
 dependencies = [
  "log",
  "serde",
@@ -2510,9 +2510,9 @@ dependencies = [
 
 [[package]]
 name = "mzdata-spectrum"
-version = "0.66.1"
+version = "0.66.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32e3d65b1eb457bef1e1ca79acfd6b406b6255c6867dfb06aa13801523291012"
+checksum = "59ae0d34c6ad09e9969f2c33673490e109d231e65aa335f630d5b5b96ff23e33"
 dependencies = [
  "identity-hash",
  "log",
@@ -2522,6 +2522,9 @@ dependencies = [
  "mzpeaks",
  "mzsignal",
  "num-traits",
+ "serde",
+ "serde_json",
+ "serde_with",
  "thiserror 2.0.20",
 ]
 
@@ -2559,6 +2562,7 @@ dependencies = [
  "serde_with",
  "tempfile",
  "test-log",
+ "timsrust",
  "tokio",
  "tokio-stream",
  "url",

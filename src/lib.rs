@@ -1,4 +1,5 @@
 pub mod chunk_series;
+pub mod grid;
 pub mod constants;
 pub mod param;
 pub mod peak_series;

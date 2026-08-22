@@ -9,13 +9,20 @@ use mzdata::{
 use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 
-use crate::{constants::{CHROMATOGRAM_ARRAY_INDEX, CHROMATOGRAM_INDEX, SPECTRUM_ARRAY_INDEX, SPECTRUM_INDEX, SPECTRUM_TIME, WAVELENGTH_SPECTRUM_ARRAY_INDEX, WAVELENGTH_SPECTRUM_INDEX, WAVELENGTH_SPECTRUM_TIME}, peak_series::array_to_arrow_type};
 use crate::{
     constants::{CHROMATOGRAM, SPECTRUM},
     param::{
         CURIE, curie_deserialize, curie_serialize, opt_curie_deserialize, opt_curie_serialize,
     },
     peak_series::{MZ_ARRAY, TIME_ARRAY, WAVELENGTH_ARRAY},
+};
+use crate::{
+    constants::{
+        CHROMATOGRAM_ARRAY_INDEX, CHROMATOGRAM_INDEX, SPECTRUM_ARRAY_INDEX, SPECTRUM_INDEX,
+        SPECTRUM_TIME, WAVELENGTH_SPECTRUM_ARRAY_INDEX, WAVELENGTH_SPECTRUM_INDEX,
+        WAVELENGTH_SPECTRUM_TIME,
+    },
+    peak_series::array_to_arrow_type,
 };
 
 /// Whether an data array series is associated with a spectrum or a chromatogram
@@ -503,10 +510,12 @@ pub enum BufferTransform {
     NumpressPIC,
     NullInterpolate,
     NullZero,
+    GridEncoding,
 }
 
 const NULL_ZERO: CURIE = mzdata::curie!(MS:1003901);
 const NULL_INTERPOLATE: CURIE = mzdata::curie!(MS:1003902);
+const GRID_ENCODING: CURIE = mzdata::curie!(MS:1003826);
 
 impl BufferTransform {
     pub fn from_curie(accession: crate::param::CURIE) -> Option<Self> {
@@ -516,6 +525,7 @@ impl BufferTransform {
             x if x == Self::NumpressLinear.curie() => Some(Self::NumpressLinear),
             x if x == NULL_INTERPOLATE => Some(Self::NullInterpolate),
             x if x == NULL_ZERO => Some(Self::NullZero),
+            mzdata::curie!(MS:1003826) => Some(Self::GridEncoding),
             _ => None,
         }
     }
@@ -527,6 +537,7 @@ impl BufferTransform {
             BufferTransform::NumpressPIC => Some("numpress_pic"),
             BufferTransform::NullInterpolate => None,
             BufferTransform::NullZero => None,
+            Self::GridEncoding => Some("grid_points"),
         }
     }
 
@@ -549,6 +560,7 @@ impl BufferTransform {
                 .unwrap(),
             BufferTransform::NullInterpolate => NULL_INTERPOLATE,
             BufferTransform::NullZero => NULL_ZERO,
+            Self::GridEncoding => GRID_ENCODING,
         }
     }
 }

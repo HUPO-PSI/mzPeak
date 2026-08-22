@@ -381,6 +381,7 @@ impl TryFrom<BufferTransform> for BufferTransformEncoder {
             BufferTransform::NullInterpolate | BufferTransform::NullZero => {
                 Err(format!("{value:?} does not have an encoder"))
             }
+            BufferTransform::GridEncoding => todo!(),
         }
     }
 }
@@ -565,6 +566,7 @@ impl TryFrom<BufferTransform> for BufferTransformDecoder {
             BufferTransform::NullInterpolate | BufferTransform::NullZero => {
                 Err(format!("{value:?} does not have a decoder"))
             }
+            BufferTransform::GridEncoding => todo!(),
         }
     }
 }
