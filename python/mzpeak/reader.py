@@ -18,7 +18,7 @@ import pyarrow as pa
 from pyarrow import parquet as pq
 
 from .mz_reader import _DataBatchIter, MzPeakArrayDataReader, _SpectrumArrays
-from .file_index import FileEntry, FileIndex, DataKind, EntityType
+from .file_index import FileEntry, FileIndex, DataKind, EntityType, MetadataColumn
 from .util import _SeekableIter, DTYPES, _NameCleaningNode
 
 try:
@@ -239,12 +239,33 @@ class AuxiliaryArray:
 
 
 class _DataPointCountMixin:
+    _data_point_count_col: str = "number of data points"
+    _peak_count_col: str = "number of peaks"
+
     def _table(self) -> pd.DataFrame:
         raise NotImplementedError()
 
+    def _update_count_col_names(self, entry: FileEntry):
+        if not entry:
+            return
+        try:
+            peak_count_col = next(filter(lambda x: x.accession == "MS:1003059", entry.column_mapping))
+            self._peak_count_col = peak_count_col.name
+        except StopIteration:
+            pass
+
+        try:
+            data_point_count_col = next(
+                filter(lambda x: x.accession == "MS:1003060", entry.column_mapping)
+            )
+            self._data_point_count_col = data_point_count_col.name
+        except StopIteration:
+            pass
+
+
     def data_point_count(self, indices: int | Sequence[int] | Sequence[bool]):
         '''Get the number of profile data points for the requested indices'''
-        series = self._table().get("number of data points")
+        series = self._table().get(self._data_point_count_col)
         if series is None:
             return np.ones_like(indices) * np.nan
         try:
@@ -254,7 +275,7 @@ class _DataPointCountMixin:
 
     def peak_count(self, indices: int | Sequence[int] | Sequence[bool]):
         """Get the number of peaks for the requested indices"""
-        series = self._table().get("number of peaks")
+        series = self._table().get(self._peak_count_col)
         if series is None:
             return np.ones_like(indices) * np.nan
         try:
@@ -362,10 +383,17 @@ class _PrecursorReadMixin:
     precursors: pd.DataFrame
     selected_ions: pd.DataFrame
 
-    def _unpack_precursors(self, spec: dict, i: int):
+    def _unpack_precursors(
+        self, spec: dict, i: int
+    ):
         precursors_of = self.precursors.loc[[i]]
         precursors_of["activation"] = precursors_of["activation"].apply(
-            lambda x: [_format_param(v) for v in x["parameters"]]
+            lambda x: {
+                k: v
+                if k != "parameters"
+                else [_format_param(vi) for vi in v]
+                for k, v in x.items()
+            }
         )
         try:
             ions = self.selected_ions.loc[[i]]
@@ -614,6 +642,7 @@ class MzPeakSpectrumMetadataReader(_PrecursorReadMixin, _DataPointCountMixin):
         self.scans = storage._read_scans()
         self.precursors = storage._read_precursors()
         self.selected_ions = storage._read_selected_ions()
+        self._update_count_col_names(namespace.file_index.find(namespace.entity_type, DataKind.Metadata))
 
     @property
     def meta(self) -> pq.FileMetaData:
@@ -735,6 +764,9 @@ class MzPeakChromatogramMetadataReader(_PrecursorReadMixin, _DataPointCountMixin
         self.chromatograms, self.id_index = storage._read_chromatograms()
         self.precursors = storage._read_precursors()
         self.selected_ions = storage._read_selected_ions()
+        self._update_count_col_names(
+            namespace.file_index.find(namespace.entity_type, DataKind.Metadata)
+        )
 
     def _table(self) -> pd.DataFrame:
         return self.chromatograms

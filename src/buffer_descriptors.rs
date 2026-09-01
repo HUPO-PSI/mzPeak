@@ -513,9 +513,9 @@ pub enum BufferTransform {
     GridEncoding,
 }
 
-const NULL_ZERO: CURIE = mzdata::curie!(MS:1003901);
-const NULL_INTERPOLATE: CURIE = mzdata::curie!(MS:1003902);
-const GRID_ENCODING: CURIE = mzdata::curie!(MS:1003826);
+pub(crate) const NULL_ZERO: CURIE = mzdata::curie!(MS:1003901);
+pub(crate) const NULL_INTERPOLATE: CURIE = mzdata::curie!(MS:1003902);
+pub const GRID_ENCODING: CURIE = mzdata::curie!(MS:1003826);
 
 impl BufferTransform {
     pub fn from_curie(accession: crate::param::CURIE) -> Option<Self> {

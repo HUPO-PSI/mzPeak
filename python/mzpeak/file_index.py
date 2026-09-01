@@ -164,6 +164,14 @@ class MetadataColumn:
         state = asdict(self)
         state['path'] = '.'.join(state['path'])
         state.pop("index", None)
+        if self.unit is None:
+            del state['unit']
+        if not self.term_marker:
+            del state['term_marker']
+        if self.index is None:
+            del state['index']
+        if self.accession is None:
+            del state['accession']
         return state
 
     def find_column(

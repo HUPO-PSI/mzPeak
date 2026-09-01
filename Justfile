@@ -42,3 +42,5 @@ pytest:
         --log-level=DEBUG --cov-report html
 
 alias t := test
+
+example_files: small has_uv imaging small_unpacked

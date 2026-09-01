@@ -66,6 +66,7 @@ pub use visitor::{
     ParamListBuilder, ParamValueBuilder, PrecursorBuilder, ScanBuilder, ScanWindowBuilder,
     SelectedIonBuilder, SpectrumBuilder, SpectrumDetailsBuilder, SpectrumVisitor, StructVisitor,
     StructVisitorBuilder, VisitorBase, WavelengthSpectrumBuilder, inflect_cv_term_to_column_name,
+    CustomBuilderFromParameterDerived,
 };
 
 pub(crate) use base::implement_mz_metadata;
