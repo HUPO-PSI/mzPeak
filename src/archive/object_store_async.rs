@@ -15,12 +15,13 @@ use object_store::{ObjectMeta, ObjectStore, path::Path as ObjectPath};
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncSeek, ReadBuf};
 use url::Url;
 
-use crate::archive::{DataKind, EntityType, FileIndex};
+use crate::archive::{DataKind, EntityType, FileEntry, FileIndex};
+use crate::validation::checksum_stream_async;
 
 use super::sync::{MzPeakArchiveEntry, MzPeakArchiveType, SchemaMetadataManager};
 
 pub trait AsyncArchiveSource: Clone + 'static {
-    type File: parquet::arrow::async_reader::AsyncFileReader + Unpin + Send;
+    type File: parquet::arrow::async_reader::AsyncFileReader + AsyncRead + Unpin + Send;
 
     fn from_store_path(
         handle: Arc<dyn ObjectStore>,
@@ -616,6 +617,54 @@ impl<T: AsyncArchiveSource + 'static> AsyncArchiveReader<T> {
         name: &str,
     ) -> impl Future<Output = Result<<T as AsyncArchiveSource>::File, io::Error>> {
         self.archive.open_stream(name)
+    }
+
+    /// Check if an entry's checksum matches the checksum stored in the file index.
+    ///
+    /// Returns `Some` when `entry.checksum` is `Some`, `None` otherwise
+    pub async fn check_entry_integrity(&self, entry: &FileEntry) -> io::Result<Option<bool>> {
+        let mut stream = self.open_stream(&entry.name).await?;
+        let chksm = checksum_stream_async(&mut stream).await?;
+        Ok(entry.checksum.as_ref().map(|v| *v == chksm))
+    }
+
+    /// Check if all the entries in the archive match their checksums.
+    ///
+    /// ## Returns
+    /// - The main status flag: `Some` if all entries have a checksum recorded. `None` otherwise.
+    /// - Each failed entry and its computed checksum if it was resolved, None otherwise.
+    pub async fn check_archive_integrity(&self) -> io::Result<(Option<bool>, Vec<(FileEntry, Option<String>)>)> {
+        let mut failed = Vec::new();
+        let mut valid = Some(true);
+        for e in self.file_index().iter() {
+            let state = self.check_entry_integrity(e).await?;
+            match state {
+                Some(true) => continue,
+                Some(false) => {
+                    failed.push((
+                        e.clone(),
+                        match self.open_stream(&e.name).await {
+                            Ok(mut v) => checksum_stream_async(&mut v).await.ok(),
+                            Err(_) => None
+                        }
+
+                    ));
+                    valid = valid.map(|v| v && false);
+                }
+                None => {
+                    failed.push((
+                        e.clone(),
+                        match self.open_stream(&e.name).await {
+                            Ok(mut v) => checksum_stream_async(&mut v).await.ok(),
+                            Err(_) => None
+                        }
+
+                    ));
+                    valid = None;
+                }
+            }
+        }
+        Ok((valid, failed))
     }
 }
 

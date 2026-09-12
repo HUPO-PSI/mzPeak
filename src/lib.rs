@@ -5,6 +5,8 @@ pub mod param;
 pub mod peak_series;
 pub mod spectrum;
 
+pub mod validation;
+
 pub mod reader;
 pub mod writer;
 

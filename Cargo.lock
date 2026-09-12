@@ -2489,9 +2489,9 @@ dependencies = [
 
 [[package]]
 name = "mzdata"
-version = "0.66.6"
+version = "0.66.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af5bb71c0ec087ab26422d583d47dcb5043202012776e50b5c72b5f4b2c3a207"
+checksum = "bc40c730d0aa362f2b94674c8ecd701581667f2afe02cadfb59ddf5b6a72b52c"
 dependencies = [
  "base64-simd",
  "bitflags 2.13.1",
@@ -2531,9 +2531,9 @@ dependencies = [
 
 [[package]]
 name = "mzdata-bindata"
-version = "0.66.6"
+version = "0.66.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2f97e0e1115dcb4086854a27ecc775a51e0e989878eb435a7b704386f997ed6"
+checksum = "c7f3e858d234280e585f86d47ef78baaf06b6951b0a47308e1da8897bd05a178"
 dependencies = [
  "base64-simd",
  "bytemuck",
@@ -2553,9 +2553,9 @@ dependencies = [
 
 [[package]]
 name = "mzdata-meta"
-version = "0.66.6"
+version = "0.66.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b2d6c3cd73e39c158473265c2023edde8a415e581bb9ed1071642237dbd4853"
+checksum = "eb51169e7e433e8721242eba9847bf8ec6e0b88e738c5c64ff4ce511d778218f"
 dependencies = [
  "bitflags 2.13.1",
  "chrono",
@@ -2572,9 +2572,9 @@ dependencies = [
 
 [[package]]
 name = "mzdata-param"
-version = "0.66.6"
+version = "0.66.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d46b2841ef1341c2c6094108f7d3d979cec5662e1dca1f96110583a437cec095"
+checksum = "66b8b79ed2562d4c65ec25472e3c4e086f867ce136097f9138079ce6743034d4"
 dependencies = [
  "bincode",
  "context_error",
@@ -2590,9 +2590,9 @@ dependencies = [
 
 [[package]]
 name = "mzdata-spectrum"
-version = "0.66.6"
+version = "0.66.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39daaf3737140dc22e4c12b84ab1fd117ee05bfc12c3883af6e9535d8b0d7660"
+checksum = "5395c7d0fea33269112c017e37b3b65360d738431234ab7be2d2c6dbb5515e51"
 dependencies = [
  "identity-hash",
  "log",
@@ -2621,6 +2621,7 @@ dependencies = [
  "csv",
  "env_logger",
  "futures",
+ "hex",
  "identity-hash",
  "indicatif",
  "itertools",
@@ -2640,6 +2641,7 @@ dependencies = [
  "serde_arrow",
  "serde_json",
  "serde_with",
+ "sha2 0.11.0",
  "tempfile",
  "test-log",
  "timsrust",

@@ -114,6 +114,8 @@ pub struct FileEntry {
     /// Additional descriptive parameters for this file.
     #[serde(default)]
     pub parameters: Vec<MetaParam>,
+    #[serde(default)]
+    pub checksum: Option<String>
 }
 
 impl FileEntry {
@@ -177,6 +179,7 @@ impl FileEntry {
             data_kind,
             column_mapping: Default::default(),
             parameters: Default::default(),
+            checksum: None,
         }
     }
 
@@ -193,6 +196,7 @@ impl FileEntry {
             data_kind,
             column_mapping,
             parameters,
+            checksum: None,
         }
     }
 
@@ -324,6 +328,10 @@ impl FileIndex {
 
     pub fn push(&mut self, entry: FileEntry) {
         self.files.push(entry);
+    }
+
+    pub fn last_entry_mut(&mut self) -> Option<&mut FileEntry> {
+        self.files.last_mut()
     }
 
     pub fn add_metadata(
