@@ -13,7 +13,11 @@ use arrow::{
     datatypes::{DataType, Field, FieldRef, Schema, SchemaRef},
 };
 use mzdata::{
-    Param, curie, meta::DissociationMethodTerm, params::{CURIE, CVTraversal, Unit}, prelude::*, spectrum::{
+    Param, curie,
+    meta::DissociationMethodTerm,
+    params::{CURIE, CVTraversal, Unit},
+    prelude::*,
+    spectrum::{
         ArrayType, Chromatogram, RefPeakDataLevel, ScanPolarity, SignalContinuity,
         SpectrumDescription,
     },
@@ -609,7 +613,6 @@ impl CustomBuilderFromParameterDerived {
         self.field = Arc::new(self.field.as_ref().clone().with_name(name));
         self
     }
-
 }
 
 impl VisitorBase for CustomBuilderFromParameterDerived {
@@ -1357,7 +1360,7 @@ impl ArrayBuilder for IsolationWindowBuilder {
 impl StructVisitor<mzdata::spectrum::IsolationWindow> for IsolationWindowBuilder {
     fn append_value(&mut self, item: &mzdata::spectrum::IsolationWindow) -> bool {
         match item.flags {
-            mzdata::spectrum::IsolationWindowState::Unknown => {
+            mzdata::spectrum::IsolationWindowState::Unknown | mzdata::spectrum::IsolationWindowState::NoIsolation => {
                 self.lower_bound.append_null();
                 self.upper_bound.append_null();
                 self.target.append_null();
@@ -1429,10 +1432,10 @@ pub struct DissociationMethodBuilder(CustomBuilderFromParameterDerived);
 
 impl Default for DissociationMethodBuilder {
     fn default() -> Self {
-        Self(CustomBuilderFromParameterDerived::from_spec(
-            curie!(MS:1000044),
-            "dissociation method",
-        ).with_field_name("dissociation_method"))
+        Self(
+            CustomBuilderFromParameterDerived::from_spec(curie!(MS:1000044), "dissociation method")
+                .with_field_name("dissociation_method"),
+        )
     }
 }
 
@@ -1456,7 +1459,7 @@ impl StructVisitor<mzdata::spectrum::Activation> for DissociationMethodBuilder {
     fn append_value(&mut self, item: &mzdata::spectrum::Activation) -> bool {
         if item.methods().is_empty() {
             self.append_null();
-            return false
+            return false;
         }
         // Ensure supplemental methods come after regular methods
         else if item.methods().len() > 1 {
@@ -1563,9 +1566,11 @@ impl StructVisitor<mzdata::spectrum::Activation> for ActivationBuilder {
     fn append_value(&mut self, item: &mzdata::spectrum::Activation) -> bool {
         self.dissociation_method.append_value(item);
         self.energy.append_value(item.energy);
-        self.curies_to_mask.extend(self.dissociation_method.associated_curie_to_skip());
+        self.curies_to_mask
+            .extend(self.dissociation_method.associated_curie_to_skip());
 
-        self.buffer.extend(item.methods().iter().map(|v| Param::from(v.to_param())));
+        self.buffer
+            .extend(item.methods().iter().map(|v| Param::from(v.to_param())));
         for e in self.extra.iter_mut() {
             if e.append_value(item) {
                 self.curies_to_mask.extend(e.associated_curie_to_skip());
@@ -2189,8 +2194,10 @@ impl VisitorBase for SpectrumDetailsBuilder {
                 "spectrum representation",
                 [fields[5].name()],
                 curie!(MS:1000525)
-            ),
-            metacol!("spectrum type", [fields[6].name()], curie!(MS:1000559)),
+            )
+            .with_term_marker(true),
+            metacol!("spectrum type", [fields[6].name()], curie!(MS:1000559))
+                .with_term_marker(true),
             metacol!(
                 "lowest observed m/z",
                 [fields[7].name()],
@@ -2530,18 +2537,26 @@ impl SpectrumBuilder {
         self.selected_ion.map_metadata_columns()
     }
 
+    /// Calls [`ArrayBuilder::finish`] on the `spectrum` facet, consuming the
+    /// accumulated arrays to build the table as a [`StructArray`].
     pub fn finish_spectrum(&mut self) -> ArrayRef {
         self.spectrum.finish()
     }
 
+    /// Calls [`ArrayBuilder::finish`] on the `scan` facet, consuming the
+    /// accumulated arrays to build the table as a [`StructArray`].
     pub fn finish_scan(&mut self) -> ArrayRef {
         self.scan.finish()
     }
 
+    /// Calls [`ArrayBuilder::finish`] on the `precursor` facet, consuming the
+    /// accumulated arrays to build the table as a [`StructArray`].
     pub fn finish_precursor(&mut self) -> ArrayRef {
         self.precursor.finish()
     }
 
+    /// Calls [`ArrayBuilder::finish`] on the `selected_ion` facet, consuming the
+    /// accumulated arrays to build the table as a [`StructArray`].
     pub fn finish_selected_ion(&mut self) -> ArrayRef {
         self.selected_ion.finish()
     }
@@ -2555,6 +2570,8 @@ impl SpectrumBuilder {
             .extend_extra_activation_fields(visitors.spectrum_activation_fields);
     }
 
+    /// Adds extra [`CustomBuilderFromParameter`] visitors to the `scan` facet that convert the `IMS:1000050|position x` and `IMS:1000051|position y`
+    /// [`Param`] into columns. If these parameters are not present, those columns will contain `null`s.
     pub fn add_imaging_position_visitors(&mut self) {
         let visitors: [Box<dyn StructVisitorBuilder<mzdata::spectrum::ScanEvent>>; _] = [
             CustomBuilderFromParameter::from_spec(
@@ -2706,6 +2723,38 @@ impl SpectrumBuilder {
 
     pub fn selected_ion(&self) -> &SelectedIonBuilder {
         &self.selected_ion
+    }
+
+    /// Get a mutable reference to the builder of the `scan` facet.
+    ///
+    /// Care **must** be taken not to call the [`ArrayBuilder::finish`] method
+    /// while other facets are still being built.
+    pub fn scan_mut(&mut self) -> &mut ScanBuilder {
+        &mut self.scan
+    }
+
+    /// Get a mutable reference to the builder of the `precursor` facet.
+    ///
+    /// Care **must** be taken not to call the [`ArrayBuilder::finish`] method
+    /// while other facets are still being built.
+    pub fn precursor_mut(&mut self) -> &mut PrecursorBuilder {
+        &mut self.precursor
+    }
+
+    /// Get a mutable reference to the builder of the `selected_ion` facet.
+    ///
+    /// Care **must** be taken not to call the [`ArrayBuilder::finish`] method
+    /// while other facets are still being built.
+    pub fn selected_ion_mut(&mut self) -> &mut SelectedIonBuilder {
+        &mut self.selected_ion
+    }
+
+    /// Get a mutable reference to the builder of the `spectrum` facet, the primary metadata.
+    ///
+    /// Care **must** be taken not to call the [`ArrayBuilder::finish`] method
+    /// while other facets are still being built.
+    pub fn spectrum_mut(&mut self) -> &mut SpectrumDetailsBuilder {
+        &mut self.spectrum
     }
 }
 
@@ -2884,7 +2933,8 @@ impl VisitorBase for ChromatogramDetailsBuilder {
 
         cols.extend([
             metacol!("scan polarity", [fields[2].name()], curie!(MS:1000465)),
-            metacol!("chromatogram type", [fields[3].name()], curie!(MS:1000626)),
+            metacol!("chromatogram type", [fields[3].name()], curie!(MS:1000626))
+                .with_term_marker(true),
             metacol!(
                 "number of data points",
                 [fields[5].name()],
@@ -3059,6 +3109,30 @@ impl ChromatogramBuilder {
         builder: Box<T>,
     ) {
         self.precursor.activation.extra.push(builder);
+    }
+
+    /// Get a mutable reference to the builder of the `chromatogram` facet, the primary metadata facet.
+    ///
+    /// Care **must** be taken not to call the [`ArrayBuilder::finish`] method
+    /// while other facets are still being built.
+    pub fn chromatogram_mut(&mut self) -> &mut ChromatogramDetailsBuilder {
+        &mut self.chromatogram
+    }
+
+    /// Get a mutable reference to the builder of the `precursor` facet.
+    ///
+    /// Care **must** be taken not to call the [`ArrayBuilder::finish`] method
+    /// while other facets are still being built.
+    pub fn precursor_mut(&mut self) -> &mut PrecursorBuilder {
+        &mut self.precursor
+    }
+
+    /// Get a mutable reference to the builder of the `selected_ion` facet.
+    ///
+    /// Care **must** be taken not to call the [`ArrayBuilder::finish`] method
+    /// while other facets are still being built.
+    pub fn selected_ion_mut(&mut self) -> &mut SelectedIonBuilder {
+        &mut self.selected_ion
     }
 }
 
@@ -3319,12 +3393,14 @@ impl VisitorBase for WavelengthSpectrumDetailsBuilder {
         let mut cols = Vec::new();
         let fields = self.fields();
         cols.extend([
-            metacol!("spectrum type", [fields[3].name()], curie!(MS:1000559)),
+            metacol!("spectrum type", [fields[3].name()], curie!(MS:1000559))
+                .with_term_marker(true),
             metacol!(
                 "spectrum representation",
                 [fields[4].name()],
                 curie!(MS:1000525)
-            ),
+            )
+            .with_term_marker(true),
             metacol!(
                 "lowest observed wavelength",
                 [fields[5].name()],
@@ -3447,10 +3523,14 @@ impl WavelengthSpectrumBuilder {
         self.scan.map_metadata_columns()
     }
 
+    /// Calls [`ArrayBuilder::finish`] on the spectrum facet, consuming the
+    /// accumulated arrays to build the table as a [`StructArray`].
     pub fn finish_spectrum(&mut self) -> ArrayRef {
         self.spectrum.finish()
     }
 
+    /// Calls [`ArrayBuilder::finish`] on the scan facet, consuming the
+    /// accumulated arrays to build the table as a [`StructArray`].
     pub fn finish_scan(&mut self) -> ArrayRef {
         self.scan.finish()
     }
@@ -3526,6 +3606,22 @@ impl WavelengthSpectrumBuilder {
 
     pub fn scan(&self) -> &ScanBuilder {
         &self.scan
+    }
+
+    /// Get a mutable reference to the builder of the `spectrum` facet, the primary metadata facet.
+    ///
+    /// Care **must** be taken not to call the [`ArrayBuilder::finish`] method
+    /// while other facets are still being built.
+    pub fn spectrum_mut(&mut self) -> &mut WavelengthSpectrumDetailsBuilder {
+        &mut self.spectrum
+    }
+
+    /// Get a mutable reference to the builder of the `scan` facet.
+    ///
+    /// Care **must** be taken not to call the [`ArrayBuilder::finish`] method
+    /// while other facets are still being built.
+    pub fn scan_mut(&mut self) -> &mut ScanBuilder {
+        &mut self.scan
     }
 }
 
