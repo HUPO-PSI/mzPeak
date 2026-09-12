@@ -1,3 +1,4 @@
+import hashlib
 import logging  # noqa: I001
 import json
 import zipfile
@@ -377,9 +378,6 @@ class _MzPeakDataIter(Iterator[tuple[int, _SpectrumArrays, DataKind]]):
 class _PrecursorReadMixin:
     """Provides :meth:`_read_precursors` and :meth:`_read_selected_ions` that are shared amongst metadata entities"""
 
-    handle: pq.ParquetFile
-    meta: pq.FileMetaData
-
     precursors: pd.DataFrame
     selected_ions: pd.DataFrame
 
@@ -420,6 +418,27 @@ class MzPeakNamespaceAggregation:
     selected_ions: pq.ParquetFile | None = None
     products: pq.ParquetFile | None = None
     file_index: FileIndex | None = field(default=None, repr=False)
+    flatten_columns: bool = False
+    _closed: bool = False
+
+    def close(self):
+        if self._closed:
+            return
+        if self.metadata:
+            self.metadata.close()
+        if self.scans:
+            self.scans.close()
+        if self.precursors:
+            self.precursors.close()
+        if self.selected_ions:
+            self.selected_ions.close()
+        if self.products:
+            self.products.close()
+        self._closed = True
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
 
     @property
     def parquet_metadata(self) -> pq.FileMetaData | None:
@@ -442,7 +461,11 @@ class MzPeakNamespaceAggregation:
         if self.is_concatenated_storage():
             raise NotImplementedError("Old concatenated storage layout not supported")
         else:
-            return MultiFileStorage(self, self.entity_type)
+            return MultiFileStorage(
+                self,
+                self.entity_type,
+                flatten_columns=self.flatten_columns
+            )
 
 
 class StorageStrategyBase:
@@ -468,10 +491,17 @@ class StorageStrategyBase:
 class MultiFileStorage(StorageStrategyBase):
     namespaces: MzPeakNamespaceAggregation
     entity_type: EntityType
+    flatten_columns: bool
 
-    def __init__(self, namespaces: MzPeakNamespaceAggregation, entity_type: EntityType):
+    def __init__(
+        self,
+        namespaces: MzPeakNamespaceAggregation,
+        entity_type: EntityType,
+        flatten_columns: bool = False,
+    ):
         self.namespaces = namespaces
         self.entity_type = entity_type
+        self.flatten_columns = flatten_columns
 
     def find_file_index_entry(self, entity_type: EntityType, data_kind: DataKind) -> FileEntry | None:
         return self.namespaces.file_index.find(entity_type, data_kind)
@@ -490,9 +520,15 @@ class MultiFileStorage(StorageStrategyBase):
 
         bat = self.namespaces.metadata.read()
         index_entry = self.find_file_index_entry(self.entity_type, DataKind.Metadata)
+        if index_entry:
+            for col in index_entry.column_mapping:
+                col._namespace_file_handle = self.namespaces.metadata
 
-        name_map = index_entry.renaming_map()
-        bat = _NameCleaningNode.clean_table(bat, mapper=lambda x: name_map.get(x, x))
+            name_map = index_entry.renaming_map()
+            bat = _NameCleaningNode.clean_table(bat, mapper=lambda x: name_map.get(x, x))
+
+        if self.flatten_columns:
+            bat = bat.flatten()
 
         spectra = _clean_frame(
             bat.to_pandas(types_mapper=pd.ArrowDtype).set_index("index"),
@@ -526,8 +562,14 @@ class MultiFileStorage(StorageStrategyBase):
             index_col = "source_index"
 
         index_entry = self.find_file_index_entry(self.entity_type, DataKind.Scans)
-        name_map = index_entry.renaming_map()
-        bat = _NameCleaningNode.clean_table(bat, mapper=lambda x: name_map.get(x, x))
+        if index_entry:
+            for col in index_entry.column_mapping:
+                col._namespace_file_handle = self.namespaces.scans
+            name_map = index_entry.renaming_map()
+            bat = _NameCleaningNode.clean_table(bat, mapper=lambda x: name_map.get(x, x))
+
+        if self.flatten_columns:
+            bat = bat.flatten()
 
         scans = _clean_frame(
             bat.to_pandas(types_mapper=pd.ArrowDtype).set_index(index_col),
@@ -550,8 +592,14 @@ class MultiFileStorage(StorageStrategyBase):
                 index_col = "source_index"
 
             index_entry = self.find_file_index_entry(self.entity_type, DataKind.Precursors)
-            name_map = index_entry.renaming_map()
-            bat = _NameCleaningNode.clean_table(bat, mapper=lambda x: name_map.get(x, x))
+            if index_entry:
+                for col in index_entry.column_mapping:
+                    col._namespace_file_handle = self.namespaces.precursors
+                name_map = index_entry.renaming_map()
+                bat = _NameCleaningNode.clean_table(bat, mapper=lambda x: name_map.get(x, x))
+
+            if self.flatten_columns:
+                bat = bat.flatten()
 
             precursors = _clean_frame(
                 bat.to_pandas(types_mapper=pd.ArrowDtype).set_index(index_col),
@@ -577,10 +625,16 @@ class MultiFileStorage(StorageStrategyBase):
                 index_col = "source_index"
 
             index_entry = self.find_file_index_entry(self.entity_type, DataKind.SelectedIons)
-            name_map = index_entry.renaming_map()
-            bat = _NameCleaningNode.clean_table(
-                bat, mapper=lambda x: name_map.get(x, x)
-            )
+            if index_entry:
+                for col in index_entry.column_mapping:
+                    col._namespace_file_handle = self.namespaces.selected_ions
+                name_map = index_entry.renaming_map()
+                bat = _NameCleaningNode.clean_table(
+                    bat, mapper=lambda x: name_map.get(x, x)
+                )
+
+            if self.flatten_columns:
+                bat = bat.flatten()
 
             selected_ions = _clean_frame(
                 bat.to_pandas(types_mapper=pd.ArrowDtype).set_index(index_col),
@@ -1055,6 +1109,21 @@ class MzPeakFile(_EntityCollectionMixin):
         elif isinstance(self._source, zipfile.ZipFile):
             return self._source.filename
 
+    def close(self):
+        self._spectrum_namespace_aggregator.close()
+        self._chromatogram_namespace_aggregator.close()
+        self._wavelength_spectrum_namespace_aggregator.close()
+        if self.spectrum_data:
+            self.spectrum_data.close()
+        if self.spectrum_peak_data:
+            self.spectrum_peak_data.close()
+        if self.chromatogram_data:
+            self.chromatogram_data.close()
+        if self.wavelength_data:
+            self.wavelength_data.close()
+        if hasattr(self._archive, 'close'):
+            self._archive.close()
+
     def _upath_opener(self, f: UPath) -> pq.ParquetFile:
         """Open a UPath-based file using the :class:`Path`-like API"""
         return pq.ParquetFile(pa.PythonFile(f.open("rb")))
@@ -1162,7 +1231,9 @@ class MzPeakFile(_EntityCollectionMixin):
             archive = zipfile.ZipFile(path.open('rb'))
             self._from_zip_archive(archive)
 
-    def open_stream(self, name: str) -> IO[bytes]:
+    def open_stream(self, name: str | FileEntry) -> IO[bytes]:
+        if isinstance(name, FileEntry):
+            name = name.name
         match self._archive_storage:
             case ArchiveStorage.Zip:
                 return self._archive.open(name)
@@ -1234,11 +1305,20 @@ class MzPeakFile(_EntityCollectionMixin):
         else:
             self._wavelength_spectrum_metadata = None
 
-    def __init__(self, path: str | Path | UPath | zipfile.ZipFile | IO[bytes]):
+    def __init__(self, path: str | Path | UPath | zipfile.ZipFile | IO[bytes], flatten_columns: bool = False):
         self.file_index = FileIndex()
-        self._spectrum_namespace_aggregator = MzPeakNamespaceAggregation(EntityType.Spectrum)
-        self._chromatogram_namespace_aggregator = MzPeakNamespaceAggregation(EntityType.Chromatogram)
-        self._wavelength_spectrum_namespace_aggregator = MzPeakNamespaceAggregation(EntityType.WavelengthSpectrum)
+        self._spectrum_namespace_aggregator = MzPeakNamespaceAggregation(
+            EntityType.Spectrum,
+            flatten_columns=flatten_columns
+        )
+        self._chromatogram_namespace_aggregator = MzPeakNamespaceAggregation(
+            EntityType.Chromatogram,
+            flatten_columns=flatten_columns
+        )
+        self._wavelength_spectrum_namespace_aggregator = MzPeakNamespaceAggregation(
+            EntityType.WavelengthSpectrum,
+            flatten_columns=flatten_columns
+        )
 
         if isinstance(path, zipfile.ZipFile):
             self._source = path
@@ -1314,27 +1394,80 @@ class MzPeakFile(_EntityCollectionMixin):
         fi = ns.file_index.find(EntityType.Spectrum, DataKind.Metadata)
         lowest = fi.mapping(accession="MS:1000528")
         highest = fi.mapping(accession="MS:1000527")
-        pq_meta: pq.FileMetaData = ns.metadata.metadata
-        lowest_q = lowest.find_column(pq_meta.schema)
-        highest_q = highest.find_column(pq_meta.schema)
-        if not lowest_q or not highest_q:
-            return (None, None)
         min_mz = None
         max_mz = None
-        for i in range(pq_meta.num_row_groups):
-            rg: pq.RowGroupMetaData = pq_meta.row_group(i)
-
-            col_meta: pq.ColumnChunkMetaData = rg.column(lowest_q[0])
-            stats = col_meta.statistics
-            if stats:
-                min_mz = stats.min if min_mz is None else min(min_mz, stats.min)
-
-            col_meta: pq.ColumnChunkMetaData = rg.column(highest_q[0])
-            stats = col_meta.statistics
-            if stats:
-                max_mz = stats.max if max_mz is None else max(max_mz, stats.max)
+        if lowest is not None:
+            try:
+                lowest_mins, _lowest_maxes = lowest.statistics(ns.metadata)
+                min_mz = lowest_mins.min()
+            except KeyError:
+                pass
+        if highest is not None:
+            try:
+                _highest_mins, highest_maxes = highest.statistics(ns.metadata)
+                max_mz = highest_maxes.max()
+            except KeyError:
+                pass
         return (min_mz, max_mz)
 
+    def _checksum_file(self, name: str | FileEntry) -> str:
+        with self.open_stream(name) as stream:
+            chk = hashlib.sha512()
+            while buf := stream.read(2**16):
+                chk.update(buf)
+        return chk.hexdigest()
+
+    def check_entry_integrity(self, entry: FileEntry) -> bool | None:
+        """
+        Check if an entry's checksum matches the checksum stored in the file index.
+
+        Parameters
+        ----------
+        entry : :class:`FileEntry`
+            The file entry to check
+
+        Returns
+        -------
+        bool | None
+            If :attr:`entry.checksum` is :const:`None`, this returns :const:`None`, otherwise whether or not
+            the :attr:`entry.checksum` matches the computed checksum.
+
+        See Also
+        --------
+        :meth:`check_archive_integrity`: Check the integrity all files in the archive
+        """
+        if entry.checksum is None:
+            return None
+        return self._checksum_file(entry) == entry.checksum
+
+    def check_archive_integrity(self) -> tuple[bool | None, list[tuple[FileEntry, str]]]:
+        """
+        Check if all the entries in the archive match their checksums.
+
+        Returns
+        -------
+        bool | None
+            Returns :const:`None` if *any* of the entries in this archive return :const:`None` from
+            :meth:`check_entry_integrity`, otherwise :const:`True` if all checksums match, :const:`False`
+            otherwise.
+
+        See Also
+        --------
+        :meth:`check_entry_integrity`: Check the integrity of a single file entry in the archive
+        """
+        failed = []
+        valid = True
+        for entry in self.file_index:
+            state = self.check_entry_integrity(entry)
+            match state:
+                case None:
+                    return None
+                case False:
+                    failed.append((entry, self._checksum_file(entry)))
+                    valid &= False
+                case _:
+                    continue
+        return valid, failed
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.filename!r}, prefer_peaks={self.prefer_peaks})"
@@ -1423,6 +1556,9 @@ class WavelengthFacet(_EntityCollectionMixin):
     def __init__(self, spectrum_metadata: MzPeakSpectrumMetadataReader, spectrum_data: MzPeakArrayDataReader):
         self.spectrum_data = spectrum_data
         self.spectrum_metadata = spectrum_metadata
+
+    def close(self):
+        self.spectrum_data.close()
 
     @property
     def spectra(self) -> pd.DataFrame:

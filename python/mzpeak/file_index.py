@@ -3,6 +3,8 @@ from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar
 
+import numpy as np
+
 if TYPE_CHECKING:
     import pyarrow.parquet
 
@@ -155,6 +157,7 @@ class MetadataColumn:
     accession: str | None = None
     unit: str | None = None
     term_marker: bool | None = None
+    _namespace_file_handle: "pyarrow.parquet.ParquetFile | None" = field(default=None, repr=False)
 
     def __post_init__(self):
         if isinstance(self.path, str):
@@ -162,6 +165,9 @@ class MetadataColumn:
 
     def to_json(self):
         state = asdict(self)
+        for k in list(state):
+            if k.startswith('_'):
+                state.pop(k)
         state['path'] = '.'.join(state['path'])
         state.pop("index", None)
         if self.unit is None:
@@ -175,9 +181,13 @@ class MetadataColumn:
         return state
 
     def find_column(
-        self, schema: "pyarrow.parquet.ParquetSchema"
-    ) -> tuple[int, "pyarrow.parquet.ColumnChunkMetaData"] | None:
-        col: pyarrow.parquet.ColumnChunkMetaData
+        self, schema: "pyarrow.parquet.ParquetSchema | None" = None
+    ) -> tuple[int, "pyarrow._parquet.ColumnSchema"] | None:
+        if schema is None:
+            if self._namespace_file_handle is not None:
+                schema = self._namespace_file_handle.schema
+            else:
+                raise ValueError("A schema was not provided, but this MetadataColumn is not bound to a file!")
         self_path = '.'.join(self.path)
         for (i, col) in enumerate(schema):
             if col.path == self_path:
@@ -187,6 +197,34 @@ class MetadataColumn:
             if col.path.startswith(self_path_prefix) and col.path.split(".")[-1] == self.path[-1]:
                 return (i, col)
 
+    def statistics(self, handle: "pyarrow.parquet.ParquetFile | None" = None):
+        if handle is None:
+            if self._namespace_file_handle is not None:
+                handle = self._namespace_file_handle
+            else:
+                raise ValueError(
+                    "A ParquetFile was not provided, but this MetadataColumn is not bound to a file!"
+                )
+        idx_col = self.find_column(handle.schema)
+        if idx_col is None:
+            raise KeyError(self.path)
+        i, col = idx_col
+        meta = handle.metadata
+        mins = []
+        maxs = []
+        for j in range(meta.num_row_groups):
+            rg = meta.row_group(j)
+            col = rg.column(i)
+            if not col.is_stats_set:
+                mins.append(None)
+                maxs.append(None)
+                continue
+            stats = col.statistics
+            mins.append(stats.min)
+            maxs.append(stats.max)
+        return (np.array(mins), np.array(maxs))
+
+
 @dataclass
 class FileEntry:
     name: str
@@ -194,6 +232,7 @@ class FileEntry:
     data_kind: DataKind
     column_mapping: list[MetadataColumn]
     parameters: list[dict]
+    checksum: str | None = field(default=None)
 
     def as_data_kind(self) -> DataKind:
         return self.data_kind
@@ -202,13 +241,16 @@ class FileEntry:
         return self.entity_type
 
     def to_json(self) -> dict:
-        return {
+        state = {
             "name": self.name,
             "entity_type": str(self.entity_type),
             "data_kind": str(self.data_kind),
             "column_mapping": [c.to_json() for c in self.column_mapping],
             "parameters": self.parameters,
         }
+        if self.checksum:
+            state["checksum"] = self.checksum
+        return state
 
     def mapping(self, name: str | None = None, accession: str | None = None) -> MetadataColumn | None:
         if name is None and accession is None:
@@ -237,6 +279,7 @@ class FileEntry:
             DataKind.get(data["data_kind"]),
             [MetadataColumn(**c) for c in data.get("column_mapping", [])],
             data.get("parameters", []),
+            data.get("checksum")
         )
 
     def entry_type(self) -> tuple[EntityType, DataKind]:

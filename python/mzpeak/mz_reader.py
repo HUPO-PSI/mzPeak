@@ -671,6 +671,19 @@ class _ChunkBatchCleaner(_BatchCleanerBase):
             raise ValueError(f"Could not infer axis prefix from {self.array_index}")
         return axis_prefix
 
+    def filter_chunks(self, chunks: list[dict[str, Any]], coordinate_range: Span[float] | None = None) -> list[dict[str, Any]]:
+        if coordinate_range is None:
+            return chunks
+        start_key = f"{self.axis_prefix}_chunk_start"
+        end_key = f"{self.axis_prefix}_chunk_end"
+        out_chunks = []
+        for chunk in chunks:
+            start = chunk[start_key].as_py()
+            end = chunk[end_key].as_py()
+            if Span(start, end).overlaps(coordinate_range):
+                out_chunks.append(chunk)
+        return out_chunks
+
     def prescan_chunks(self, chunks: list[dict[str, Any]]):
         n = 0
         numpress_chunks = []
@@ -721,17 +734,23 @@ class _ChunkBatchCleaner(_BatchCleanerBase):
         numpress_chunks: list,
         chunks: list[dict[str, pa.Array]],
         arrays_of: dict[str, np.ndarray],
+        coordinate_range: Span[float] | None = None,
     ) -> tuple[int, bool]:
         main_axis_array = np.zeros(n)
         offset = 0
         had_nulls = False
         numpress_chunks_it = iter(numpress_chunks)
         skip = set()
+        start_key = f"{self.axis_prefix}_chunk_start"
+        end_key = f"{self.axis_prefix}_chunk_end"
+        values_key = f"{self.axis_prefix}_chunk_values"
         for _i, chunk in enumerate(chunks):
-            start = chunk[f"{self.axis_prefix}_chunk_start"].as_py()
-            end = chunk[f"{self.axis_prefix}_chunk_end"].as_py()
+            start = chunk[start_key].as_py()
+            end = chunk[end_key].as_py()
+            if coordinate_range is not None and not coordinate_range.overlaps(Span(start, end)):
+                continue
 
-            steps = chunk[f"{self.axis_prefix}_chunk_values"]
+            steps = chunk[values_key]
             encoding = chunk["chunk_encoding"].as_py()
             index_val = chunk[self.index_name].as_py()
 
@@ -742,7 +761,7 @@ class _ChunkBatchCleaner(_BatchCleanerBase):
                 else:
                     delta_model_ = None
 
-
+            mask = None
             # Delta encoding
             if encoding in (DELTA_ENCODING, DELTA_ENCODING_CURIE):
                 # This indicates an empty chunk containing no information beyond possibly a null value.
@@ -757,7 +776,6 @@ class _ChunkBatchCleaner(_BatchCleanerBase):
                     steps = null_delta_decode(
                         steps.values, pa.scalar(start, type=steps.values.type)
                     )
-                    chunk_size = len(steps)
                     if delta_model_ is not None:
                         steps = fill_nulls(steps, delta_model_)
                     else:
@@ -768,14 +786,29 @@ class _ChunkBatchCleaner(_BatchCleanerBase):
                             self.namespace,
                             index_val,
                         )
-                        steps = np.asarray(steps)
-                    main_axis_array[offset : offset + len(steps)] = steps
+                    steps = np.asarray(steps)
+                    if coordinate_range is not None:
+                        mask = (steps >= coordinate_range.start) & (steps <= coordinate_range.end)
+                        steps = steps[mask]
+                    chunk_size = len(steps)
+                    main_axis_array[offset : offset + chunk_size] = steps
                 else:
-                    chunk_size = len(steps) + 1
-                    main_axis_array[offset : offset + chunk_size] = start
-                    main_axis_array[offset + 1 : offset + chunk_size] += np.cumsum(
-                        steps.values
-                    )
+                    if coordinate_range is not None:
+                        step_values = steps.values
+                        dtype = step_values.type
+                        steps = np.cumsum(pa.chunked_array([pa.array([start], type=dtype), step_values]))
+                        mask = (steps >= coordinate_range.start) & (
+                            steps <= coordinate_range.end
+                        )
+                        steps = steps[mask]
+                        chunk_size = len(steps)
+                        main_axis_array[offset : offset + chunk_size] = steps
+                    else:
+                        chunk_size = len(steps) + 1
+                        main_axis_array[offset : offset + chunk_size] = start
+                        main_axis_array[offset + 1 : offset + chunk_size] += np.cumsum(
+                            steps.values
+                        )
             # Direct encoding
             elif encoding in (NO_COMPRESSION, NO_COMPRESSION_CURIE):
                 step_values = steps.values
@@ -793,13 +826,23 @@ class _ChunkBatchCleaner(_BatchCleanerBase):
                             self.namespace,
                             index_val,
                         )
-                    main_axis_array[offset : offset + chunk_size] = np.asarray(
-                        steps
-                    )
+                    steps = np.asarray(steps)
+                    if coordinate_range is not None:
+                        mask = (steps >= coordinate_range.start) & (
+                            steps <= coordinate_range.end
+                        )
+                        steps = steps[mask]
+                        chunk_size = len(steps)
+                    main_axis_array[offset : offset + chunk_size] = steps
                 else:
                     main_axis_array[offset : offset + chunk_size] = np.asarray(steps)
             elif encoding in (NUMPRESS_LINEAR, NUMPRESS_LINEAR_CURIE):
                 part: np.ndarray = next(numpress_chunks_it)
+                if coordinate_range is not None:
+                    mask = (part >= coordinate_range.start) & (
+                        part <= coordinate_range.end
+                    )
+                    part = part[mask]
                 chunk_size = len(part)
                 zeros = part == 0
                 if zeros.sum() > 0:
@@ -833,12 +876,13 @@ class _ChunkBatchCleaner(_BatchCleanerBase):
                                 if pynumpress is None:
                                     raise ImportError("Decoding MS-Numpress compressed arrays requires the `pynumpress` library.")
                                 values = pynumpress.decode_pic(values)
-
                             elif self.has_transforms[k] in (NULL_INTERPOLATE, NULL_ZERO):
                                 # These transforms do not require any special handling
                                 pass
                             else:
                                 raise NotImplementedError(self.has_transforms[k])
+                        if mask is not None:
+                            values = values[mask]
                         arrays_of[k][offset : offset + chunk_size] = values
                     else:
                         arrays_of.pop(k)
@@ -848,16 +892,20 @@ class _ChunkBatchCleaner(_BatchCleanerBase):
         arrays_of[self.axis_prefix] = main_axis_array
         return offset, had_nulls
 
-    def expand(self, chunks: list[dict[str, Any]]):
+    def expand(self, chunks: list[dict[str, Any]], coordinate_range: Span[float] | None = None):
         axis_prefix = self.axis_prefix
-
+        chunks = self.filter_chunks(chunks, coordinate_range)
         n, numpress_chunks = self.prescan_chunks(chunks)
         if n == 0:
             return {axis_prefix: np.array([])}
 
         arrays_of = self.initialize_arrays(n, chunks)
         (offset, had_nulls) = self.process_chunks(
-            n, numpress_chunks=numpress_chunks, chunks=chunks, arrays_of=arrays_of
+            n,
+            numpress_chunks=numpress_chunks,
+            chunks=chunks,
+            arrays_of=arrays_of,
+            coordinate_range=coordinate_range
         )
 
         rename_map = {
@@ -925,6 +973,13 @@ class MzPeakArrayDataReader(Sequence[_SpectrumArrays]):
         self._infer_schema_idx()
         self._delta_model_series = None
 
+    def close(self):
+        self.handle.close()
+
+    @property
+    def closed(self) -> bool:
+        return self.handle.closed
+
     def _infer_namespace(self):
         if b"chromatogram_array_index" in self.meta.metadata:
             self._namespace = "chromatogram"
@@ -985,7 +1040,7 @@ class MzPeakArrayDataReader(Sequence[_SpectrumArrays]):
         )
         return cleaner.expand(data)
 
-    def read_data_for_range(self, index_range: slice | list[int]) -> _SpectrumArrays:
+    def read_data_for_range(self, index_range: slice | list[int], coordinate_range: Span[float] | None = None) -> _SpectrumArrays:
         """
         Perform a read that slices along the primary index of the series,
         loading data for multiple entities.
@@ -1031,6 +1086,7 @@ class MzPeakArrayDataReader(Sequence[_SpectrumArrays]):
         axis_prefix: str | None = None,
         delta_model: float | np.ndarray | dict[int, np.ndarray] | None = None,
         preserve_index: bool = False,
+        coordinate_range: Span[float] | None = None,
     ) -> _SpectrumArrays:
         cleaner = _ChunkBatchCleaner(
             self._namespace,
@@ -1160,6 +1216,7 @@ class MzPeakArrayDataReader(Sequence[_SpectrumArrays]):
         is_slice: bool,
         rgs: list[int],
         batch_size: int = 128,
+        coordinate_range: Span[float] | None = None,
     ) -> _SpectrumArrays:
         chunks = []
         delta_models = None

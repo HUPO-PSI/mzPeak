@@ -34,6 +34,10 @@ class GridLike(Protocol):
             "value": self.parameters().tolist()
         }
 
+    @staticmethod
+    def from_param(accession: str, parameters: npt.NDArray[np.float64]) -> 'GridLike':
+        return grid_model_from(accession, parameters)
+
 
 @dataclass
 class LinearGrid(GridLike):

@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from mzpeak import MzPeakFile
-from mzpeak.file_index import FileIndex
+from mzpeak.file_index import DataKind, EntityType, FileIndex
 from mzpeak.filters import find_where_not_zero_run
 from mzpeak.mz_reader import BufferFormat
 from pyteomics import mzml
@@ -96,6 +96,9 @@ def common_checks(reader: MzPeakFile, subtests: pytest.Subtests):
                     index = json.load(fh)
                     assert index["files"]
 
+    with subtests.test("integrity check"):
+        assert reader.check_archive_integrity()
+
 
 def check_iterator(reader: MzPeakFile, n: int = 10):
     it = iter(reader)
@@ -113,7 +116,6 @@ def check_iterator(reader: MzPeakFile, n: int = 10):
 
     with pytest.raises(ValueError):
         it.seek(1)
-
 
 
 def test_load_base_point(subtests: pytest.Subtests):
@@ -136,6 +138,7 @@ def test_load_base_point(subtests: pytest.Subtests):
             assert len(s['m/z array']) == len(ref_s['m/z array'])
             assert np.allclose(s['m/z array'], ref_s['m/z array'])
             assert np.allclose(s["intensity array"], ref_s["intensity array"])
+
 
 def test_load_base_point_open_zipfile(subtests: pytest.Subtests):
     reader = MzPeakFile(zipfile.ZipFile(point_path))
@@ -209,3 +212,18 @@ def test_load_uv_data(subtests: pytest.Subtests):
         check_iterator(reader)
     with subtests.test("wavelength iterator"):
         check_iterator(wl_reader)
+
+
+@pytest.fixture
+def small() -> MzPeakFile:
+    return MzPeakFile(point_path)
+
+
+def test_file_index_entry(small: MzPeakFile):
+    for entry in small.file_index:
+        if entry.data_kind == DataKind.Metadata and entry.entity_type == EntityType.Spectrum:
+            col = entry.mapping('ms level')
+            assert col is not None
+            mins, maxes = col.statistics()
+            assert mins.min() == 1
+            assert maxes.max() == 2
