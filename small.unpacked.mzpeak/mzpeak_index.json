@@ -5,14 +5,16 @@
       "entity_type": "spectrum",
       "data_kind": "data_arrays",
       "column_mapping": [],
-      "parameters": []
+      "parameters": [],
+      "checksum": "b3350bbd8ff55e3aca1f3e3b0e20da79b8ffcf7a8a0de1dad09b51fc7ad6c01dcd6179e76d7dd06a1a6d7162edd3e2d0be790b2b9bb35b7bd4113952b7fe665d"
     },
     {
       "name": "spectra_peaks.parquet",
       "entity_type": "spectrum",
       "data_kind": "peaks",
       "column_mapping": [],
-      "parameters": []
+      "parameters": [],
+      "checksum": "44655c4a48320cb90ad366690857543e4882059730f6cc364d6500ff02c1b43b918364bbcae25d99c99c7b4366b0d184a7e2f50fea8632a0d44e90ccff03f46d"
     },
     {
       "name": "spectra_metadata.parquet",
@@ -35,13 +37,15 @@
           "name": "spectrum representation",
           "path": "spectrum_representation",
           "accession": "MS:1000525",
-          "unit": null
+          "unit": null,
+          "term_marker": true
         },
         {
           "name": "spectrum type",
           "path": "spectrum_type",
           "accession": "MS:1000559",
-          "unit": null
+          "unit": null,
+          "term_marker": true
         },
         {
           "name": "lowest observed m/z",
@@ -86,7 +90,8 @@
           "unit": "MS:1000131"
         }
       ],
-      "parameters": []
+      "parameters": [],
+      "checksum": "314da0d112ed0cb150b140af703951f5c8ca4a08725c0bcc7bd5b58e9031f707767c3035debb3284e4e53fc1a4fff7592be132bc55394e284132bf223be507c4"
     },
     {
       "name": "spectra_metadata_scans.parquet",
@@ -130,7 +135,8 @@
           "unit": "MS:1000040"
         }
       ],
-      "parameters": []
+      "parameters": [],
+      "checksum": "0f7efca171830dbd92744680652b4f637f7aa56d4fdaee6fb83e5d6b98e605b1f0fc62e869dc75ce594f58efa509fd5438bf249eecf6da11af32ef1b488eb560"
     },
     {
       "name": "spectra_metadata_precursors.parquet",
@@ -168,7 +174,8 @@
           "unit": "UO:0000266"
         }
       ],
-      "parameters": []
+      "parameters": [],
+      "checksum": "48efc6708f837ecfc8d54083bcb821234ac4ed369fe8367581bfc59756c4fad267c71e5b838725333eaba7c1d576b46a3496571c956aa4646c3eb1733fd31668"
     },
     {
       "name": "spectra_metadata_selected_ions.parquet",
@@ -194,7 +201,8 @@
           "unit": "MS:1000131"
         }
       ],
-      "parameters": []
+      "parameters": [],
+      "checksum": "2c4a5f1b1cba51f2097e298c5f8efd941f3ce74d44cc18a78be26a1da07726ca7c25ac424cb33e3cf46b2a44f5d9128f651e9e228084e82767ebe0156ab7e97c"
     },
     {
       "name": "chromatograms_metadata.parquet",
@@ -211,7 +219,8 @@
           "name": "chromatogram type",
           "path": "chromatogram_type",
           "accession": "MS:1000626",
-          "unit": null
+          "unit": null,
+          "term_marker": true
         },
         {
           "name": "number of data points",
@@ -220,7 +229,8 @@
           "unit": null
         }
       ],
-      "parameters": []
+      "parameters": [],
+      "checksum": "5d3c8e84834596cf0506aa5712594f7afd726c8653a791fa443254e5f9351badc3188bfc532a6524a0af77e4f33ab60248897f69c7f2227b3074567549548f2e"
     },
     {
       "name": "chromatograms_metadata_precursors.parquet",
@@ -258,7 +268,8 @@
           "unit": "UO:0000266"
         }
       ],
-      "parameters": []
+      "parameters": [],
+      "checksum": "48716c3b565ecebf883419f925b03ce4623c24ce20a13facfb42c5dfcd7069674c30d056ee31a40907e87e3828fa0f53111c16f527718b55d1928e1cf8296edb"
     },
     {
       "name": "chromatograms_metadata_selected_ions.parquet",
@@ -284,67 +295,19 @@
           "unit": "MS:1000131"
         }
       ],
-      "parameters": []
+      "parameters": [],
+      "checksum": "842ddd756e3e5c12a324622e47b7adb5cff2afc2a59fb1d28584d7d6f79d37a60e2b2e739c2d9a3a3f917d65cddb9b91e212d98242b45d0f403ad94530219c1c"
     },
     {
       "name": "chromatograms_data.parquet",
       "entity_type": "chromatogram",
       "data_kind": "data_arrays",
       "column_mapping": [],
-      "parameters": []
+      "parameters": [],
+      "checksum": "fd306040356a430cca4598ef14fe5418273ac53ecee29891d146b4a3d9aba6e900acb8bfbd71bb50ff9b806c3668a4b08632e952e52179e41673ea59adf37be6"
     }
   ],
   "metadata": {
-    "data_processing_method_list": [
-      {
-        "id": "pwiz_Reader_Thermo_conversion",
-        "methods": [
-          {
-            "order": 0,
-            "parameters": [
-              {
-                "accession": "MS:1000544",
-                "name": "Conversion to mzML",
-                "unit": null,
-                "value": null
-              }
-            ],
-            "software_reference": "pwiz"
-          }
-        ]
-      },
-      {
-        "id": "mzpeak_conversion1",
-        "methods": [
-          {
-            "order": 1,
-            "parameters": [
-              {
-                "accession": null,
-                "name": "conversion options",
-                "unit": null,
-                "value": "-y -z -u small.mzML -o small.mzpeak"
-              }
-            ],
-            "software_reference": "mzpeak_prototyping_convert1"
-          }
-        ]
-      }
-    ],
-    "cv_list": [
-      {
-        "full_name": "Proteomics Standards Initiative Mass Spectrometry Ontology",
-        "id": "MS",
-        "uri": "http://purl.obolibrary.org/obo/ms/4.1.249/psi-ms.obo",
-        "version": "4.1.249"
-      },
-      {
-        "full_name": "Units of measurement ontology",
-        "id": "UO",
-        "uri": "http://purl.obolibrary.org/obo/uo/releases/2026-01-16/uo.obo",
-        "version": "2026-01-16"
-      }
-    ],
     "sample_list": [
       {
         "id": "_x0031_",
@@ -359,8 +322,6 @@
         ]
       }
     ],
-    "scan_settings_list": [],
-    "version": "0.9.0",
     "instrument_configuration_list": [
       {
         "components": [
@@ -487,49 +448,7 @@
         "software_reference": "Xcalibur"
       }
     ],
-    "file_description": {
-      "contents": [
-        {
-          "accession": "MS:1000579",
-          "name": "MS1 spectrum",
-          "unit": null,
-          "value": null
-        },
-        {
-          "accession": "MS:1000580",
-          "name": "MSn spectrum",
-          "unit": null,
-          "value": null
-        }
-      ],
-      "source_files": [
-        {
-          "id": "RAW1",
-          "location": "file:///C:\\Users\\Joshua\\Dev\\learn-rust\\ffirawfilereader\\tests\\data",
-          "name": "small.RAW",
-          "parameters": [
-            {
-              "accession": "MS:1000569",
-              "name": "SHA-1",
-              "unit": null,
-              "value": "b43e9286b40e8b5dbc0dfa2e428495769ca96a96"
-            },
-            {
-              "accession": "MS:1000563",
-              "name": "Thermo RAW format",
-              "unit": null,
-              "value": null
-            },
-            {
-              "accession": "MS:1000768",
-              "name": "Thermo nativeID format",
-              "unit": null,
-              "value": null
-            }
-          ]
-        }
-      ]
-    },
+    "scan_settings_list": [],
     "run": {
       "default_data_processing_id": "pwiz_Reader_Thermo_conversion",
       "default_instrument_id": 0,
@@ -573,6 +492,100 @@
           }
         ],
         "version": "0.1.0"
+      }
+    ],
+    "data_processing_method_list": [
+      {
+        "id": "pwiz_Reader_Thermo_conversion",
+        "methods": [
+          {
+            "order": 0,
+            "parameters": [
+              {
+                "accession": "MS:1000544",
+                "name": "Conversion to mzML",
+                "unit": null,
+                "value": null
+              }
+            ],
+            "software_reference": "pwiz"
+          }
+        ]
+      },
+      {
+        "id": "mzpeak_conversion1",
+        "methods": [
+          {
+            "order": 1,
+            "parameters": [
+              {
+                "accession": null,
+                "name": "conversion options",
+                "unit": null,
+                "value": "-y -z -u small.mzML -o small.mzpeak"
+              }
+            ],
+            "software_reference": "mzpeak_prototyping_convert1"
+          }
+        ]
+      }
+    ],
+    "version": "0.9.0",
+    "file_description": {
+      "contents": [
+        {
+          "accession": "MS:1000579",
+          "name": "MS1 spectrum",
+          "unit": null,
+          "value": null
+        },
+        {
+          "accession": "MS:1000580",
+          "name": "MSn spectrum",
+          "unit": null,
+          "value": null
+        }
+      ],
+      "source_files": [
+        {
+          "id": "RAW1",
+          "location": "file:///C:\\Users\\Joshua\\Dev\\learn-rust\\ffirawfilereader\\tests\\data",
+          "name": "small.RAW",
+          "parameters": [
+            {
+              "accession": "MS:1000569",
+              "name": "SHA-1",
+              "unit": null,
+              "value": "b43e9286b40e8b5dbc0dfa2e428495769ca96a96"
+            },
+            {
+              "accession": "MS:1000563",
+              "name": "Thermo RAW format",
+              "unit": null,
+              "value": null
+            },
+            {
+              "accession": "MS:1000768",
+              "name": "Thermo nativeID format",
+              "unit": null,
+              "value": null
+            }
+          ]
+        }
+      ]
+    },
+    "cv_list": [
+      {
+        "full_name": "Proteomics Standards Initiative Mass Spectrometry Ontology",
+        "id": "MS",
+        "uri": "http://purl.obolibrary.org/obo/ms/4.1.249/psi-ms.obo",
+        "version": "4.1.249"
+      },
+      {
+        "full_name": "Units of measurement ontology",
+        "id": "UO",
+        "uri": "http://purl.obolibrary.org/obo/uo/releases/2026-01-16/uo.obo",
+        "version": "2026-01-16"
       }
     ]
   }
