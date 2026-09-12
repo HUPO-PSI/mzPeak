@@ -1,17 +1,23 @@
 use std::{collections::HashMap, io, marker::PhantomData, sync::Arc};
 
 use arrow::{
-    array::{Array, ArrayRef, AsArray, RecordBatch, UInt64Array}, datatypes::{DataType, Float32Type, Float64Type}, error::ArrowError,
+    array::{Array, ArrayRef, AsArray, RecordBatch, UInt64Array},
+    datatypes::{DataType, Float32Type, Float64Type},
+    error::ArrowError,
 };
 use futures::{StreamExt, stream::BoxStream};
 use identity_hash::BuildIdentityHasher;
 use object_store::{ObjectStore, path::Path as ObjectPath};
 
 use mzdata::{
-    curie, io::{AsyncRandomAccessSpectrumIterator, AsyncSpectrumSource, DetailLevel, OffsetIndex}, meta::MSDataFileMetadata, prelude::*, spectrum::{
+    curie,
+    io::{AsyncRandomAccessSpectrumIterator, AsyncSpectrumSource, DetailLevel, OffsetIndex},
+    meta::MSDataFileMetadata,
+    prelude::*,
+    spectrum::{
         BinaryArrayMap, ChromatogramDescription, DataArray, MultiLayerSpectrum, PeakDataLevel,
         SpectrumDescription, bindata::BuildFromArrayMap,
-    }
+    },
 };
 
 use mzpeaks::{
@@ -30,20 +36,15 @@ use parquet::{
 use url::Url;
 
 use crate::{
-    BufferContext, CURIE, archive::{AsyncArchiveReader, AsyncArchiveSource, AsyncZipArchiveSource, DataKind, EntityType}, constants::{CHROMATOGRAM, SPECTRUM}, filter::RegressionDeltaModel, reader::{
-        ReaderMetadata,
-        cache::CHUNK_CACHE_BLOCK_SIZE,
-        chunk::{AsyncChunkReader, ChunkDataCacheBlock},
-        index::{self, PageQuery, QueryIndex, SpanDynNumeric},
-        metadata::{
+    BufferContext, CURIE, archive::{
+        AsyncArchiveReader, AsyncArchiveSource, AsyncZipArchiveSource, DataKind, EntityType, FileEntry,
+    }, constants::{CHROMATOGRAM, SPECTRUM}, filter::RegressionDeltaModel, reader::{
+        ReaderMetadata, cache::CHUNK_CACHE_BLOCK_SIZE, chunk::{AsyncChunkReader, ChunkDataCacheBlock}, index::{self, PageQuery, QueryIndex, SpanDynNumeric}, metadata::{
             AuxiliaryArrayCountDecoder, BaseMetadataQuerySource, ChromatogramMetadataDecoder,
             ChromatogramMetadataQuerySource, ParquetIndexExtractor, PeakInfoDecoder,
             ReaderFacetMetadataLike, SpectrumMetadataDecoder, SpectrumMetadataQuerySource,
             TimeIndexDecoder,
-        },
-        point::{AsyncPointDataReader, PointDataArrayReader, PointDataCacheBlock},
-        utils::MaskSet,
-        visitor::AuxiliaryArrayVisitor,
+        }, point::{AsyncPointDataReader, PointDataArrayReader, PointDataCacheBlock}, utils::{IntoQueryRange, MaskSet}, visitor::AuxiliaryArrayVisitor,
     },
 };
 
@@ -89,10 +90,7 @@ pub(crate) async fn build_id_index<T: AsyncArchiveSource>(
     let pq_schema = handle.parquet_schema();
     let mask = ProjectionMask::columns(
         pq_schema,
-        [
-            format!("id").as_str(),
-            format!("index").as_str(),
-        ],
+        [format!("id").as_str(), format!("index").as_str()],
     );
     let mut stream = handle.with_projection(mask).build()?;
 
@@ -145,29 +143,30 @@ pub(crate) async fn load_indices_from<T: AsyncArchiveSource>(
         this.query_index.populate_spectrum_scan_indices(&reader);
     }
     if let Ok(reader) = handle.spectrum_metadata_precursors().await {
-        this.query_index.populate_spectrum_precursor_indices(&reader);
+        this.query_index
+            .populate_spectrum_precursor_indices(&reader);
     }
     if let Ok(reader) = handle.spectrum_metadata_selected_ions().await {
-        this.query_index.populate_spectrum_selected_ion_indices(&reader);
+        this.query_index
+            .populate_spectrum_selected_ion_indices(&reader);
     }
 
     this.visit_spectrum_data_reader(spectrum_data_reader)?;
 
     if let Ok(reader) = handle.chromatograms_metadata().await {
-        this.query_index.populate_chromatogram_metadata_indices(&reader);
-        this.chromatograms.id_index = build_id_index::<T>(
-            reader,
-            CHROMATOGRAM,
-        )
-        .await?;
+        this.query_index
+            .populate_chromatogram_metadata_indices(&reader);
+        this.chromatograms.id_index = build_id_index::<T>(reader, CHROMATOGRAM).await?;
     }
 
     if let Ok(reader) = handle.chromatograms_metadata_precursors().await {
-        this.query_index.populate_chromatogram_metadata_precursor_indices(&reader);
+        this.query_index
+            .populate_chromatogram_metadata_precursor_indices(&reader);
     }
 
     if let Ok(reader) = handle.chromatograms_metadata_selected_ions().await {
-        this.query_index.populate_chromatogram_metadata_selected_ion_indices(&reader);
+        this.query_index
+            .populate_chromatogram_metadata_selected_ion_indices(&reader);
     }
 
     if let Ok(chromatogram_data_reader) = handle.chromatograms_data().await {
@@ -624,7 +623,8 @@ impl<
         let mut decoder = SpectrumMetadataDecoder::new(&self.metadata.spectra);
 
         let builder = SpectrumMetadataReader(self.handle.spectrum_metadata().await?);
-        let rows = builder.prepare_rows_for(index, &self.query_indices.spectrum, DataKind::Metadata);
+        let rows =
+            builder.prepare_rows_for(index, &self.query_indices.spectrum, DataKind::Metadata);
         let predicate = builder.prepare_predicate_for(index);
         let mut reader = builder
             .0
@@ -650,7 +650,8 @@ impl<
         }
 
         let builder = SpectrumMetadataReader(self.handle.spectrum_metadata_precursors().await?);
-        let rows = builder.prepare_rows_for(index, &self.query_indices.spectrum, DataKind::Precursors);
+        let rows =
+            builder.prepare_rows_for(index, &self.query_indices.spectrum, DataKind::Precursors);
         let predicate = builder.prepare_predicate_for(index);
         let mut reader = builder
             .0
@@ -663,7 +664,8 @@ impl<
         }
 
         let builder = SpectrumMetadataReader(self.handle.spectrum_metadata_selected_ions().await?);
-        let rows = builder.prepare_rows_for(index, &self.query_indices.spectrum, DataKind::SelectedIons);
+        let rows =
+            builder.prepare_rows_for(index, &self.query_indices.spectrum, DataKind::SelectedIons);
         let predicate = builder.prepare_predicate_for(index);
         let mut reader = builder
             .0
@@ -779,16 +781,20 @@ impl<
 
         return match meta_index.query_index {
             index::GenericDataIndex::Point(ref _query_index) => {
-                AsyncPointDataReader(builder, BufferContext::Spectrum).get_peak_list_for(index, meta_index).await
+                AsyncPointDataReader(builder, BufferContext::Spectrum)
+                    .get_peak_list_for(index, meta_index)
+                    .await
             }
             index::GenericDataIndex::Chunk(ref query_index) => {
                 let reader = AsyncChunkReader::new(builder, BufferContext::Spectrum);
-                let out = reader.read_chunks_for(index, query_index, &meta_index.array_indices, None, None).await?;
+                let out = reader
+                    .read_chunks_for(index, query_index, &meta_index.array_indices, None, None)
+                    .await?;
                 match PeakDataLevel::try_from(&out) {
                     Ok(val) => return Ok(Some(val)),
                     Err(e) => return Err(e.into()),
                 }
-            },
+            }
         };
     }
 
@@ -805,7 +811,7 @@ impl<
     /// - A mapping from spectrum index to scan start time.
     pub async fn extract_signal(
         &mut self,
-        time_range: SimpleInterval<f64>,
+        time_range: impl Into<IntoQueryRange>,
         mz_range: Option<SimpleInterval<f64>>,
         ion_mobility_range: Option<SimpleInterval<f64>>,
         ms_level_range: Option<SimpleInterval<u8>>,
@@ -813,9 +819,22 @@ impl<
         BoxStream<'_, Result<RecordBatch, ArrowError>>,
         HashMap<u64, f64, BuildIdentityHasher<u64>>,
     )> {
-        let (time_index, index_range) = self
-            .get_spectrum_index_range_for_time_range(time_range, ms_level_range)
-            .await?;
+        let (time_index, index_range) = match time_range.into() {
+            IntoQueryRange::TimeRange(time_range) => {
+                self.get_spectrum_index_range_for_time_range(time_range, ms_level_range).await?
+            }
+            IntoQueryRange::IndexRange(index_range) => {
+                if let Some(time_axis) = self.spectrum_time_axis().await {
+                    let time_axis = time_axis.as_primitive::<Float64Type>();
+                    let start = time_axis.value(index_range.start() as usize);
+                    let end = time_axis.value(index_range.end() as usize);
+                    self.get_spectrum_index_range_for_time_range(SimpleInterval::new(start, end), ms_level_range).await?
+                } else {
+
+                    return Ok((futures::stream::empty().boxed(), Default::default()))
+                }
+            }
+        };
         let builder = self.handle.spectra_data().await?;
 
         let ion_mobility_range = if !self.metadata.spectrum_array_indices().has_ion_mobility() {
@@ -895,7 +914,7 @@ impl<
     /// - A mapping from spectrum index to scan start time.
     pub async fn query_peaks(
         &mut self,
-        time_range: SimpleInterval<f64>,
+        time_range: impl Into<IntoQueryRange>,
         mz_range: Option<SimpleInterval<f64>>,
         ion_mobility_range: Option<SimpleInterval<f64>>,
         ms_level_range: Option<SimpleInterval<u8>>,
@@ -920,9 +939,22 @@ impl<
             ion_mobility_range
         };
 
-        let (time_index, index_range) = self
-            .get_spectrum_index_range_for_time_range(time_range, ms_level_range)
-            .await?;
+        let (time_index, index_range) = match time_range.into() {
+            IntoQueryRange::TimeRange(time_range) => {
+                self.get_spectrum_index_range_for_time_range(time_range, ms_level_range).await?
+            }
+            IntoQueryRange::IndexRange(index_range) => {
+                if let Some(time_axis) = self.spectrum_time_axis().await {
+                    let time_axis = time_axis.as_primitive::<Float64Type>();
+                    let start = time_axis.value(index_range.start() as usize);
+                    let end = time_axis.value(index_range.end() as usize);
+                    self.get_spectrum_index_range_for_time_range(SimpleInterval::new(start, end), ms_level_range).await?
+                } else {
+
+                    return Ok((futures::stream::empty().boxed(), Default::default()))
+                }
+            }
+        };
 
         let iter = AsyncPointDataReader(builder, BufferContext::Spectrum)
             .query_points(
@@ -959,7 +991,6 @@ impl<
         let has_ms_level_range = ms_level_range.is_some();
         let ms_level_range = ms_level_range.unwrap_or_default();
 
-
         let mut columns_for_predicate = vec![String::from("time")];
 
         if has_ms_level_range {
@@ -968,7 +999,7 @@ impl<
                     let name = col.leaf().unwrap().to_string();
                     columns_for_predicate.push(name);
                 } else {
-                    return Err(io::Error::other("ms_level column not found"))
+                    return Err(io::Error::other("ms_level column not found"));
                 }
             }
         }
@@ -994,10 +1025,7 @@ impl<
             }
         });
 
-        let proj = ProjectionMask::columns(
-            builder.parquet_schema(),
-            ["index", "time"],
-        );
+        let proj = ProjectionMask::columns(builder.parquet_schema(), ["index", "time"]);
 
         let mut reader = builder
             .with_row_selection(rows)
@@ -1010,6 +1038,29 @@ impl<
         }
 
         Ok(time_indexer.finish())
+    }
+
+    /// Get the time dimension encoded in the spectrum metadata table
+    pub async fn spectrum_time_axis(&self) -> Option<ArrayRef> {
+        let builder = self.handle.spectrum_metadata().await.ok()?;
+
+        let schema = builder.parquet_schema();
+        let i = schema.columns().iter().position(|c| c.name() == "time")?;
+
+        let mask = ProjectionMask::leaves(schema, [i]);
+        let mut reader = builder
+            .with_projection(mask)
+            .with_batch_size(usize::MAX)
+            .build()
+            .ok()?;
+
+        let batch = reader.next().await?;
+        let arr = batch.ok()?.column(0).clone();
+        if matches!(arr.data_type(), DataType::Float64) {
+            return Some(arr);
+        } else {
+            return arrow::compute::cast(&arr, &DataType::Float64).ok();
+        }
     }
 
     pub(crate) async fn load_all_spectrum_metadata_impl(
@@ -1061,7 +1112,8 @@ impl<
         }
 
         let builder = SpectrumMetadataReader(self.handle.spectrum_metadata_selected_ions().await?);
-        let rows = builder.prepare_rows_for_all(&self.query_indices.spectrum, DataKind::SelectedIons);
+        let rows =
+            builder.prepare_rows_for_all(&self.query_indices.spectrum, DataKind::SelectedIons);
         let predicate = builder.prepare_predicate_for_all();
         let mut reader = builder
             .0
@@ -1095,7 +1147,8 @@ impl<
             decoder.decode_batch_chromatogram(batch);
         }
 
-        let builder = ChromatogramMetadataReader(self.handle.chromatograms_metadata_precursors().await?);
+        let builder =
+            ChromatogramMetadataReader(self.handle.chromatograms_metadata_precursors().await?);
         let predicate = builder.prepare_predicate_for_all();
         let mut reader = builder
             .0
@@ -1105,7 +1158,8 @@ impl<
             decoder.decode_batch_precursor(batch);
         }
 
-        let builder = ChromatogramMetadataReader(self.handle.chromatograms_metadata_selected_ions().await?);
+        let builder =
+            ChromatogramMetadataReader(self.handle.chromatograms_metadata_selected_ions().await?);
         let predicate = builder.prepare_predicate_for_all();
         let mut reader = builder
             .0
@@ -1114,7 +1168,6 @@ impl<
         while let Some(batch) = reader.next().await.transpose()? {
             decoder.decode_batch_selected_ion(batch);
         }
-
 
         Ok(decoder.finish())
     }
@@ -1204,10 +1257,8 @@ impl<
         }
 
         let builder = self.handle.chromatograms_metadata().await?;
-        let predicate_mask = ProjectionMask::columns(
-            builder.parquet_schema(),
-            ["index", "auxiliary_arrays"],
-        );
+        let predicate_mask =
+            ProjectionMask::columns(builder.parquet_schema(), ["index", "auxiliary_arrays"]);
 
         let proj = predicate_mask.clone();
 
@@ -1250,10 +1301,8 @@ impl<
             .index_index
             .row_selection_contains(index);
 
-        let predicate_mask = ProjectionMask::columns(
-            builder.parquet_schema(),
-            ["index", "auxiliary_arrays"],
-        );
+        let predicate_mask =
+            ProjectionMask::columns(builder.parquet_schema(), ["index", "auxiliary_arrays"]);
 
         let proj = predicate_mask.clone();
 
@@ -1281,7 +1330,8 @@ impl<
     pub(crate) async fn load_delta_models(&mut self) -> io::Result<()> {
         let builder = self.handle.spectrum_metadata().await?;
 
-        let mut decoder = PeakInfoDecoder::new(self.metadata.spectra.primary_metadata_map().unwrap());
+        let mut decoder =
+            PeakInfoDecoder::new(self.metadata.spectra.primary_metadata_map().unwrap());
 
         let proj = match decoder.build_projection(&builder) {
             Some(proj) => proj,
@@ -1428,6 +1478,15 @@ impl<
         self.handle.list_files()
     }
 
+    /// Check if all the entries in the archive match their checksums.
+    ///
+    /// ## Returns
+    /// - The main status flag: `Some` if all entries have a checksum recorded. `None` otherwise.
+    /// - Each failed entry and its computed checksum if it was resolved, None otherwise.
+    pub async fn check_archive_integrity(&self) -> io::Result<(Option<bool>, Vec<(FileEntry, Option<String>)>)> {
+        self.handle.check_archive_integrity().await
+    }
+
     /// Open a file stream by it's name
     pub fn open_stream(
         &self,
@@ -1442,7 +1501,9 @@ impl<
         name: &str,
     ) -> Result<ParquetRecordBatchStreamBuilder<<T as AsyncArchiveSource>::File>, io::Error> {
         let stream = self.handle.open_stream(name).await?;
-        let builder = parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder::new(stream).await.map_err(|e| io::Error::other(e))?;
+        let builder = parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder::new(stream)
+            .await
+            .map_err(|e| io::Error::other(e))?;
         Ok(builder)
     }
 
@@ -1517,6 +1578,22 @@ mod test {
     #[test_log::test]
     #[rstest::rstest]
     #[case::packed("small.mzpeak")]
+    #[case::chunked("small.chunked.mzpeak")]
+    #[case::numpress("small.numpress.mzpeak")]
+    async fn test_integrity_check(#[case] path: &str) -> io::Result<()> {
+        let store = LocalFileSystem::new_with_prefix(".")?;
+        let reader =
+            AsyncMzPeakReader::from_store_path(Arc::new(store), ObjectPath::from(path)).await?;
+        let (state, failed) = reader.check_archive_integrity().await?;
+        assert!(state.unwrap(), "Overall validation status failed: {failed:?}");
+        assert!(failed.is_empty(), "Failed file list is not empty: {failed:?}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    #[rstest::rstest]
+    #[case::packed("small.mzpeak")]
     #[case::packed_chunks("small.chunked.mzpeak")]
     async fn test_load_all_metadata(#[case] path: &str) -> io::Result<()> {
         let store = LocalFileSystem::new_with_prefix(".")?;
@@ -1561,7 +1638,7 @@ mod test {
             AsyncMzPeakReader::from_store_path(Arc::new(store), ObjectPath::from("small.mzpeak"))
                 .await?;
         let (mut it, _time_index) = reader
-            .extract_signal((0.3..0.4).into(), Some((800.0..820.0).into()), None, None)
+            .extract_signal(0.3..0.4, Some((800.0..820.0).into()), None, None)
             .await?;
 
         let mut k = 0;
@@ -1577,7 +1654,7 @@ mod test {
 
         let (mut it, _) = reader
             .query_peaks(
-                (0.3..0.4).into(),
+                0.3..0.4,
                 Some((800.0..820.0).into()),
                 None,
                 Some((2u8..10).into()),
@@ -1605,11 +1682,17 @@ mod test {
         )
         .await?;
 
-        let k_models_defined = reader.metadata.spectra.mz_model_deltas.iter().filter(|v| v.is_some()).count();
+        let k_models_defined = reader
+            .metadata
+            .spectra
+            .mz_model_deltas
+            .iter()
+            .filter(|v| v.is_some())
+            .count();
         assert!(k_models_defined > 0);
 
         let (mut it, _time_index) = reader
-            .extract_signal((0.3..0.4).into(), Some((800.0..820.0).into()), None, None)
+            .extract_signal(0.3..0.4, Some((800.0..820.0).into()), None, None)
             .await?;
 
         let mut k = 0;
@@ -1628,7 +1711,7 @@ mod test {
 
         let (mut it, _) = reader
             .query_peaks(
-                (0.3..0.4).into(),
+                0.3..0.4,
                 Some((800.0..820.0).into()),
                 None,
                 Some((2u8..10).into()),
@@ -1646,7 +1729,7 @@ mod test {
         drop(it);
 
         let (mut it, _time_index) = reader
-            .query_peaks((0.3..0.4).into(), Some((800.0..820.0).into()), None, None)
+            .query_peaks(0.3..0.4, Some((800.0..820.0).into()), None, None)
             .await?;
 
         k = 0;

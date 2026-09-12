@@ -44,6 +44,7 @@ use crate::{
         CHROMATOGRAM_ARRAY_INDEX, SPECTRUM_ARRAY_INDEX, WAVELENGTH_SPECTRUM_ARRAY_INDEX,
         WAVELENGTH_SPECTRUM_DATA_POINT_COUNT,
     },
+    validation::SHA512HashingStream,
 };
 
 mod array_buffer;
@@ -475,7 +476,7 @@ pub struct MzPeakWriterType<
     C: CentroidLike + ToMzPeakDataSeries = CentroidPeak,
     D: DeconvolutedCentroidLike + ToMzPeakDataSeries = DeconvolutedPeak,
 > {
-    archive_writer: Option<ArrowWriter<ZipArchiveWriter<W>>>,
+    archive_writer: Option<ArrowWriter<SHA512HashingStream<ZipArchiveWriter<W>>>>,
     spectrum_data_buffers: ArrayBufferWriterVariants,
     spectrum_peaks_writer: Option<MiniPeakWriterType<fs::File>>,
 
@@ -614,7 +615,7 @@ impl<
         value: &impl serde::Serialize,
     ) -> Result<(), serde_json::Error> {
         if let Some(v) = self.archive_writer.as_mut() {
-            v.inner_mut().add_index_metadata(key, value)
+            v.inner_mut().get_mut().add_index_metadata(key, value)
         } else {
             Ok(())
         }
@@ -740,7 +741,7 @@ impl<
         let mut this = Self {
             archive_writer: Some(
                 ArrowWriter::try_new_with_options(
-                    writer,
+                    SHA512HashingStream::new(writer),
                     spectrum_buffers.schema().clone(),
                     ArrowWriterOptions::new().with_properties(data_props),
                 )
@@ -855,14 +856,25 @@ impl<
         Ok(())
     }
 
-    fn wrap_writer(writer: ZipArchiveWriter<W>, metadata_fields: Arc<Schema>, encryption_props: Option<Arc<FileEncryptionProperties>> ) -> io::Result<ArrowWriter<ZipArchiveWriter<W>>> {
+    fn wrap_writer(writer: ZipArchiveWriter<W>, metadata_fields: Arc<Schema>, encryption_props: Option<Arc<FileEncryptionProperties>> ) -> io::Result<ArrowWriter<SHA512HashingStream<ZipArchiveWriter<W>>>> {
         Ok(ArrowWriter::try_new_with_options(
-            writer,
+            SHA512HashingStream::new(writer),
             metadata_fields.clone(),
             ArrowWriterOptions::new().with_properties(
                 Self::spectrum_metadata_writer_props(&metadata_fields, encryption_props),
             ),
         )?)
+    }
+
+    fn take_writer(&mut self) -> Result<Option<(String, ZipArchiveWriter<W>)>, parquet::errors::ParquetError> {
+        self.archive_writer.take().map(|v| {
+            v.into_inner()
+        }).transpose().map(|v| v.and_then(|v| {
+            let checksum = v.digest();
+            let mut v = v.into_inner();
+            v.index_mut().last_entry_mut().map(|v| v.checksum = Some(checksum.clone()));
+            Some((checksum, v))
+        }))
     }
 
     fn finish_parquet_inner(
@@ -881,7 +893,7 @@ impl<
                 + self.spectrum_data_buffers.point_count();
             self.append_key_value_metadata(SPECTRUM_DATA_POINT_COUNT.into(), Some(n_p.to_string()));
 
-            let mut writer = self.archive_writer.take().unwrap().into_inner()?;
+            let (mut _checksum, mut writer) = self.take_writer()?.unwrap();
 
             if let Some(peak_file_writer) = self.spectrum_peaks_writer.take() {
                 let mut peak_file = peak_file_writer.finish()?;
@@ -895,104 +907,105 @@ impl<
             }
 
             // ----------------------------------------------
+            {
+                writer.start_spectrum_metadata().unwrap();
+                let metadata_fields = self.spectrum_metadata_buffer.spectrum().schema();
+                let encryption_props = writer
+                    .current_entry()
+                    .and_then(|v| self.encryption_properties.get(&v.name))
+                    .cloned();
 
-            writer.start_spectrum_metadata().unwrap();
-            let metadata_fields = self.spectrum_metadata_buffer.spectrum().schema();
-            let encryption_props = writer
-                .current_entry()
-                .and_then(|v| self.encryption_properties.get(&v.name))
-                .cloned();
-
-            writer.current_entry_mut().unwrap().column_mapping = self
-                .spectrum_metadata_buffer
-                .spectrum_metadata_columns()
-                .into();
-            self.archive_writer = Some(Self::wrap_writer(writer, metadata_fields, encryption_props)?);
-            let s = self.spectrum_metadata_buffer.finish_spectrum();
-            self.write_struct_arrays(s)?;
-            self.append_metadata();
-            self.append_key_value_metadata(
-                SPECTRUM_COUNT.into(),
-                Some(self.spectrum_counter().to_string()),
-            );
-            writer = self.archive_writer.take().unwrap().into_inner()?;
-
+                writer.current_entry_mut().unwrap().column_mapping = self
+                    .spectrum_metadata_buffer
+                    .spectrum_metadata_columns()
+                    .into();
+                self.archive_writer = Some(Self::wrap_writer(writer, metadata_fields, encryption_props)?);
+                let s = self.spectrum_metadata_buffer.finish_spectrum();
+                self.write_struct_arrays(s)?;
+                self.append_metadata();
+                self.append_key_value_metadata(
+                    SPECTRUM_COUNT.into(),
+                    Some(self.spectrum_counter().to_string()),
+                );
+                (_checksum, writer) = self.take_writer()?.unwrap();
+            }
             // ----------------------------------------------
 
-            writer
-                .start_for_entry(FileEntry::from(MzPeakArchiveType::SpectrumMetadataScans))
-                .unwrap();
-            writer.current_entry_mut().unwrap().column_mapping =
-                self.spectrum_metadata_buffer.scan_metadata_columns().into();
+            {
+                writer
+                    .start_for_entry(FileEntry::from(MzPeakArchiveType::SpectrumMetadataScans))
+                    .unwrap();
+                writer.current_entry_mut().unwrap().column_mapping =
+                    self.spectrum_metadata_buffer.scan_metadata_columns().into();
 
-            let metadata_fields = self.spectrum_metadata_buffer.scan().schema();
+                let metadata_fields = self.spectrum_metadata_buffer.scan().schema();
 
-            let encryption_props = writer
-                .current_entry()
-                .and_then(|v| self.encryption_properties.get(&v.name))
-                .cloned();
+                let encryption_props = writer
+                    .current_entry()
+                    .and_then(|v| self.encryption_properties.get(&v.name))
+                    .cloned();
 
-            self.archive_writer = Some(Self::wrap_writer(writer, metadata_fields, encryption_props)?);
+                self.archive_writer = Some(Self::wrap_writer(writer, metadata_fields, encryption_props)?);
 
-            let s = self.spectrum_metadata_buffer.finish_scan();
-            self.write_struct_arrays(s)?;
-            self.append_metadata();
-            self.append_key_value_metadata(
-                SPECTRUM_COUNT.into(),
-                Some(self.spectrum_counter().to_string()),
-            );
-            writer = self.archive_writer.take().unwrap().into_inner()?;
-
+                let s = self.spectrum_metadata_buffer.finish_scan();
+                self.write_struct_arrays(s)?;
+                self.append_metadata();
+                self.append_key_value_metadata(
+                    SPECTRUM_COUNT.into(),
+                    Some(self.spectrum_counter().to_string()),
+                );
+                (_checksum, writer) = self.take_writer()?.unwrap();
+            }
             // ----------------------------------------------
+            {
+                writer
+                    .start_for_entry(FileEntry::from(MzPeakArchiveType::SpectrumMetadataPrecursors))
+                    .unwrap();
+                writer.current_entry_mut().unwrap().column_mapping =
+                    self.spectrum_metadata_buffer.precursor_metadata_columns().into();
 
-            writer
-                .start_for_entry(FileEntry::from(MzPeakArchiveType::SpectrumMetadataPrecursors))
-                .unwrap();
-            writer.current_entry_mut().unwrap().column_mapping =
-                self.spectrum_metadata_buffer.precursor_metadata_columns().into();
+                let metadata_fields = self.spectrum_metadata_buffer.precursor().schema();
 
-            let metadata_fields = self.spectrum_metadata_buffer.precursor().schema();
+                let encryption_props = writer
+                    .current_entry()
+                    .and_then(|v| self.encryption_properties.get(&v.name))
+                    .cloned();
+                self.archive_writer = Some(Self::wrap_writer(writer, metadata_fields, encryption_props)?);
 
-            let encryption_props = writer
-                .current_entry()
-                .and_then(|v| self.encryption_properties.get(&v.name))
-                .cloned();
-            self.archive_writer = Some(Self::wrap_writer(writer, metadata_fields, encryption_props)?);
-
-            let s = self.spectrum_metadata_buffer.finish_precursor();
-            self.write_struct_arrays(s)?;
-            self.append_metadata();
-            self.append_key_value_metadata(
-                SPECTRUM_COUNT.into(),
-                Some(self.spectrum_counter().to_string()),
-            );
-            writer = self.archive_writer.take().unwrap().into_inner()?;
-
+                let s = self.spectrum_metadata_buffer.finish_precursor();
+                self.write_struct_arrays(s)?;
+                self.append_metadata();
+                self.append_key_value_metadata(
+                    SPECTRUM_COUNT.into(),
+                    Some(self.spectrum_counter().to_string()),
+                );
+                (_checksum, writer) = self.take_writer()?.unwrap();
+            }
             // ----------------------------------------------
+            {
+                writer
+                    .start_for_entry(FileEntry::from(MzPeakArchiveType::SpectrumMetadataSelectedIons))
+                    .unwrap();
+                writer.current_entry_mut().unwrap().column_mapping =
+                    self.spectrum_metadata_buffer.selected_ion_metadata_columns().into();
 
-            writer
-                .start_for_entry(FileEntry::from(MzPeakArchiveType::SpectrumMetadataSelectedIons))
-                .unwrap();
-            writer.current_entry_mut().unwrap().column_mapping =
-                self.spectrum_metadata_buffer.selected_ion_metadata_columns().into();
+                let metadata_fields = self.spectrum_metadata_buffer.selected_ion().schema();
 
-            let metadata_fields = self.spectrum_metadata_buffer.selected_ion().schema();
+                let encryption_props = writer
+                    .current_entry()
+                    .and_then(|v| self.encryption_properties.get(&v.name))
+                    .cloned();
+                self.archive_writer = Some(Self::wrap_writer(writer, metadata_fields, encryption_props)?);
 
-            let encryption_props = writer
-                .current_entry()
-                .and_then(|v| self.encryption_properties.get(&v.name))
-                .cloned();
-            self.archive_writer = Some(Self::wrap_writer(writer, metadata_fields, encryption_props)?);
-
-            let s = self.spectrum_metadata_buffer.finish_selected_ion();
-            self.write_struct_arrays(s)?;
-            self.append_metadata();
-            self.append_key_value_metadata(
-                SPECTRUM_COUNT.into(),
-                Some(self.spectrum_counter().to_string()),
-            );
-            writer = self.archive_writer.take().unwrap().into_inner()?;
-
+                let s = self.spectrum_metadata_buffer.finish_selected_ion();
+                self.write_struct_arrays(s)?;
+                self.append_metadata();
+                self.append_key_value_metadata(
+                    SPECTRUM_COUNT.into(),
+                    Some(self.spectrum_counter().to_string()),
+                );
+                (_checksum, writer) = self.take_writer()?.unwrap();
+            }
             // ----------------------------------------------
 
             if !self.wavelength_spectrum_metadata_buffer.is_empty() {
@@ -1011,13 +1024,7 @@ impl<
                     .start_for_entry(entry)
                     .map_err(|e| io::Error::other(e))?;
                 let metadata_fields = self.wavelength_spectrum_metadata_buffer.spectrum().schema();
-                self.archive_writer = Some(ArrowWriter::try_new_with_options(
-                    writer,
-                    metadata_fields.clone(),
-                    ArrowWriterOptions::new().with_properties(
-                        Self::spectrum_metadata_writer_props(&metadata_fields, encryption_props),
-                    ),
-                )?);
+                self.archive_writer = Some(Self::wrap_writer(writer, metadata_fields, encryption_props)?);
 
                 self.append_key_value_metadata(
                     WAVELENGTH_SPECTRUM_DATA_POINT_COUNT.into(),
@@ -1039,7 +1046,7 @@ impl<
 
                 let arrays = self.wavelength_spectrum_metadata_buffer.finish_spectrum();
                 self.write_struct_arrays(arrays)?;
-                writer = self.archive_writer.take().unwrap().into_inner()?;
+                (_checksum, writer) = self.take_writer()?.unwrap();
 
                 // ----------------------------------------------
 
@@ -1056,7 +1063,7 @@ impl<
                     .map_err(|e| io::Error::other(e))?;
                 let metadata_fields = self.wavelength_spectrum_metadata_buffer.scan().schema();
                 self.archive_writer = Some(ArrowWriter::try_new_with_options(
-                    writer,
+                    SHA512HashingStream::new(writer),
                     metadata_fields.clone(),
                     ArrowWriterOptions::new().with_properties(
                         Self::spectrum_metadata_writer_props(&metadata_fields, encryption_props),
@@ -1072,7 +1079,7 @@ impl<
 
                 let arrays = self.wavelength_spectrum_metadata_buffer.finish_scan();
                 self.write_struct_arrays(arrays)?;
-                writer = self.archive_writer.take().unwrap().into_inner()?;
+                (_checksum, writer) = self.take_writer()?.unwrap();
 
                 // ----------------------------------------------
 
@@ -1113,7 +1120,7 @@ impl<
                     };
                 if let Some((schema, props)) = schema_props {
                     self.archive_writer = Some(ArrowWriter::try_new_with_options(
-                        writer,
+                        SHA512HashingStream::new(writer),
                         schema,
                         ArrowWriterOptions::new().with_properties(props),
                     )?);
@@ -1141,7 +1148,7 @@ impl<
                     let buffers = self.wavelength_spectrum_data_buffers.as_mut().unwrap();
                     buffers.drain_into(self.archive_writer.as_mut().unwrap())?;
 
-                    writer = self.archive_writer.take().unwrap().into_inner()?;
+                    (_checksum, writer) = self.take_writer()?.unwrap();
                 }
             }
 
@@ -1169,7 +1176,7 @@ impl<
                     CHROMATOGRAM_DATA_POINT_COUNT.into(),
                     Some(self.chromatogram_data_buffers.point_count().to_string()),
                 );
-                writer = self.archive_writer.take().unwrap().into_inner()?;
+                (_checksum, writer) = self.take_writer()?.unwrap();
 
                 // ----------------------------------------------
 
@@ -1188,7 +1195,7 @@ impl<
                     CHROMATOGRAM_COUNT.into(),
                     Some(self.chromatogram_counter().to_string()),
                 );
-                writer = self.archive_writer.take().unwrap().into_inner()?;
+                (_checksum, writer) = self.take_writer()?.unwrap();
 
                 // ----------------------------------------------
 
@@ -1208,7 +1215,7 @@ impl<
                     CHROMATOGRAM_COUNT.into(),
                     Some(self.chromatogram_counter().to_string()),
                 );
-                writer = self.archive_writer.take().unwrap().into_inner()?;
+                (_checksum, writer) = self.take_writer()?.unwrap();
 
                 // ----------------------------------------------
 
@@ -1216,7 +1223,7 @@ impl<
                 let encryption_props = writer.current_entry().and_then(|v| self.encryption_properties.get(&v.name).cloned());
 
                 self.archive_writer = Some(ArrowWriter::try_new_with_options(
-                    writer,
+                    SHA512HashingStream::new(writer),
                     self.chromatogram_data_buffers.schema().clone(),
                     ArrowWriterOptions::new().with_properties(
                         Self::chromatogram_data_writer_props(
@@ -1238,7 +1245,7 @@ impl<
                 if let Err(e) = self.copy_metadata_to_index() {
                     log::error!("Failed to copy metadata to file index: {e}");
                 }
-                writer = self.archive_writer.take().unwrap().into_inner()?;
+                (_checksum, writer) = self.take_writer()?.unwrap();
                 writer.flush()?;
             }
 
@@ -1454,14 +1461,18 @@ mod test {
 
         let mut zip_writer = writer.finish_parquet()?;
 
+        // Write directly into a member file, but this circumvents the automatic checksum calculation
         zip_writer.start_other(&"example.config")?;
         zip_writer.write_all(b"<config><foo>some XML gobbledygook</foo></config>")?;
 
+        // Create a new entry and add it directly from another `Read` implementer, which *does*
+        // automatically checksum
         let job_entry = FileEntry::new(
             "job.sig".into(),
             crate::archive::EntityType::Other("other".into()),
             crate::archive::DataKind::Proprietary,
         );
+
         zip_writer.add_file_from_read(
             &mut b"some binary sludge".as_slice(),
             None::<&String>,
@@ -1508,6 +1519,13 @@ mod test {
             );
         }
 
+        let (state, failed) = new_reader.check_archive_integrity()?;
+        assert!(state == None, "Overall validation status failed: {failed:?}. A file should be missing a checksum");
+        assert_eq!(failed.len(), 1, "Failed file list is not empty: {failed:?}. Only one file should have failed because of missing checksum");
+        let (failed_entry, chk) = &failed[0];
+        assert!(chk.is_some());
+        assert!(failed_entry.checksum.is_none());
+        assert_eq!(failed_entry.name, "example.config");
         Ok(())
     }
 
@@ -1565,6 +1583,9 @@ mod test {
             let arrays = spec.raw_arrays().unwrap();
             assert!(arrays.has_array(&ArrayType::WavelengthArray));
         }
+        let (state, failed) = new_reader.check_archive_integrity()?;
+        assert!(state.unwrap(), "Overall validation status failed: {failed:?}");
+        assert!(failed.is_empty(), "Failed file list is not empty: {failed:?}");
         Ok(())
     }
 

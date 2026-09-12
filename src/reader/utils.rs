@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, ops};
 
 use arrow::{
     array::{AsArray, RecordBatch},
@@ -159,6 +159,45 @@ impl SpanDynNumeric for MaskSet {
         } else {
             mask
         }
+    }
+}
+
+
+/// A helper type to coerce from either a [`SimpleInterval`] over `u64` to indicate a query
+/// over indices or [`SimpleInterval`] over `f64` to indicate a query over time.
+///
+/// This type is an intersection for arguments over multiple types, `impl Into<IntoQueryRange>`
+/// in the function signature will accept a [`SimpleInterval`] or [`std::ops::Range`] of either
+/// type.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum IntoQueryRange {
+    /// A query over indices
+    IndexRange(SimpleInterval<u64>),
+    /// A query over time
+    TimeRange(SimpleInterval<f64>),
+}
+
+impl From<SimpleInterval<f64>> for IntoQueryRange {
+    fn from(v: SimpleInterval<f64>) -> Self {
+        Self::TimeRange(v)
+    }
+}
+
+impl From<ops::Range<f64>> for IntoQueryRange {
+    fn from(value: ops::Range<f64>) -> Self {
+        Self::TimeRange(value.into())
+    }
+}
+
+impl From<ops::Range<u64>> for IntoQueryRange {
+    fn from(value: ops::Range<u64>) -> Self {
+        Self::IndexRange(value.into())
+    }
+}
+
+impl From<SimpleInterval<u64>> for IntoQueryRange {
+    fn from(v: SimpleInterval<u64>) -> Self {
+        Self::IndexRange(v)
     }
 }
 
