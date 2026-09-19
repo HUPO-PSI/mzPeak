@@ -222,7 +222,7 @@ impl GenericDataArrayWriter {
         };
 
         let (extra_arrays, n_points) =
-            if let Some(chunk_encoding) = self.use_chunked_encoding().copied() {
+            if let Some(chunk_encoding) = self.use_chunked_encoding().cloned() {
                 let buffer = &mut self.data_buffers;
 
                 let (chunks, auxiliary_arrays, n_pts) = ArrowArrayChunk::build(
@@ -234,11 +234,12 @@ impl GenericDataArrayWriter {
                     } else {
                         &tmp_binary_array_map
                     },
-                    chunk_encoding,
+                    &chunk_encoding,
                     buffer.overrides(),
                     buffer.drop_zero_intensity(),
                     buffer.nullify_zero_intensity(),
                     buffer.fields(),
+                    buffer.grid_policies()
                 )?;
 
                 if let Some(chunks) = chunks {
@@ -287,7 +288,7 @@ impl GenericDataArrayWriter {
         series_time: Option<f32>,
     ) -> Result<EntryMetadataDerivedFromData, ArrayRetrievalError> {
         let ctx = self.buffers().buffer_context();
-        if let Some(encoding) = self.use_chunked_encoding().copied() {
+        if let Some(encoding) = self.use_chunked_encoding().cloned() {
             let arrays = C::as_arrays(peaks);
             let buffer_ref = &mut self.data_buffers;
 
@@ -296,11 +297,12 @@ impl GenericDataArrayWriter {
                 series_time,
                 ctx,
                 &arrays,
-                encoding,
+                &encoding,
                 buffer_ref.overrides(),
                 buffer_ref.drop_zero_intensity(),
                 buffer_ref.nullify_zero_intensity(),
                 buffer_ref.fields(),
+                buffer_ref.grid_policies()
             )?;
             if let Some(chunks) = chunks {
                 let size = chunks.len();
@@ -538,7 +540,7 @@ pub trait AbstractMzPeakWriter {
             tmp_binary_array_map.sort_by_array(&ArrayType::TimeArray)?;
         }
         let (extra_arrays, n_points) =
-            if let Some(chunking) = self.use_chromatogram_chunked_encoding().copied() {
+            if let Some(chunking) = self.use_chromatogram_chunked_encoding().cloned() {
                 let buffer_ref = self.chromatogram_data_buffer_mut();
                 let (chunks, auxiliary_arrays, n_pts) = ArrowArrayChunk::build(
                     chromatogram_index,
@@ -549,11 +551,12 @@ pub trait AbstractMzPeakWriter {
                     } else {
                         &tmp_binary_array_map
                     },
-                    chunking,
+                    &chunking,
                     buffer_ref.overrides(),
                     buffer_ref.drop_zero_intensity(),
                     buffer_ref.nullify_zero_intensity(),
                     buffer_ref.fields(),
+                    buffer_ref.grid_policies()
                 )?;
 
                 if let Some(chunks) = chunks {
@@ -718,7 +721,7 @@ pub trait AbstractMzPeakWriter {
 
         log::trace!("Writing {n_points} points for {spectrum_count}");
         let (delta_params, extra_arrays, n_pts) = if let Some(chunking) =
-            self.use_chunked_encoding().copied()
+            self.use_chunked_encoding().cloned()
         {
             // If we use the chunked encoding, we pre-encode everything
             let nullify_zero_intensity = self.spectrum_data_buffer_mut().nullify_zero_intensity();
@@ -742,11 +745,12 @@ pub trait AbstractMzPeakWriter {
                 } else {
                     &tmp_binary_array_map
                 },
-                chunking,
+                &chunking,
                 buffer_ref.overrides(),
                 is_profile,
                 nullify_zero_intensity,
                 buffer_ref.fields(),
+                buffer_ref.grid_policies()
             )?;
 
             if let Some(chunks) = chunks {
@@ -807,7 +811,7 @@ pub trait AbstractMzPeakWriter {
         if !include_time {
             spectrum_time = None;
         }
-        if let Some(encoding) = self.use_chunked_encoding().copied() {
+        if let Some(encoding) = self.use_chunked_encoding().cloned() {
             let arrays = C::as_arrays(peaks);
             let buffer_ref = self.spectrum_data_buffer_mut();
 
@@ -816,11 +820,12 @@ pub trait AbstractMzPeakWriter {
                 spectrum_time,
                 BufferContext::Spectrum,
                 &arrays,
-                encoding,
+                &encoding,
                 buffer_ref.overrides(),
                 false,
                 false,
                 buffer_ref.fields(),
+                buffer_ref.grid_policies()
             )?;
 
             if let Some(chunks) = chunks {
@@ -1006,7 +1011,7 @@ pub trait AbstractMzPeakWriter {
             &peak_buffer,
             peak_buffer.index_path(),
             shuffle_mz,
-            &None,
+            None,
             compression,
             write_batch_config,
             peak_encrytion_props,
@@ -1086,7 +1091,7 @@ pub trait AbstractMzPeakWriter {
     fn generic_data_writer_props(
         data_buffer: &impl ArrayBufferWriter,
         index_path: String,
-        use_chunked_encoding: &Option<ChunkingStrategy>,
+        use_chunked_encoding: Option<&ChunkingStrategy>,
         compression: Compression,
         byte_shuffle_needles: &[&str],
         encryption_properties: Option<Arc<FileEncryptionProperties>>,
@@ -1165,7 +1170,7 @@ pub trait AbstractMzPeakWriter {
     fn chromatogram_data_writer_props(
         data_buffer: &impl ArrayBufferWriter,
         index_path: String,
-        use_chunked_encoding: &Option<ChunkingStrategy>,
+        use_chunked_encoding: Option<&ChunkingStrategy>,
         compression: Compression,
         encryption_properties: Option<Arc<FileEncryptionProperties>>,
     ) -> WriterProperties {
@@ -1191,7 +1196,7 @@ pub trait AbstractMzPeakWriter {
         data_buffer: &impl ArrayBufferWriter,
         index_path: String,
         shuffle_mz: bool,
-        use_chunked_encoding: &Option<ChunkingStrategy>,
+        use_chunked_encoding: Option<&ChunkingStrategy>,
         compression: Compression,
         write_batch_config: WriteBatchConfig,
         encryption_properties: Option<Arc<FileEncryptionProperties>>,

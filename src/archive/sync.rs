@@ -29,7 +29,7 @@ use crate::constants::{
     WAVELENGTH_SPECTRUM_DATA_ARRAYS_NAME, WAVELENGTH_SPECTRUM_METADATA_NAME,
     WAVELENGTH_SPECTRUM_METADATA_SCANS_NAME,
 };
-use crate::validation::{self, SHA512HashingStream};
+use crate::validation::{self, DigestSummary, SHA512HashingStream};
 
 /// Create a single shared [`FileDecryptionProperties`] that is used for all [`MzPeakArchiveType`] members,
 /// even those not found in an archive.
@@ -250,7 +250,7 @@ impl<W: Write + Send + Seek> ZipArchiveWriter<W> {
         read: &mut impl io::Read,
         name: Option<&S>,
         entry: Option<FileEntry>,
-    ) -> io::Result<String> {
+    ) -> io::Result<DigestSummary> {
         if let Some(entry) = entry {
             self.start_for_entry(entry)?
         } else {
@@ -277,7 +277,7 @@ archive, nor was one given via the file index entry"#,
         let digest = buf_writer.digest();
         let inner = buf_writer.into_inner();
         if let Some(e) = inner.index.last_entry_mut() {
-            e.checksum = Some(digest.clone());
+            e.checksum = Some(digest.digest.clone());
         }
         Ok(digest)
     }

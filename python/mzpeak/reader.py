@@ -1,26 +1,23 @@
 import hashlib
-import logging  # noqa: I001
 import json
+import logging
 import zipfile
 import zlib
-from functools import partial
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
-from collections.abc import Iterable, Sequence
-from typing import IO, Any, ClassVar, Optional, TYPE_CHECKING
-from collections.abc import Iterator, Callable
 from enum import Enum, auto
+from functools import partial
+from pathlib import Path
+from typing import IO, TYPE_CHECKING, Any, ClassVar, Optional
 
 import numpy as np
 import pandas as pd
-
 import pyarrow as pa
-
 from pyarrow import parquet as pq
 
-from .mz_reader import _DataBatchIter, MzPeakArrayDataReader, _SpectrumArrays
-from .file_index import FileEntry, FileIndex, DataKind, EntityType, MetadataColumn
-from .util import _SeekableIter, DTYPES, _NameCleaningNode
+from .file_index import DataKind, EntityType, FileEntry, FileIndex
+from .mz_reader import MzPeakArrayDataReader, _DataBatchIter, _SpectrumArrays
+from .util import DTYPES, _NameCleaningNode, _SeekableIter
 
 try:
     has_upath = True

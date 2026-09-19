@@ -21,7 +21,7 @@ use bytemuck::Pod;
 use num_traits::{Float, NumCast, ToPrimitive};
 
 use crate::buffer_descriptors::{BufferOverrideTable, BufferPriority};
-use crate::grid::{GridEncoding, GridModelLike};
+use crate::grid::{GridEncoding, GridModelLike, GridPolicy, GridPolicyTable};
 use crate::writer::StructVisitor;
 use crate::{
     buffer_descriptors::BufferTransform,
@@ -57,7 +57,7 @@ pub const NUMPRESS_SLOF: CURIE = mzdata::curie!(MS:1002314);
 pub const GRID_ENCODING: CURIE = crate::buffer_descriptors::GRID_ENCODING;
 
 /// Different methods for encoding chunks along a coordinate dimension
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ChunkingStrategy {
     /// Values are encoded as-is without any transformation. While this doesn't have any compression
     /// benefits, it provides compatibility for sparse data. The start and end values are included in
@@ -71,7 +71,7 @@ pub enum ChunkingStrategy {
     /// which may not align with a multi-byte value type and must be stored in a dedicated byte array. The
     /// start and end values are included in the encoded chunk as well as the chunk metadata.
     NumpressLinear { chunk_size: f64 },
-    Grid { chunk_size: f64, grid: GridEncoding }
+    Grid { chunk_size: f64, grid: Option<GridEncoding> }
 }
 
 impl ChunkingStrategy {
@@ -245,18 +245,21 @@ impl ChunkingStrategy {
                 let bytes_of = if matches!(array.data_type(), DataType::Float64) {
                     let array: &PrimitiveArray<Float64Type> =
                         array.as_any().downcast_ref().unwrap();
-                    DataArray::compress_numpress_linear(array.values()).unwrap()
+                    let fp = numpress_rs::optimal_scaling(array.values());
+                    numpress_rs::numpress_compress(array.values(), fp).unwrap()
                 } else {
                     let values: Vec<_> = array
                         .iter()
                         .map(|v| v.and_then(|v| v.to_f64()).unwrap_or_default())
                         .collect();
-                    DataArray::compress_numpress_linear(&values).unwrap()
+                    let fp = numpress_rs::optimal_scaling(&values);
+                    numpress_rs::numpress_compress(&values, fp).unwrap()
                 };
                 let array = Arc::new(UInt8Array::from(bytes_of));
                 (start, end, array)
             },
             ChunkingStrategy::Grid { chunk_size: _, grid } => {
+                let grid = grid.as_ref().unwrap();
                 let indices_of: UInt32Array = if matches!(array.data_type(), DataType::Float64) {
                     let array: &PrimitiveArray<Float64Type> =
                         array.as_any().downcast_ref().unwrap();
@@ -378,7 +381,7 @@ impl ChunkingStrategy {
                 DataType::UInt8 => {
                     let it = array.as_primitive::<UInt8Type>();
                     let buf = it.values();
-                    let data: Float64Array = DataArray::decompress_numpress_linear(buf)
+                    let data: Float64Array = numpress_rs::numpress_decompress(buf)
                         .unwrap()
                         .into_iter()
                         .map(|v| if v == 0.0 { None } else { Some(v) })
@@ -412,6 +415,7 @@ impl ChunkingStrategy {
             },
             ChunkingStrategy::Grid { chunk_size: _, grid } => match array.data_type() {
                 DataType::UInt32 => {
+                    let grid = grid.as_ref().unwrap();
                     let it: &UInt32Array = array.as_primitive();
                     let buf = it.values();
                     let data: Vec<_> = buf.iter().map(|v| grid.from_index(*v)).collect();
@@ -742,11 +746,12 @@ impl ArrowArrayChunk {
         series_time: Option<f32>,
         buffer_context: BufferContext,
         arrays: &BinaryArrayMap,
-        encoding: ChunkingStrategy,
+        encoding: &ChunkingStrategy,
         overrides: &BufferOverrideTable,
         drop_zero_intensity: bool,
         nullify_zero_intensity: bool,
         fields: &Fields,
+        grid_policies: Option<&GridPolicyTable>,
     ) -> Result<(Option<StructArray>, Vec<AuxiliaryArray>, usize), ArrayRetrievalError> {
         let (chunks, auxiliary_arrays, n_pts) = ArrowArrayChunk::from_arrays(
             series_index,
@@ -759,13 +764,14 @@ impl ArrowArrayChunk {
             drop_zero_intensity,
             nullify_zero_intensity,
             Some(fields),
+            grid_policies
         )?;
         let chunks = if !chunks.is_empty() {
             let chunks = ArrowArrayChunk::to_struct_array(
                 &chunks,
                 buffer_context,
                 &[
-                    encoding,
+                    encoding.clone(),
                     ChunkingStrategy::Basic {
                         chunk_size: encoding.chunk_size(),
                     },
@@ -1062,11 +1068,12 @@ impl ArrowArrayChunk {
         series_time: Option<f32>,
         main_axis: BufferName,
         arrays: &BinaryArrayMap,
-        chunk_encoding: ChunkingStrategy,
+        chunk_encoding: &ChunkingStrategy,
         overrides: &BufferOverrideTable,
         drop_zero_intensity: bool,
         nullify_zero_intensity: bool,
         fields: Option<&Fields>,
+        grid_policies: Option<&GridPolicyTable>
     ) -> Result<(Vec<Self>, Vec<AuxiliaryArray>, usize), ArrayRetrievalError> {
         let mut chunks = Vec::new();
 
@@ -1278,7 +1285,7 @@ impl ArrowArrayChunk {
                 chunk_end,
                 main_axis.clone(),
                 chunk_values,
-                chunk_encoding,
+                chunk_encoding.clone(),
                 chunk_arrays,
             ));
         }
@@ -1353,11 +1360,12 @@ mod test {
             None,
             target,
             &arrays,
-            ChunkingStrategy::Delta { chunk_size: 50.0 },
+            &ChunkingStrategy::Delta { chunk_size: 50.0 },
             &BufferOverrideTable::default(),
             true,
             false,
             None,
+            None
         )?;
 
         for chunk in chunks.iter() {
@@ -1441,10 +1449,11 @@ mod test {
             None,
             target,
             &arrays,
-            ChunkingStrategy::Delta { chunk_size: 50.0 },
+            &ChunkingStrategy::Delta { chunk_size: 50.0 },
             &BufferOverrideTable::default(),
             true,
             true,
+            None,
             None,
         )?;
 
@@ -1574,10 +1583,11 @@ mod test {
             None,
             target,
             &arrays,
-            ChunkingStrategy::Delta { chunk_size: 50.0 },
+            &ChunkingStrategy::Delta { chunk_size: 50.0 },
             &overrides,
             false,
             false,
+            None,
             None,
         )?;
 
@@ -1625,10 +1635,11 @@ mod test {
             None,
             target,
             &arrays,
-            ChunkingStrategy::NumpressLinear { chunk_size: 50.0 },
+            &ChunkingStrategy::NumpressLinear { chunk_size: 50.0 },
             &overrides,
             false,
             false,
+            None,
             None,
         )?;
 
@@ -1691,10 +1702,11 @@ mod test {
             None,
             target,
             &arrays,
-            ChunkingStrategy::Delta { chunk_size: 50.0 },
+            &ChunkingStrategy::Delta { chunk_size: 50.0 },
             &Default::default(),
             false,
             false,
+            None,
             None,
         )?;
 
@@ -1787,10 +1799,11 @@ mod test {
             None,
             target,
             &arrays,
-            ChunkingStrategy::Delta { chunk_size: 50.0 },
+            &ChunkingStrategy::Delta { chunk_size: 50.0 },
             &Default::default(),
             true,
             true,
+            None,
             None,
         )?;
 
@@ -1929,10 +1942,11 @@ mod test {
             None,
             target,
             &arrays,
-            ChunkingStrategy::Delta { chunk_size: 50.0 },
+            &ChunkingStrategy::Delta { chunk_size: 50.0 },
             &Default::default(),
             true,
             true,
+            None,
             None,
         )?;
 

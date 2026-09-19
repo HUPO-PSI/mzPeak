@@ -11,7 +11,7 @@ use arrow::{
 use mzdata::{prelude::BuildArrayMapFrom, spectrum::ArrayType};
 
 use crate::{
-    BufferContext, BufferName, ToMzPeakDataSeries, buffer_descriptors::{BufferOverrideTable, BufferPriority, BufferTransform}, chunk_series::{ArrowArrayChunk, ChunkingStrategy}, filter::{drop_where_column_is_zero_run_arrays, nullify_at_zero_pair_arrays}, peak_series::{
+    BufferContext, BufferName, ToMzPeakDataSeries, buffer_descriptors::{BufferOverrideTable, BufferPriority, BufferTransform}, chunk_series::{ArrowArrayChunk, ChunkingStrategy}, filter::{drop_where_column_is_zero_run_arrays, nullify_at_zero_pair_arrays}, grid::GridPolicy, peak_series::{
         ArrayIndex, ArrayIndexEntry, INTENSITY_ARRAY, MZ_ARRAY, TIME_ARRAY, WAVELENGTH_ARRAY,
     }, spectrum::AuxiliaryArray
 };
@@ -172,6 +172,7 @@ pub trait ArrayBufferWriter {
         array_index
     }
 
+    fn grid_policies(&self) -> Option<&HashMap<ArrayType, GridPolicy>>;
     fn point_count(&self) -> u64;
     fn point_count_mut(&mut self) -> &mut u64;
 }
@@ -193,7 +194,7 @@ pub struct PointBuffers {
     include_time: bool,
     point_count: u64,
     nullable_targets: Vec<usize>,
-    drop_zero_columns: Vec<usize>
+    drop_zero_columns: Vec<usize>,
 }
 
 impl PointBuffers {
@@ -443,6 +444,10 @@ impl ArrayBufferWriter for PointBuffers {
     fn point_count_mut(&mut self) -> &mut u64 {
         &mut self.point_count
     }
+
+    fn grid_policies(&self) -> Option<&HashMap<ArrayType, GridPolicy>> {
+        None
+    }
 }
 
 /// A data buffer for the `chunked layout`
@@ -461,6 +466,7 @@ pub struct ChunkBuffers {
     include_time: bool,
     chunking_strategy: ChunkingStrategy,
     point_count: u64,
+    grid_policies: HashMap<ArrayType, GridPolicy>
 }
 
 impl ChunkBuffers {
@@ -476,6 +482,8 @@ impl ChunkBuffers {
         is_profile_buffer: Vec<bool>,
         include_time: bool,
         chunking_strategy: ChunkingStrategy,
+        grid_policies: HashMap<ArrayType, GridPolicy>,
+
     ) -> Self {
         Self {
             chunk_array_fields,
@@ -490,6 +498,7 @@ impl ChunkBuffers {
             include_time,
             chunking_strategy,
             point_count: 0,
+            grid_policies,
         }
     }
 
@@ -541,11 +550,13 @@ impl ArrayBufferWriter for ChunkBuffers {
             series_time,
             BufferContext::Spectrum,
             &arrays,
-            self.chunking_strategy,
+            &self.chunking_strategy,
             self.overrides(),
             self.drop_zero_intensity(),
             self.nullify_zero_intensity(),
-            self.fields()).unwrap();
+            self.fields(),
+            self.grid_policies(),
+        ).unwrap();
         if let Some(chunks) = chunks {
             let (fields, arrays, _) = chunks.into_parts();
             self.add_arrays(fields, arrays, peaks.len(), false);
@@ -591,6 +602,10 @@ impl ArrayBufferWriter for ChunkBuffers {
 
     fn point_count_mut(&mut self) -> &mut u64 {
         &mut self.point_count
+    }
+
+    fn grid_policies(&self) -> Option<&HashMap<ArrayType, GridPolicy>> {
+        Some(&self.grid_policies)
     }
 }
 
@@ -770,6 +785,17 @@ impl ArrayBufferWriter for ArrayBufferWriterVariants {
             }
             ArrayBufferWriterVariants::PointBuffers(point_buffers) => {
                 point_buffers.point_count_mut()
+            }
+        }
+    }
+
+    fn grid_policies(&self) -> Option<&HashMap<ArrayType, GridPolicy>> {
+        match self {
+            ArrayBufferWriterVariants::ChunkBuffers(chunk_buffers) => {
+                chunk_buffers.grid_policies()
+            }
+            ArrayBufferWriterVariants::PointBuffers(point_buffers) => {
+                point_buffers.grid_policies()
             }
         }
     }
@@ -1106,6 +1132,7 @@ impl ArrayBuffersBuilder {
             Vec::new(),
             self.include_time,
             self.chunking_strategy.unwrap(),
+            Default::default(),
         )
     }
 
@@ -1294,8 +1321,9 @@ mod test {
         let fields = crate::writer::sample_array_types_from_spectrum_source(
             &mut reader,
             &builder.overrides(),
-            builder.chunking_strategy,
+            builder.chunking_strategy.as_ref(),
             false,
+            None,
         );
         for f in fields {
             builder = builder.add_field(f)

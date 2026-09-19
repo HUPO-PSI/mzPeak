@@ -231,7 +231,7 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
             mask_zero_intensity_runs,
         );
 
-        let chromatogram_buffers = if let Some(_encoding) = use_chromatogram_chunked_encoding {
+        let chromatogram_buffers = if let Some(_encoding) = use_chromatogram_chunked_encoding.as_ref() {
             ArrayBufferWriterVariants::ChunkBuffers(chromatogram_buffers_builder.build_chunked(
                 Arc::new(Schema::empty()),
                 BufferContext::Chromatogram,
@@ -249,7 +249,7 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
             &spectrum_buffers,
             spectrum_buffers.index_path(),
             shuffle_mz,
-            &use_chunked_encoding,
+            use_chunked_encoding.as_ref(),
             compression,
             write_batch_config,
             None,
@@ -432,7 +432,7 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
                 ArrowWriterOptions::new().with_properties(Self::chromatogram_data_writer_props(
                     &self.chromatogram_buffers,
                     BufferContext::Chromatogram.index_field().name().to_string(),
-                    &None,
+                    None,
                     self.compression,
                     None,
                 )),

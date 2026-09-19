@@ -19,24 +19,14 @@ use parquet::{
 };
 
 use mzdata::{
-    io::{RandomAccessSpectrumSource, StreamingSpectrumIterator},
-    meta::{FileMetadataConfig, MSDataFileMetadata},
-    params::ControlledVocabulary,
-    prelude::*,
-    spectrum::{BinaryArrayMap, Chromatogram, MultiLayerSpectrum, SignalContinuity},
+    io::{RandomAccessSpectrumSource, StreamingSpectrumIterator}, meta::{FileMetadataConfig, MSDataFileMetadata}, params::ControlledVocabulary, prelude::*, spectrum::{ArrayType, BinaryArrayMap, Chromatogram, MultiLayerSpectrum, SignalContinuity},
 };
 
 use crate::{
-    BufferName,
-    archive::{DataKind, EntityType, FileEntry, MzPeakArchiveType, ZipArchiveWriter},
-    buffer_descriptors::BufferOverrideTable,
-    constants::{
+    BufferName, archive::{DataKind, EntityType, FileEntry, MzPeakArchiveType, ZipArchiveWriter}, buffer_descriptors::BufferOverrideTable, constants::{
         CHROMATOGRAM_COUNT, CHROMATOGRAM_DATA_POINT_COUNT, SPECTRUM_COUNT,
         SPECTRUM_DATA_POINT_COUNT, WAVELENGTH_SPECTRUM_COUNT, WAVELENGTH_SPECTRUM_DATA_ARRAYS_NAME,
-    },
-    param::ControlledVocabularyEntry,
-    peak_series::{ArrayIndex, BufferContext, ToMzPeakDataSeries, array_map_to_schema_arrays},
-    writer::{base::GenericDataArrayWriter, builder::SpectrumFieldVisitors},
+    }, grid::{GridPolicy, GridPolicyTable}, param::ControlledVocabularyEntry, peak_series::{ArrayIndex, BufferContext, ToMzPeakDataSeries, array_map_to_schema_arrays}, validation::DigestSummary, writer::{base::GenericDataArrayWriter, builder::SpectrumFieldVisitors},
 };
 use crate::{
     chunk_series::{ArrowArrayChunk, ChunkingStrategy},
@@ -80,19 +70,22 @@ construct a Parquet schema.
 */
 struct ArrayTypesSampler<'a> {
     overrides: &'a BufferOverrideTable,
-    use_chunked_encoding: Option<ChunkingStrategy>,
+    use_chunked_encoding: Option<&'a ChunkingStrategy>,
     is_profile: i32,
+    grid_policy: Option<&'a GridPolicyTable>
 }
 
 impl<'a> ArrayTypesSampler<'a> {
     fn new(
         overrides: &'a BufferOverrideTable,
-        use_chunked_encoding: Option<ChunkingStrategy>,
+        use_chunked_encoding: Option<&'a ChunkingStrategy>,
+        grid_policy: Option<&'a GridPolicyTable>
     ) -> Self {
         Self {
             overrides,
             use_chunked_encoding,
             is_profile: 0,
+            grid_policy,
         }
     }
 
@@ -113,6 +106,7 @@ impl<'a> ArrayTypesSampler<'a> {
                 false,
                 false,
                 None,
+                self.grid_policy
             )
             .ok()
             .and_then(|(chunks, _aux_arrays, _)| {
@@ -120,7 +114,7 @@ impl<'a> ArrayTypesSampler<'a> {
                     c.to_schema(
                         context,
                         &[
-                            use_chunked_encoding,
+                            use_chunked_encoding.clone(),
                             ChunkingStrategy::Basic { chunk_size: 50.0 },
                         ],
                         false,
@@ -273,9 +267,9 @@ impl<'a> ArrayTypesSampler<'a> {
 pub fn sample_array_types_from_chromatograms<I: Iterator<Item = Chromatogram>>(
     iter: I,
     overrides: &BufferOverrideTable,
-    use_chunked_encoding: Option<ChunkingStrategy>,
+    use_chunked_encoding: Option<&ChunkingStrategy>,
 ) -> Vec<Arc<Field>> {
-    ArrayTypesSampler::new(overrides, use_chunked_encoding).sample_chromatogram_array_types(iter)
+    ArrayTypesSampler::new(overrides, use_chunked_encoding, None).sample_chromatogram_array_types(iter)
 }
 
 /// Collect arrays fields from spectra in a [`StreamingSpectrumIterator`] to prepare
@@ -294,13 +288,14 @@ pub fn sample_array_types_from_spectrum_stream<
 >(
     reader: &mut StreamingSpectrumIterator<C, D, MultiLayerSpectrum<C, D>, I>,
     overrides: &BufferOverrideTable,
-    use_chunked_encoding: Option<ChunkingStrategy>,
+    use_chunked_encoding: Option<&ChunkingStrategy>,
+    grid_policies: Option<&GridPolicyTable>
 ) -> Vec<Arc<Field>>
 where
     MultiLayerSpectrum<C, D>: Clone,
 {
     reader.populate_buffer(10);
-    let mut sampler = ArrayTypesSampler::new(overrides, use_chunked_encoding);
+    let mut sampler = ArrayTypesSampler::new(overrides, use_chunked_encoding, grid_policies);
     sampler.sample_spectrum_array_types(reader.iter_buffer().cloned(), false)
 }
 
@@ -322,8 +317,9 @@ pub fn sample_array_types_from_spectrum_source<
 >(
     reader: &mut R,
     overrides: &BufferOverrideTable,
-    use_chunked_encoding: Option<ChunkingStrategy>,
+    use_chunked_encoding: Option<&ChunkingStrategy>,
     prefer_peaks: bool,
+    grid_policies: Option<&GridPolicyTable>
 ) -> Vec<Arc<Field>> {
     let n = reader.len();
     if n == 0 {
@@ -336,12 +332,12 @@ pub fn sample_array_types_from_spectrum_source<
         let it = pts
             .into_iter()
             .flat_map(|i| reader.get_spectrum_by_index(i));
-        ArrayTypesSampler::new(overrides, use_chunked_encoding)
+        ArrayTypesSampler::new(overrides, use_chunked_encoding, grid_policies)
             .sample_spectrum_array_types(it, prefer_peaks)
     } else {
         log::trace!("{n} spectra detected, sampling arrays from all entries");
         let it = reader.iter();
-        let fields = ArrayTypesSampler::new(overrides, use_chunked_encoding)
+        let fields = ArrayTypesSampler::new(overrides, use_chunked_encoding, grid_policies)
             .sample_spectrum_array_types(it, prefer_peaks);
         reader.reset();
         fields
@@ -368,8 +364,9 @@ impl MzPeakWriterBuilder {
         let fields = sample_array_types_from_spectrum_source(
             reader,
             &self.spectrum_overrides(),
-            self.chunked_encoding,
+            self.chunked_encoding.as_ref(),
             false,
+            self.grid_policies.as_ref()
         );
 
         for f in fields {
@@ -378,20 +375,6 @@ impl MzPeakWriterBuilder {
 
         self
     }
-
-    // fn take_or_initialize_peak_builder(&mut self) -> ArrayBuffersBuilder {
-    //     let mut point_builder = self
-    //         .spectrum_peak_arrays
-    //         .take()
-    //         .unwrap_or_else(|| {
-    //             log::debug!("Initializing default spectrum peak builder");
-    //             ArrayBuffersBuilder::default()
-    //                 .prefix("point")
-    //                 .with_context(BufferContext::Spectrum)
-    //         });
-    //     point_builder = point_builder.extend_overrides(self.spectrum_overrides().into_iter());
-    //     point_builder
-    // }
 
     pub fn register_spectrum_peak_type<T: ToMzPeakDataSeries>(mut self) -> Self {
         self.spectrum_peak_arrays = self.spectrum_peak_arrays.add_peak_type::<T>();
@@ -409,8 +392,9 @@ impl MzPeakWriterBuilder {
         for f in sample_array_types_from_spectrum_source(
             reader,
             &self.spectrum_overrides(),
-            self.peaks_chunked_encoding.clone(),
+            self.peaks_chunked_encoding.as_ref(),
             true,
+            self.peaks_grid_policies.as_ref(),
         ) {
             self.spectrum_peak_arrays = self.spectrum_peak_arrays.add_field(f);
         }
@@ -438,7 +422,8 @@ impl MzPeakWriterBuilder {
         let fields = sample_array_types_from_spectrum_stream(
             reader,
             &self.spectrum_overrides(),
-            self.chunked_encoding,
+            self.chunked_encoding.as_ref(),
+            self.grid_policies.as_ref()
         );
 
         for f in fields {
@@ -461,7 +446,7 @@ impl MzPeakWriterBuilder {
         let fields = sample_array_types_from_chromatograms(
             iter,
             &self.chromatogram_overrides(),
-            self.chromatogram_chunked_encoding,
+            self.chromatogram_chunked_encoding.as_ref(),
         );
         for f in fields {
             self = self.add_chromatogram_field(f);
@@ -500,6 +485,7 @@ pub struct MzPeakWriterType<
     mz_metadata: FileMetadataConfig,
     controlled_vocabularies: Vec<ControlledVocabularyEntry>,
     _t: PhantomData<(C, D)>,
+    digest_summaries: Vec<DigestSummary>
 }
 
 impl<
@@ -717,7 +703,7 @@ impl<
             &spectrum_buffers,
             spectrum_buffers.index_path(),
             shuffle_mz,
-            &use_chunked_encoding,
+            use_chunked_encoding.as_ref(),
             compression,
             write_batch_config,
             spectrum_data_encryption_props,
@@ -767,6 +753,7 @@ impl<
                 ControlledVocabulary::MS.into(),
                 ControlledVocabulary::UO.into(),
             ],
+            digest_summaries: Vec::new()
         };
         this.add_spectrum_array_metadata();
         this
@@ -866,13 +853,13 @@ impl<
         )?)
     }
 
-    fn take_writer(&mut self) -> Result<Option<(String, ZipArchiveWriter<W>)>, parquet::errors::ParquetError> {
+    fn take_writer(&mut self) -> Result<Option<(DigestSummary, ZipArchiveWriter<W>)>, parquet::errors::ParquetError> {
         self.archive_writer.take().map(|v| {
             v.into_inner()
         }).transpose().map(|v| v.and_then(|v| {
             let checksum = v.digest();
             let mut v = v.into_inner();
-            v.index_mut().last_entry_mut().map(|v| v.checksum = Some(checksum.clone()));
+            v.index_mut().last_entry_mut().map(|v| v.checksum = Some(checksum.digest.clone()));
             Some((checksum, v))
         }))
     }
@@ -893,7 +880,8 @@ impl<
                 + self.spectrum_data_buffers.point_count();
             self.append_key_value_metadata(SPECTRUM_DATA_POINT_COUNT.into(), Some(n_p.to_string()));
 
-            let (mut _checksum, mut writer) = self.take_writer()?.unwrap();
+            let (mut checksum, mut writer) = self.take_writer()?.unwrap();
+            self.digest_summaries.push(checksum);
 
             if let Some(peak_file_writer) = self.spectrum_peaks_writer.take() {
                 let mut peak_file = peak_file_writer.finish()?;
@@ -927,7 +915,8 @@ impl<
                     SPECTRUM_COUNT.into(),
                     Some(self.spectrum_counter().to_string()),
                 );
-                (_checksum, writer) = self.take_writer()?.unwrap();
+                (checksum, writer) = self.take_writer()?.unwrap();
+                self.digest_summaries.push(checksum);
             }
             // ----------------------------------------------
 
@@ -954,7 +943,8 @@ impl<
                     SPECTRUM_COUNT.into(),
                     Some(self.spectrum_counter().to_string()),
                 );
-                (_checksum, writer) = self.take_writer()?.unwrap();
+                (checksum, writer) = self.take_writer()?.unwrap();
+                self.digest_summaries.push(checksum);
             }
             // ----------------------------------------------
             {
@@ -979,7 +969,8 @@ impl<
                     SPECTRUM_COUNT.into(),
                     Some(self.spectrum_counter().to_string()),
                 );
-                (_checksum, writer) = self.take_writer()?.unwrap();
+                (checksum, writer) = self.take_writer()?.unwrap();
+                self.digest_summaries.push(checksum);
             }
             // ----------------------------------------------
             {
@@ -1004,7 +995,8 @@ impl<
                     SPECTRUM_COUNT.into(),
                     Some(self.spectrum_counter().to_string()),
                 );
-                (_checksum, writer) = self.take_writer()?.unwrap();
+                (checksum, writer) = self.take_writer()?.unwrap();
+                self.digest_summaries.push(checksum);
             }
             // ----------------------------------------------
 
@@ -1046,7 +1038,8 @@ impl<
 
                 let arrays = self.wavelength_spectrum_metadata_buffer.finish_spectrum();
                 self.write_struct_arrays(arrays)?;
-                (_checksum, writer) = self.take_writer()?.unwrap();
+                (checksum, writer) = self.take_writer()?.unwrap();
+                self.digest_summaries.push(checksum);
 
                 // ----------------------------------------------
 
@@ -1079,7 +1072,8 @@ impl<
 
                 let arrays = self.wavelength_spectrum_metadata_buffer.finish_scan();
                 self.write_struct_arrays(arrays)?;
-                (_checksum, writer) = self.take_writer()?.unwrap();
+                (checksum, writer) = self.take_writer()?.unwrap();
+                self.digest_summaries.push(checksum);
 
                 // ----------------------------------------------
 
@@ -1109,7 +1103,7 @@ impl<
                                 .index_field()
                                 .name()
                                 .to_string(),
-                            &buffers.use_chunked_encoding().copied(),
+                            buffers.use_chunked_encoding(),
                             self.compression,
                             &["wavelength"],
                             encryption_props,
@@ -1148,7 +1142,8 @@ impl<
                     let buffers = self.wavelength_spectrum_data_buffers.as_mut().unwrap();
                     buffers.drain_into(self.archive_writer.as_mut().unwrap())?;
 
-                    (_checksum, writer) = self.take_writer()?.unwrap();
+                    (checksum, writer) = self.take_writer()?.unwrap();
+                    self.digest_summaries.push(checksum);
                 }
             }
 
@@ -1176,7 +1171,8 @@ impl<
                     CHROMATOGRAM_DATA_POINT_COUNT.into(),
                     Some(self.chromatogram_data_buffers.point_count().to_string()),
                 );
-                (_checksum, writer) = self.take_writer()?.unwrap();
+                (checksum, writer) = self.take_writer()?.unwrap();
+                self.digest_summaries.push(checksum);
 
                 // ----------------------------------------------
 
@@ -1195,7 +1191,8 @@ impl<
                     CHROMATOGRAM_COUNT.into(),
                     Some(self.chromatogram_counter().to_string()),
                 );
-                (_checksum, writer) = self.take_writer()?.unwrap();
+                (checksum, writer) = self.take_writer()?.unwrap();
+                self.digest_summaries.push(checksum);
 
                 // ----------------------------------------------
 
@@ -1215,7 +1212,8 @@ impl<
                     CHROMATOGRAM_COUNT.into(),
                     Some(self.chromatogram_counter().to_string()),
                 );
-                (_checksum, writer) = self.take_writer()?.unwrap();
+                (checksum, writer) = self.take_writer()?.unwrap();
+                self.digest_summaries.push(checksum);
 
                 // ----------------------------------------------
 
@@ -1229,7 +1227,7 @@ impl<
                         Self::chromatogram_data_writer_props(
                             &self.chromatogram_data_buffers,
                             BufferContext::Chromatogram.index_field().name().to_string(),
-                            &None,
+                            None,
                             self.compression,
                             encryption_props,
                         ),
@@ -1245,8 +1243,9 @@ impl<
                 if let Err(e) = self.copy_metadata_to_index() {
                     log::error!("Failed to copy metadata to file index: {e}");
                 }
-                (_checksum, writer) = self.take_writer()?.unwrap();
+                (checksum, writer) = self.take_writer()?.unwrap();
                 writer.flush()?;
+                self.digest_summaries.push(checksum);
             }
 
             Ok(writer)
@@ -1344,7 +1343,7 @@ mod test {
         let mut reader = mzdata::MZReader::open_path("small.mzML")?;
         let overrides1 = BufferOverrideTable::default();
         let array_types =
-            sample_array_types_from_spectrum_source(&mut reader, &overrides1, None, false);
+            sample_array_types_from_spectrum_source(&mut reader, &overrides1, None, false, None);
 
         assert_eq!(array_types.len(), 3);
         let mz_buffer = BufferName::new(
@@ -1372,8 +1371,9 @@ mod test {
         let array_types = sample_array_types_from_spectrum_source(
             &mut reader,
             &overrides1,
-            Some(ChunkingStrategy::Delta { chunk_size: 50.0 }),
+            Some(ChunkingStrategy::Delta { chunk_size: 50.0 }).as_ref(),
             false,
+            None,
         );
 
         assert_eq!(array_types.len(), 6);
@@ -1400,7 +1400,7 @@ mod test {
 
         let mut it = StreamingSpectrumIterator::new(reader.iter());
 
-        let array_types = sample_array_types_from_spectrum_stream(&mut it, &overrides1, None);
+        let array_types = sample_array_types_from_spectrum_stream(&mut it, &overrides1, None, None);
         assert_eq!(array_types.len(), 3);
         for f in array_types {
             if let Some(name) = BufferName::from_field(BufferContext::Spectrum, f.clone()) {

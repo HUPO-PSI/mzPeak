@@ -2489,9 +2489,9 @@ dependencies = [
 
 [[package]]
 name = "mzdata"
-version = "0.66.7"
+version = "0.67.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc40c730d0aa362f2b94674c8ecd701581667f2afe02cadfb59ddf5b6a72b52c"
+checksum = "885e59f455fe48ff9753696e2a97289b17a9a89855c0fcc299ee0c923aa42806"
 dependencies = [
  "base64-simd",
  "bitflags 2.13.1",
@@ -2531,9 +2531,9 @@ dependencies = [
 
 [[package]]
 name = "mzdata-bindata"
-version = "0.66.7"
+version = "0.67.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7f3e858d234280e585f86d47ef78baaf06b6951b0a47308e1da8897bd05a178"
+checksum = "6bb729051b239bc5e1640041d36cd092042cf439477a71fbe37c268932532909"
 dependencies = [
  "base64-simd",
  "bytemuck",
@@ -2553,9 +2553,9 @@ dependencies = [
 
 [[package]]
 name = "mzdata-meta"
-version = "0.66.7"
+version = "0.67.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb51169e7e433e8721242eba9847bf8ec6e0b88e738c5c64ff4ce511d778218f"
+checksum = "514512ed7160392fbd66672751e45aefeee911216536f304ebf0824fef1fbcb4"
 dependencies = [
  "bitflags 2.13.1",
  "chrono",
@@ -2572,9 +2572,9 @@ dependencies = [
 
 [[package]]
 name = "mzdata-param"
-version = "0.66.7"
+version = "0.67.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66b8b79ed2562d4c65ec25472e3c4e086f867ce136097f9138079ce6743034d4"
+checksum = "26ee75363a5ba8349e635aca93d1a9250dfb2aa2eb45779f986cfb1bfb9cda5f"
 dependencies = [
  "bincode",
  "context_error",
@@ -2590,9 +2590,9 @@ dependencies = [
 
 [[package]]
 name = "mzdata-spectrum"
-version = "0.66.7"
+version = "0.67.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5395c7d0fea33269112c017e37b3b65360d738431234ab7be2d2c6dbb5515e51"
+checksum = "b78be08d4553371209b1f1aabce18a913c693c770ec7d2e5f221d2d628357945"
 dependencies = [
  "identity-hash",
  "log",

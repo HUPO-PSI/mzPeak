@@ -82,7 +82,7 @@ fn chunk_encoding_parser(method_str: &str) -> Result<ChunkingStrategy, String> {
 /// A [`ChunkingStrategy`] or not.
 ///
 /// Because clap::value_parser does not like `Result<Option<T>, _>`.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 pub enum ChunkingStrategyOrNone {
     ChunkingStrategy(ChunkingStrategy),
     #[default]
@@ -310,11 +310,13 @@ impl ConvertArgs {
             self.ion_mobility_f32,
             self.intensity_slof,
         )
-        .create_type_overrides(self.chunked_encoding)
+        .create_type_overrides(self.chunked_encoding.clone())
     }
 
     pub fn chromatogram_chunked_encoding(&self) -> Option<ChunkingStrategy> {
-        self.chromatogram_chunked_encoding.or(self.chunked_encoding)
+        self.chromatogram_chunked_encoding
+            .clone()
+            .or(self.chunked_encoding.clone())
     }
 }
 
@@ -344,8 +346,8 @@ pub fn configure_writer_builder(
         .buffer_size(args.buffer_size)
         .include_time_with_spectrum_data(args.include_time_with_spectrum_data)
         .shuffle_mz(args.shuffle_mz)
-        .chunked_encoding(args.chunked_encoding)
-        .peaks_chunked_encoding(args.peak_encoding.unwrap_or_default().into())
+        .chunked_encoding(args.chunked_encoding.clone())
+        .peaks_chunked_encoding(args.peak_encoding.clone().unwrap_or_default().into())
         .chromatogram_chunked_encoding(args.chromatogram_chunked_encoding())
         .null_zeros(args.null_zeros)
         .write_batch_size(args.write_batch_size.map(usize::from))

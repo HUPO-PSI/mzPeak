@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::{fmt::Debug, path::PathBuf};
 
 use crate::buffer_descriptors::BufferTransform;
+use crate::grid::{GridPolicy, GridPolicyTable};
 use crate::peak_series::{INTENSITY_UNITS, ION_MOBILITY_ARRAY_TYPES, ION_MOBILITY_UNITS};
 use crate::{
     BufferContext, BufferName, ToMzPeakDataSeries,
@@ -51,7 +52,9 @@ pub struct MzPeakWriterBuilder {
     pub(crate) buffer_size: usize,
     pub(crate) shuffle_mz: bool,
     pub(crate) chunked_encoding: Option<ChunkingStrategy>,
+    pub(crate) grid_policies: Option<HashMap<ArrayType, GridPolicy>>,
     pub(crate) peaks_chunked_encoding: Option<ChunkingStrategy>,
+    pub(crate) peaks_grid_policies: Option<HashMap<ArrayType, GridPolicy>>,
     pub(crate) chromatogram_chunked_encoding: Option<ChunkingStrategy>,
     pub(crate) compression: Compression,
     pub(crate) write_batch_config: WriteBatchConfig,
@@ -79,6 +82,8 @@ impl Default for MzPeakWriterBuilder {
             chunked_encoding: None,
             peaks_chunked_encoding: None,
             chromatogram_chunked_encoding: None,
+            grid_policies: None,
+            peaks_grid_policies: None,
             compression: Compression::ZSTD(ZstdLevel::default()),
             write_batch_config: Default::default(),
             spectrum_fields: Vec::new(),
@@ -125,8 +130,18 @@ impl MzPeakWriterBuilder {
     /// if `Some`, otherwise use the point list representation.
     pub fn chunked_encoding(mut self, value: Option<ChunkingStrategy>) -> Self {
         log::debug!("Setting spectrum data encoding: {value:?}");
-        self.chunked_encoding = value;
+        self.chunked_encoding = value.clone();
         self.spectrum_arrays = self.spectrum_arrays.chunking_strategy(value);
+        self
+    }
+
+    pub fn add_grid_policies(mut self, policies: GridPolicyTable) -> Self {
+        let _ = self.grid_policies.insert(policies);
+        self
+    }
+
+    pub fn add_peak_grid_policies(mut self, policies: GridPolicyTable) -> Self {
+        let _ = self.grid_policies.insert(policies);
         self
     }
 
@@ -134,7 +149,7 @@ impl MzPeakWriterBuilder {
     /// if `Some`, otherwise use the point list representation.
     pub fn chromatogram_chunked_encoding(mut self, value: Option<ChunkingStrategy>) -> Self {
         log::debug!("Setting chromatogram data encoding: {value:?}");
-        self.chromatogram_chunked_encoding = value;
+        self.chromatogram_chunked_encoding = value.clone();
         self.chromatogram_arrays = self.chromatogram_arrays.chunking_strategy(value);
         self
     }
