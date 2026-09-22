@@ -572,7 +572,7 @@ impl GridModelLike for TimsTofTimsLinearGrid2 {
     }
 
     fn parameters(&self) -> Vec<f64> {
-        vec![self.0.c6, self.0.c7, self.0.slope, self.0.offset]
+        vec![self.0.c6, self.0.c7, self.0.offset, self.0.slope]
     }
 
     fn from_param(param: &Param) -> Option<Self> {
