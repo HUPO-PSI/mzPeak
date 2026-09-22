@@ -30,13 +30,9 @@ use mzdata::{
 use mzpeaks::coordinate::SimpleInterval;
 
 use crate::{
-    BufferContext, BufferName,
-    chunk_series::{
+    BufferContext, BufferName, buffer_descriptors::{BufferTransform, GRID_ENCODING}, chunk_series::{
         BufferTransformDecoder, ChunkingStrategy, DELTA_ENCODE, NO_COMPRESSION, NUMPRESS_LINEAR,
-    },
-    filter::RegressionDeltaModel,
-    peak_series::{ArrayIndex, ArrayIndexEntry, BufferFormat, data_array_to_arrow_array},
-    reader::{
+    }, filter::RegressionDeltaModel, peak_series::{ArrayIndex, ArrayIndexEntry, BufferFormat, data_array_to_arrow_array}, reader::{
         ReaderMetadata,
         index::{BasicChunkQueryIndex, PageQuery, RangeIndex, SpanDynNumeric},
         point::binary_search_arrow_index,
@@ -624,7 +620,16 @@ impl<'a> ChunkDecoder<'a> {
                     Self::unpack_secondary_arrays(arr, &name, &mut store, &decoder);
                 } else if let Some(arr) = arr.as_list_opt::<i32>() {
                     Self::unpack_secondary_arrays(arr, &name, &mut store, &decoder);
-                } else {
+                }  else if let Some(arr) = arr.as_struct_opt() {
+                    if let Some(decoder) = &decoder {
+                        if decoder.method() == BufferTransform::GridEncoding {
+                            Self::unpack_secondary_grid(arr, &name, &mut store, decoder);
+                        } else {
+                            panic!("Unsupported data type {:?} for secondary chunk collection for name {name:?}", arr.data_type())
+                        }
+                    }
+                }
+                else {
                     panic!(
                         "Unsupported data type {:?} for secondary chunk collection for name {name:?}",
                         arr.data_type()
@@ -642,6 +647,29 @@ impl<'a> ChunkDecoder<'a> {
             self.bin_map.add(store);
         }
         Ok(self.bin_map)
+    }
+
+    fn unpack_secondary_grid(arr: &StructArray, _name: &BufferName, store: &mut DataArray, _decoder: &BufferTransformDecoder) {
+        if arr.is_empty() {
+            return;
+        }
+        for i in 0..arr.len() {
+            let block = BufferTransformDecoder::grid_decode_at(arr, i, false);
+            let block: &Float64Array = block.as_primitive();
+            if block.null_count() > 0 {
+                match store.dtype() {
+                    mzdata::spectrum::BinaryDataArrayType::Float64 => store.extend_iter(block.iter().map(|v| v.unwrap_or_default())).unwrap(),
+                    mzdata::spectrum::BinaryDataArrayType::Float32 => store.extend_iter(block.iter().map(|v| v.unwrap_or_default() as f32)).unwrap(),
+                    _ => unimplemented!("Storage {:?} for grid is not implemented", store.dtype)
+                }
+            } else {
+                match store.dtype() {
+                    mzdata::spectrum::BinaryDataArrayType::Float64 => store.extend(block.values()).unwrap(),
+                    mzdata::spectrum::BinaryDataArrayType::Float32 => store.extend_iter(block.values().iter().map(|v| *v as f32)).unwrap(),
+                    _ => unimplemented!("Storage {:?} for grid is not implemented", store.dtype)
+                }
+            };
+        }
     }
 
     fn unpack_secondary_arrays<T: arrow::array::OffsetSizeTrait>(
@@ -733,6 +761,10 @@ impl<'a> ChunkDecoder<'a> {
             } else if let Some(view_rows) = view.as_list_opt::<i32>() {
                 for (i, row) in view_rows.iter().enumerate() {
                     rows[i].push((name.clone(), row));
+                }
+            } else if let Some(view_rows) = view.as_struct_opt() {
+                for i in 0..view_rows.len() {
+                    rows[i].push((name.clone(), Some(view.slice(i, 1))));
                 }
             } else {
                 panic!(
@@ -858,6 +890,15 @@ impl<'a> ChunkDecoder<'a> {
                                         self.main_axis.as_mut().unwrap(),
                                         self.delta_model,
                                     );
+                            },
+                            GRID_ENCODING => {
+                                (ChunkingStrategy::Grid { chunk_size: 50.0, grid: None }).decode_arrow(
+                                    &chunk_vals,
+                                    start as f64,
+                                    end  as f64,
+                                    self.main_axis.as_mut().unwrap(),
+                                    self.delta_model
+                                );
                             }
                             _ => {
                                 unimplemented!("{encoding}")
@@ -946,9 +987,23 @@ impl<'a> ChunkScanDecoder<'a> {
         };
         rows.resize(n_rows, Vec::new());
         for (name, view) in self.main_axis_buffers.drain(..) {
-            let view_rows = view.as_list::<i64>();
-            for (i, row) in view_rows.iter().enumerate() {
-                rows[i].push((name.clone(), row));
+            if let Some(view_rows) = view.as_list_opt::<i64>() {
+                for (i, row) in view_rows.iter().enumerate() {
+                    rows[i].push((name.clone(), row));
+                }
+            } else if let Some(view_rows) = view.as_list_opt::<i32>() {
+                for (i, row) in view_rows.iter().enumerate() {
+                    rows[i].push((name.clone(), row));
+                }
+            } else if let Some(view_rows) = view.as_struct_opt() {
+                for i in 0..view_rows.len() {
+                    rows[i].push((name.clone(), Some(view.slice(i, 1))));
+                }
+            } else {
+                panic!(
+                    "Unsupported data type {:?} for main sequence array {name}",
+                    view.data_type()
+                );
             }
         }
         return rows;
@@ -1094,6 +1149,21 @@ impl<'a> ChunkScanDecoder<'a> {
                                 entity_idx_acc
                                     .extend(std::iter::repeat_n(entity_index, n_points_added));
                             }
+                            GRID_ENCODING => {
+                                eprintln!("{name:?} {chunk_vals:?}");
+                                let delta_model = delta_model_cache.get(entity_index, || {
+                                    self.metadata.model_deltas_for(entity_index as usize)
+                                });
+                                let n_points_added = (ChunkingStrategy::Grid { chunk_size: 50.0, grid: None }).decode_arrow(
+                                    &chunk_vals,
+                                    start as f64,
+                                    end  as f64,
+                                    self.main_axis.as_mut().unwrap(),
+                                    delta_model.as_ref()
+                                );
+                                entity_idx_acc
+                                    .extend(std::iter::repeat_n(entity_index, n_points_added));
+                            }
                             _ => {
                                 unimplemented!("{encoding}")
                             }
@@ -1122,6 +1192,9 @@ impl<'a> ChunkScanDecoder<'a> {
                         );
                     }
                     NUMPRESS_LINEAR => {
+                        // This chunk is never empty if it is valid
+                    }
+                    GRID_ENCODING => {
                         // This chunk is never empty if it is valid
                     }
                     _ => {

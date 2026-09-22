@@ -11,9 +11,15 @@ use arrow::{
 use mzdata::{prelude::BuildArrayMapFrom, spectrum::ArrayType};
 
 use crate::{
-    BufferContext, BufferName, ToMzPeakDataSeries, buffer_descriptors::{BufferOverrideTable, BufferPriority, BufferTransform}, chunk_series::{ArrowArrayChunk, ChunkingStrategy}, filter::{drop_where_column_is_zero_run_arrays, nullify_at_zero_pair_arrays}, grid::GridPolicy, peak_series::{
+    BufferContext, BufferName, ToMzPeakDataSeries,
+    buffer_descriptors::{BufferOverrideTable, BufferPriority, BufferTransform},
+    chunk_series::{ArrowArrayChunk, ChunkingStrategy},
+    filter::{drop_where_column_is_zero_run_arrays, nullify_at_zero_pair_arrays},
+    grid::{GridEncoding, GridPolicy, GridPolicyTable},
+    peak_series::{
         ArrayIndex, ArrayIndexEntry, INTENSITY_ARRAY, MZ_ARRAY, TIME_ARRAY, WAVELENGTH_ARRAY,
-    }, spectrum::AuxiliaryArray
+    },
+    spectrum::AuxiliaryArray,
 };
 
 pub trait ArrayBufferWriter {
@@ -35,7 +41,13 @@ pub trait ArrayBufferWriter {
     }
 
     /// Add the provided `arrays` belonging to `fields` to the buffer
-    fn add_arrays(&mut self, fields: Fields, arrays: Vec<ArrayRef>, size: usize, is_profile: bool) -> usize;
+    fn add_arrays(
+        &mut self,
+        fields: Fields,
+        arrays: Vec<ArrayRef>,
+        size: usize,
+        is_profile: bool,
+    ) -> usize;
 
     /// Whether or not to use a gapped sparse encoding, filling zero-intensity points with nulls left
     /// after zero intensity runs were dropped ([`ArrayBufferWriter::drop_zero_intensity`]).
@@ -173,6 +185,25 @@ pub trait ArrayBufferWriter {
     }
 
     fn grid_policies(&self) -> Option<&HashMap<ArrayType, GridPolicy>>;
+
+    fn grid_policies_mut(&mut self) -> Option<&mut HashMap<ArrayType, GridPolicy>>;
+
+    fn set_current_grid_for(&mut self, array_type: ArrayType, grid: Option<GridEncoding>) -> bool {
+        if let Some(m) = self.grid_policies_mut() {
+            if let Some(policy) = m.get_mut(&array_type) {
+                policy.set_current_grid(grid);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn clear_current_grids(&mut self) {
+        if let Some(policies) = self.grid_policies_mut() {
+            policies.iter_mut().for_each(|(_, p)| p.current_grid = None);
+        }
+    }
+
     fn point_count(&self) -> u64;
     fn point_count_mut(&mut self) -> &mut u64;
 }
@@ -278,7 +309,6 @@ impl PointBuffers {
         size: usize,
         is_profile: bool,
     ) -> usize {
-
         let mut drop_index = None;
         if is_profile && self.drop_zero_intensity() {
             for i in self.drop_zero_columns.iter() {
@@ -297,17 +327,14 @@ impl PointBuffers {
                             null_at_indices.push(j);
                         }
                     }
-                    arrays = nullify_at_zero_pair_arrays(
-                        arrays,
-                        j,
-                        &null_at_indices
-                    ).unwrap();
+                    arrays = nullify_at_zero_pair_arrays(arrays, j, &null_at_indices).unwrap();
                 }
             }
-
         }
 
-        let index_of_insertion = arrays.first().and_then(|arr| arr.as_primitive::<UInt64Type>().iter().next()?);
+        let index_of_insertion = arrays
+            .first()
+            .and_then(|arr| arr.as_primitive::<UInt64Type>().iter().next()?);
         let n = arrays.iter().map(|v| v.len()).next().unwrap_or_default();
 
         let mut visited = HashSet::new();
@@ -398,7 +425,13 @@ impl ArrayBufferWriter for PointBuffers {
     }
 
     #[inline(always)]
-    fn add_arrays(&mut self, fields: Fields, arrays: Vec<ArrayRef>, size: usize, is_profile: bool) -> usize {
+    fn add_arrays(
+        &mut self,
+        fields: Fields,
+        arrays: Vec<ArrayRef>,
+        size: usize,
+        is_profile: bool,
+    ) -> usize {
         self.point_count += size as u64;
         self.add_arrays(fields, arrays, size, is_profile)
     }
@@ -448,6 +481,10 @@ impl ArrayBufferWriter for PointBuffers {
     fn grid_policies(&self) -> Option<&HashMap<ArrayType, GridPolicy>> {
         None
     }
+
+    fn grid_policies_mut(&mut self) -> Option<&mut HashMap<ArrayType, GridPolicy>> {
+        None
+    }
 }
 
 /// A data buffer for the `chunked layout`
@@ -466,7 +503,7 @@ pub struct ChunkBuffers {
     include_time: bool,
     chunking_strategy: ChunkingStrategy,
     point_count: u64,
-    grid_policies: HashMap<ArrayType, GridPolicy>
+    grid_policies: HashMap<ArrayType, GridPolicy>,
 }
 
 impl ChunkBuffers {
@@ -483,7 +520,6 @@ impl ChunkBuffers {
         include_time: bool,
         chunking_strategy: ChunkingStrategy,
         grid_policies: HashMap<ArrayType, GridPolicy>,
-
     ) -> Self {
         Self {
             chunk_array_fields,
@@ -524,7 +560,13 @@ impl ArrayBufferWriter for ChunkBuffers {
         &self.chunk_array_fields
     }
 
-    fn add_arrays(&mut self, fields: Fields, arrays: Vec<ArrayRef>, size: usize, is_profile: bool) -> usize {
+    fn add_arrays(
+        &mut self,
+        fields: Fields,
+        arrays: Vec<ArrayRef>,
+        size: usize,
+        is_profile: bool,
+    ) -> usize {
         self.chunk_buffer
             .push(StructArray::new(fields, arrays, None));
         self.is_profile_buffer.push(is_profile);
@@ -556,7 +598,8 @@ impl ArrayBufferWriter for ChunkBuffers {
             self.nullify_zero_intensity(),
             self.fields(),
             self.grid_policies(),
-        ).unwrap();
+        )
+        .unwrap();
         if let Some(chunks) = chunks {
             let (fields, arrays, _) = chunks.into_parts();
             self.add_arrays(fields, arrays, peaks.len(), false);
@@ -568,12 +611,10 @@ impl ArrayBufferWriter for ChunkBuffers {
     fn drain(&mut self) -> impl Iterator<Item = RecordBatch> {
         let prefix = self.prefix().to_string();
         let schema = self.schema.clone();
-        self.chunk_buffer
-            .drain(..)
-            .map(move |batch| {
-                let batch = RecordBatch::from(batch);
-                Self::promote_record_batch_to_struct(&prefix, batch, schema.clone())
-            })
+        self.chunk_buffer.drain(..).map(move |batch| {
+            let batch = RecordBatch::from(batch);
+            Self::promote_record_batch_to_struct(&prefix, batch, schema.clone())
+        })
     }
 
     fn prefix(&self) -> &str {
@@ -606,6 +647,10 @@ impl ArrayBufferWriter for ChunkBuffers {
 
     fn grid_policies(&self) -> Option<&HashMap<ArrayType, GridPolicy>> {
         Some(&self.grid_policies)
+    }
+
+    fn grid_policies_mut(&mut self) -> Option<&mut HashMap<ArrayType, GridPolicy>> {
+        Some(&mut self.grid_policies)
     }
 }
 
@@ -704,7 +749,13 @@ impl ArrayBufferWriter for ArrayBufferWriterVariants {
         }
     }
 
-    fn add_arrays(&mut self, fields: Fields, arrays: Vec<ArrayRef>, size: usize, is_profile: bool) -> usize {
+    fn add_arrays(
+        &mut self,
+        fields: Fields,
+        arrays: Vec<ArrayRef>,
+        size: usize,
+        is_profile: bool,
+    ) -> usize {
         match self {
             ArrayBufferWriterVariants::ChunkBuffers(chunk_buffers) => {
                 chunk_buffers.add_arrays(fields, arrays, size, is_profile)
@@ -791,11 +842,18 @@ impl ArrayBufferWriter for ArrayBufferWriterVariants {
 
     fn grid_policies(&self) -> Option<&HashMap<ArrayType, GridPolicy>> {
         match self {
+            ArrayBufferWriterVariants::ChunkBuffers(chunk_buffers) => chunk_buffers.grid_policies(),
+            ArrayBufferWriterVariants::PointBuffers(point_buffers) => point_buffers.grid_policies(),
+        }
+    }
+
+    fn grid_policies_mut(&mut self) -> Option<&mut HashMap<ArrayType, GridPolicy>> {
+        match self {
             ArrayBufferWriterVariants::ChunkBuffers(chunk_buffers) => {
-                chunk_buffers.grid_policies()
+                chunk_buffers.grid_policies_mut()
             }
             ArrayBufferWriterVariants::PointBuffers(point_buffers) => {
-                point_buffers.grid_policies()
+                point_buffers.grid_policies_mut()
             }
         }
     }
@@ -811,6 +869,7 @@ pub struct ArrayBuffersBuilder {
     include_time: bool,
     buffer_context: BufferContext,
     chunking_strategy: Option<ChunkingStrategy>,
+    grid_policies: Option<GridPolicyTable>,
 }
 
 /// The builder will default to the `point` layout
@@ -824,6 +883,7 @@ impl Default for ArrayBuffersBuilder {
             include_time: false,
             buffer_context: BufferContext::Spectrum,
             chunking_strategy: None,
+            grid_policies: None,
         }
     }
 }
@@ -834,6 +894,15 @@ impl ArrayBuffersBuilder {
     pub fn prefix(mut self, value: impl ToString) -> Self {
         self.prefix = value.to_string();
         self
+    }
+
+    /// Get the list of [`ArrayType`] that have been mapped to [`Field`] in this builder
+    pub fn covered_array_types(&self) -> Vec<ArrayType> {
+        self.array_fields
+            .iter()
+            .flat_map(|f| BufferName::from_field(self.buffer_context, f.clone()))
+            .map(|v| v.array_type)
+            .collect()
     }
 
     /// Set the [`BufferContext`] that this will build arrays for
@@ -856,8 +925,25 @@ impl ArrayBuffersBuilder {
         self.deduplicate_fields();
         for (k, v) in self.overrides.iter() {
             let f = k.to_field();
+            if f == v.to_field() {
+                continue;
+            }
+            // Matching on name here probably isn't the best solution
             if let Some(i) = self.array_fields.iter().position(|p| p.name() == f.name()) {
-                self.array_fields[i] = v.to_field();
+                if let Some(name_in) =
+                    BufferName::from_field(self.buffer_context, self.array_fields[i].clone())
+                {
+                    if name_in.buffer_format == k.buffer_format
+                        && name_in.buffer_format == v.buffer_format
+                    {
+                        log::debug!(
+                            "Replacing {:?} from {f:?} with {:?}",
+                            self.array_fields[i],
+                            v.to_field()
+                        );
+                        self.array_fields[i] = v.to_field();
+                    }
+                }
             }
         }
         self.deduplicate_fields();
@@ -869,7 +955,10 @@ impl ArrayBuffersBuilder {
         self.chunking_strategy = chunking_strategy;
         if !no_change && !self.array_fields.is_empty() {
             log::warn!("Chunking strategy changed, invalidating previous array fields");
-            log::debug!("Chunking strategy changed from {previous:?}, invalidating previous array fields to {:?}", self.chunking_strategy);
+            log::debug!(
+                "Chunking strategy changed from {previous:?}, invalidating previous array fields to {:?}",
+                self.chunking_strategy
+            );
             self.array_fields.clear();
         }
         self
@@ -878,12 +967,20 @@ impl ArrayBuffersBuilder {
     /// Register an new rule mapping from one [`BufferName`]-like to another [`BufferName`]-like
     /// when later writing arrays
     pub fn add_override(mut self, from: impl Into<BufferName>, to: impl Into<BufferName>) -> Self {
-        self.overrides.insert(from.into(), to.into());
+        let from = from.into();
+        let to = to.into();
+        if from.context != self.buffer_context || to.context != self.buffer_context {
+            return self;
+        }
+        self.overrides.insert(from, to);
         self.apply_overrides();
         self
     }
 
-    pub fn extend_overrides(mut self, iter: impl Iterator<Item = (BufferName, BufferName)>) -> Self {
+    pub fn extend_overrides(
+        mut self,
+        iter: impl Iterator<Item = (BufferName, BufferName)>,
+    ) -> Self {
         for (k, v) in iter {
             self = self.add_override(k, v);
         }
@@ -903,6 +1000,7 @@ impl ArrayBuffersBuilder {
     /// Register a new [`arrow::datatypes::FieldRef`] with the current schema
     pub fn add_field(mut self, field: FieldRef) -> Self {
         if !self.array_fields.iter().any(|f| f.name() == field.name()) {
+            log::trace!("Keeping {field:?}");
             self.array_fields.push(field);
         }
         self.apply_overrides();
@@ -911,6 +1009,15 @@ impl ArrayBuffersBuilder {
 
     pub fn fields_empty(&self) -> bool {
         self.array_fields.is_empty()
+    }
+
+    pub fn grid_policies(mut self, policies: GridPolicyTable) -> Self {
+        let _ = self.grid_policies.insert(policies);
+        self
+    }
+
+    pub fn grid_policies_ref(&self) -> Option<&HashMap<ArrayType, GridPolicy>> {
+        self.grid_policies.as_ref()
     }
 
     pub(crate) fn add_default_fields_for_context(mut self, buffer_context: BufferContext) -> Self {
@@ -1132,7 +1239,7 @@ impl ArrayBuffersBuilder {
             Vec::new(),
             self.include_time,
             self.chunking_strategy.unwrap(),
-            Default::default(),
+            self.grid_policies.unwrap_or_default(),
         )
     }
 
@@ -1167,13 +1274,15 @@ impl ArrayBuffersBuilder {
         let mut drop_zero_column = Vec::new();
         let mut nullable_targets = Vec::new();
         if self.null_zeros {
-             for (i, f) in self.array_fields.iter().enumerate() {
+            for (i, f) in self.array_fields.iter().enumerate() {
                 if let Some(buf) = BufferName::from_field(self.buffer_context, f.clone()) {
-                    if buf.transform == Some(BufferTransform::NullInterpolate) || buf.transform == Some(BufferTransform::NullZero) {
+                    if buf.transform == Some(BufferTransform::NullInterpolate)
+                        || buf.transform == Some(BufferTransform::NullZero)
+                    {
                         nullable_targets.push(i)
                     }
                 }
-             }
+            }
         }
         let mut drop_zero_columns = Vec::new();
         for (i, f) in self.array_fields.iter().enumerate() {
@@ -1203,14 +1312,21 @@ impl ArrayBuffersBuilder {
             drop_zero_columns,
         }
     }
+
+    pub fn view_array_fields(&self) -> &[Arc<Field>] {
+        &self.array_fields
+    }
 }
 
 #[cfg(test)]
 mod test {
-    use std::io::{self, prelude::*};
-    use arrow::{array::{AsArray, Float32Array, Float64Array, UInt64Array}, datatypes::Float64Type};
+    use arrow::{
+        array::{AsArray, Float32Array, Float64Array, UInt64Array},
+        datatypes::Float64Type,
+    };
     use mzdata::io::MZFileReader;
     use mzpeaks::CentroidPeak;
+    use std::io::{self, prelude::*};
 
     use super::*;
 
@@ -1248,8 +1364,6 @@ mod test {
         let arr = arr.as_primitive::<Float64Type>();
         let v = arr.value(0);
         assert_eq!(peaks[0].mz, v);
-
-
     }
 
     #[test_log::test]
@@ -1274,10 +1388,11 @@ mod test {
         let fields_of = vec![
             BufferContext::Spectrum.index_field(),
             builder.fields()[1].clone(),
-            builder.fields()[2].clone()
+            builder.fields()[2].clone(),
         ];
         let n = mzs.len();
-        let indices = Arc::new(UInt64Array::from_iter_values(std::iter::repeat_n(0, n))) as ArrayRef;
+        let indices =
+            Arc::new(UInt64Array::from_iter_values(std::iter::repeat_n(0, n))) as ArrayRef;
         let mzs = Arc::new(Float64Array::from(mzs)) as ArrayRef;
         let intensities = Arc::new(Float32Array::from(intensities)) as ArrayRef;
 

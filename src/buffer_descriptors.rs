@@ -532,12 +532,12 @@ impl BufferTransform {
 
     pub const fn array_name_fragment(&self) -> Option<&'static str> {
         match self {
-            BufferTransform::NumpressLinear => Some("numpress_linear"),
-            BufferTransform::NumpressSLOF => Some("numpress_slof"),
-            BufferTransform::NumpressPIC => Some("numpress_pic"),
+            BufferTransform::NumpressLinear => Some("numpress_linear_bytes"),
+            BufferTransform::NumpressSLOF => Some("numpress_slof_bytes"),
+            BufferTransform::NumpressPIC => Some("numpress_pic_bytes"),
             BufferTransform::NullInterpolate => None,
             BufferTransform::NullZero => None,
-            Self::GridEncoding => Some("grid_points"),
+            Self::GridEncoding => Some("grid"),
         }
     }
 
@@ -931,7 +931,7 @@ impl Display for BufferName {
                 BufferFormat::ChunkTransform => {
                     if let Some(tfm) = self.transform {
                         if let Some(fragment) = tfm.array_name_fragment() {
-                            write!(f, "{tp_name}_{fragment}_bytes")
+                            write!(f, "{tp_name}_{fragment}")
                         } else {
                             panic!(
                                 "Cannot create an array of `ChunkedTransform` with a transform that does not have an array name fragment"
@@ -955,7 +955,7 @@ impl Display for BufferName {
             if let BufferFormat::ChunkTransform = self.buffer_format {
                 if let Some(tfm) = self.transform {
                     if let Some(fragment) = tfm.array_name_fragment() {
-                        write!(f, "{tp_name}_{dtype}_{fragment}_bytes")
+                        write!(f, "{tp_name}_{dtype}_{fragment}")
                     } else {
                         panic!(
                             "Cannot create an array of `ChunkedTransform` with a transform that does not have an array name fragment"
@@ -1003,7 +1003,7 @@ impl Display for BufferName {
             if let BufferFormat::ChunkTransform = self.buffer_format {
                 if let Some(tfm) = self.transform {
                     if let Some(fragment) = tfm.array_name_fragment() {
-                        write!(f, "{tp_name}_{dtype}_{unit}_{fragment}_bytes")
+                        write!(f, "{tp_name}_{dtype}_{unit}_{fragment}")
                     } else {
                         panic!(
                             "Cannot create an array of `ChunkedTransform` with a transform that does not have an array name fragment"
@@ -1462,11 +1462,17 @@ impl BufferOverrideTable {
         let mut name = self.get(k).or(Some(k)).cloned().unwrap();
         name.buffer_priority = k.buffer_priority.max(name.buffer_priority);
         name.sorting_rank = k.sorting_rank.or(name.sorting_rank);
+        if name.buffer_format != k.buffer_format {
+            log::error!("Mapped {k} in format {} to {name} in format {}", k.buffer_format, name.buffer_format);
+        }
         name
     }
 
     /// See [`HashMap::insert`]
     pub fn insert(&mut self, k: BufferName, v: BufferName) -> Option<BufferName> {
+        if (k.buffer_format == BufferFormat::Point || v.buffer_format == BufferFormat::Point) && k.buffer_format != v.buffer_format {
+            log::warn!("Attempted to register invalid mapping rule from {k:?} to {v:?}");
+        }
         self.0.insert(k, v)
     }
 

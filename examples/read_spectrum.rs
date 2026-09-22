@@ -15,7 +15,9 @@ fn fetch(path: &PathBuf, index: usize) -> io::Result<()> {
             log::debug!("\t{k:?} => {:?}", v.data_len());
         }
     }
-    spec.pick_peaks(1.0).unwrap();
+    if spec.peaks.is_none() {
+        spec.pick_peaks(1.0).unwrap();
+    }
 
     let writer = io::stdout().lock();
     let mut writer = MGFWriter::new(writer);
@@ -23,12 +25,13 @@ fn fetch(path: &PathBuf, index: usize) -> io::Result<()> {
     drop(writer);
 
     let mut writer = io::stdout().lock();
-    writeln!(writer, "Raw Data:")?;
-    let arrays = spec.raw_arrays().unwrap();
-    let mzs = arrays.mzs()?;
-    let ints = arrays.intensities()?;
-    for (mz, i) in mzs.iter().zip(ints.iter()) {
-        writeln!(writer, "{mz}\t{i}")?;
+    if let Some(arrays) = spec.raw_arrays() && !arrays.is_empty() {
+        writeln!(writer, "Raw Data:")?;
+        let mzs = arrays.mzs()?;
+        let ints = arrays.intensities()?;
+        for (mz, i) in mzs.iter().zip(ints.iter()) {
+            writeln!(writer, "{mz}\t{i}")?;
+        }
     }
     Ok(())
 }

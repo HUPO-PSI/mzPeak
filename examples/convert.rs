@@ -5,12 +5,13 @@ use mzdata::{
     meta::{DataProcessing, ProcessingMethod, Software},
     params::Param,
     prelude::*,
-    spectrum::bindata::BinaryArrayMap3D,
+    spectrum::{ArrayType, bindata::BinaryArrayMap3D},
 };
 use mzpeak_prototyping::{
     archive::make_common_encryption_properties,
     buffer_descriptors::BufferOverrideTable,
     chunk_series::ChunkingStrategy,
+    grid::GridPolicy,
     writer::{AbstractMzPeakWriter, ArrayBufferWriter, MzPeakWriterType},
 };
 use mzpeaks::{CentroidPeak, DeconvolutedPeak};
@@ -66,6 +67,10 @@ fn chunk_encoding_parser(method_str: &str) -> Result<ChunkingStrategy, String> {
             "delta" => ChunkingStrategy::Delta { chunk_size },
             "basic" | "plain" => ChunkingStrategy::Basic { chunk_size },
             "numpress" => ChunkingStrategy::NumpressLinear { chunk_size },
+            "grid" => ChunkingStrategy::Grid {
+                chunk_size,
+                grid: None,
+            },
             _ => {
                 log::warn!("Failed to parse {method}, defaulting to delta encoding");
                 ChunkingStrategy::Delta { chunk_size }
@@ -89,6 +94,12 @@ pub enum ChunkingStrategyOrNone {
     NotChunked,
 }
 
+impl ChunkingStrategyOrNone {
+    pub fn as_opt(&self) -> Option<ChunkingStrategy> {
+        self.clone().into()
+    }
+}
+
 impl From<ChunkingStrategyOrNone> for Option<ChunkingStrategy> {
     fn from(value: ChunkingStrategyOrNone) -> Self {
         match value {
@@ -105,7 +116,7 @@ impl Display for ChunkingStrategyOrNone {
 }
 
 fn encoding_parser_opt(method_str: &str) -> Result<ChunkingStrategyOrNone, String> {
-    if method_str.is_empty() {
+    if method_str.is_empty() || method_str == "point" {
         Ok(ChunkingStrategyOrNone::NotChunked)
     } else {
         let out = chunk_encoding_parser(method_str)
@@ -294,6 +305,15 @@ You can also specify a chunk size like 'delta:50'. Defaults to 'delta:50'. It wi
     )]
     pub include_time_with_spectrum_data: bool,
 
+    /// Encode the m/z array arrays using a TOF quadratic grid model
+    #[arg(short, long)]
+    pub quadratic_mz_grid: bool,
+
+    /// Enables grid transformation of ion mobility data using either a native
+    /// or linear model
+    #[arg(short = 'G', long)]
+    pub grid_transform_ion_mobility: bool,
+
     /// A secret key to use to AES encrypt all data, preventing it from being read without the given key.
     ///
     /// The key must be 16, 24, or 32 bytes long.
@@ -309,8 +329,21 @@ impl ConvertArgs {
             self.intensity_i32,
             self.ion_mobility_f32,
             self.intensity_slof,
+            self.grid_transform_ion_mobility,
         )
         .create_type_overrides(self.chunked_encoding.clone())
+    }
+
+    pub fn create_type_overrides_for_peaks(&self) -> BufferOverrideTable {
+        mzpeak_prototyping::writer::ArrayConversionHelper::new(
+            self.mz_f32,
+            self.intensity_f32,
+            self.intensity_i32,
+            self.ion_mobility_f32,
+            self.intensity_slof,
+            self.grid_transform_ion_mobility,
+        )
+        .create_type_overrides(self.peak_encoding.clone().unwrap_or_default().into())
     }
 
     pub fn chromatogram_chunked_encoding(&self) -> Option<ChunkingStrategy> {
@@ -455,6 +488,70 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
         builder = builder.add_chromatogram_array_override(from.clone(), to.clone());
     }
 
+    for (from, to) in args.create_type_overrides_for_peaks() {
+        builder = builder.add_spectrum_peak_array_override(from, to);
+    }
+
+    // Read the array types before using them to configure the grid policies so we can then build
+    // correct schema data types.
+    let spectrum_array_types = builder.check_spectrum_array_types(&mut reader);
+    log::debug!("Collected {spectrum_array_types:?} ahead of grid configuration");
+
+    if args.chunked_encoding.as_ref().is_some_and(|g| g.is_grid())
+    {
+        let mut grid_policies = Vec::new();
+        grid_policies.push(if args.quadratic_mz_grid {
+            (
+                ArrayType::MZArray,
+                GridPolicy::quadratic(ArrayType::MZArray, Some(Tolerance::Da(1e-6))),
+            )
+        } else {
+            (
+                ArrayType::MZArray,
+                GridPolicy::linear(ArrayType::MZArray, Some(Tolerance::Da(1e-6))),
+            )
+        });
+
+        if args.grid_transform_ion_mobility {
+            for tp in spectrum_array_types.iter() {
+                if tp.is_ion_mobility() {
+                    grid_policies.push((tp.clone(), GridPolicy::linear(tp.clone(), Some(Tolerance::Da(1e-6)))));
+                }
+            }
+        }
+
+        log::debug!("Setting spectrum grid policies");
+        builder = builder.add_grid_policies(grid_policies.into_iter().collect());
+    }
+
+    if args.peak_encoding.as_ref().and_then(|v| v.as_opt()).is_some_and(|g| g.is_grid())
+    {
+
+        let mut grid_policies = Vec::new();
+        grid_policies.push(if args.quadratic_mz_grid {
+            (
+                ArrayType::MZArray,
+                GridPolicy::quadratic(ArrayType::MZArray, Some(Tolerance::Da(1e-6))),
+            )
+        } else {
+            (
+                ArrayType::MZArray,
+                GridPolicy::linear(ArrayType::MZArray, Some(Tolerance::Da(1e-6))),
+            )
+        });
+
+        if args.grid_transform_ion_mobility {
+            for tp in spectrum_array_types.iter() {
+                if tp.is_ion_mobility() {
+                    log::debug!("Collecting grids for {tp:?}");
+                    grid_policies.push((tp.clone(), GridPolicy::linear(tp.clone(), Some(Tolerance::Da(1e-6)))));
+                }
+            }
+        }
+
+        builder = builder.add_peak_grid_policies(grid_policies.into_iter().collect());
+    }
+
     builder = builder
         // Populate the spectrum data schema from whatever data is available
         .sample_array_types_from_spectrum_source(&mut reader)
@@ -487,6 +584,7 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
             // Disable old behavior of flattening 3D spectra removing the ion mobility dimension
             if let MZReaderType::BrukerTDF(tdfspectrum_reader_type) = &mut reader {
                 tdfspectrum_reader_type.set_consolidate_peaks(false);
+                tdfspectrum_reader_type.set_export_models_as_params(true);
             }
             // Loop over the spectra in the file and send them to be written
             for mut entry in reader.iter() {
@@ -498,6 +596,7 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
                             if let Ok(sorted) =
                                 BinaryArrayMap3D::stack(&arrays).and_then(|v| v.unstack())
                             {
+                                log::warn!("Restacked arrays for {}", entry.description.id);
                                 *arrays = sorted;
                             }
                         }
@@ -579,16 +678,4 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
         return Err(io::Error::other("Writer thread failed"));
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod test {
-    // use super::*;
-
-    // #[test]
-    // fn test_chunked() -> io::Result<()> {
-    //     env_logger::init();
-    //     let args = ConvertCli::parse_from("-p -c -y -z -u small.mzML -o small.chunked.mzpeak".split(" "));
-    //     run_convert(&args.filename, args.convert_args)
-    // }
 }

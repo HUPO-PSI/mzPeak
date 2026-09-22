@@ -91,7 +91,7 @@
         }
       ],
       "parameters": [],
-      "checksum": "314da0d112ed0cb150b140af703951f5c8ca4a08725c0bcc7bd5b58e9031f707767c3035debb3284e4e53fc1a4fff7592be132bc55394e284132bf223be507c4"
+      "checksum": "71f8441ab1cbe6e3f664690085a646c7e96cb0eebee401c5484984e469a5d0fe73949067378f6208f3f75f29172c77df57e4618bbeda53d23d26ed0a83acb3ce"
     },
     {
       "name": "spectra_metadata_scans.parquet",
@@ -136,7 +136,7 @@
         }
       ],
       "parameters": [],
-      "checksum": "0f7efca171830dbd92744680652b4f637f7aa56d4fdaee6fb83e5d6b98e605b1f0fc62e869dc75ce594f58efa509fd5438bf249eecf6da11af32ef1b488eb560"
+      "checksum": "7774ba12e74affba11e4f42fd7a19f541e0425b0334d5ffa05aee8812196ae5576149040f3b92b33144b545994c2bc0f43834b3716236499909343070e8e2b82"
     },
     {
       "name": "spectra_metadata_precursors.parquet",
@@ -175,7 +175,7 @@
         }
       ],
       "parameters": [],
-      "checksum": "48efc6708f837ecfc8d54083bcb821234ac4ed369fe8367581bfc59756c4fad267c71e5b838725333eaba7c1d576b46a3496571c956aa4646c3eb1733fd31668"
+      "checksum": "57fa5ce4e8ee8e93630f94ac3df164331fd5897ed444162d10df8eeb94b92e84df9e8e4cf744fce248dffdd1276136716f0af16131d43d1e765eee7761abbae4"
     },
     {
       "name": "spectra_metadata_selected_ions.parquet",
@@ -202,7 +202,7 @@
         }
       ],
       "parameters": [],
-      "checksum": "2c4a5f1b1cba51f2097e298c5f8efd941f3ce74d44cc18a78be26a1da07726ca7c25ac424cb33e3cf46b2a44f5d9128f651e9e228084e82767ebe0156ab7e97c"
+      "checksum": "a97fb80293a9a62f0e864e16b72f7a85464856626642454003649ed93ae5561c5e116b93149be207ff9cad5858745cc72c49e9076dc2298c59652ea356840a1c"
     },
     {
       "name": "chromatograms_metadata.parquet",
@@ -304,87 +304,63 @@
       "data_kind": "data_arrays",
       "column_mapping": [],
       "parameters": [],
-      "checksum": "fd306040356a430cca4598ef14fe5418273ac53ecee29891d146b4a3d9aba6e900acb8bfbd71bb50ff9b806c3668a4b08632e952e52179e41673ea59adf37be6"
+      "checksum": "6f31c7a33f0eb0fe7ceb6301f1072a5862b24760d14ab9efed8027b73aa5cf6bbe0e25d37efb9262dcdeacd4e515a5d67fc1d1ff69cc78708408f10e9083afcc"
     }
   ],
   "metadata": {
-    "sample_list": [
+    "software_list": [
       {
-        "id": "_x0031_",
-        "name": "",
+        "id": "Xcalibur",
         "parameters": [
           {
-            "accession": "MS:1000002",
-            "name": "sample name",
+            "accession": "MS:1000532",
+            "name": "Xcalibur",
             "unit": null,
-            "value": 1
+            "value": null
           }
-        ]
+        ],
+        "version": "1.1 Beta 7"
+      },
+      {
+        "id": "pwiz",
+        "parameters": [
+          {
+            "accession": "MS:1000615",
+            "name": "ProteoWizard software",
+            "unit": null,
+            "value": null
+          }
+        ],
+        "version": "3.0.23307"
+      },
+      {
+        "id": "mzpeak_prototyping_convert1",
+        "parameters": [
+          {
+            "accession": "MS:1000799",
+            "name": "custom unreleased software tool",
+            "unit": null,
+            "value": "mzpeak_prototyping_convert"
+          }
+        ],
+        "version": "0.1.0"
+      }
+    ],
+    "cv_list": [
+      {
+        "full_name": "Proteomics Standards Initiative Mass Spectrometry Ontology",
+        "id": "MS",
+        "uri": "http://purl.obolibrary.org/obo/ms/4.1.249/psi-ms.obo",
+        "version": "4.1.249"
+      },
+      {
+        "full_name": "Units of measurement ontology",
+        "id": "UO",
+        "uri": "http://purl.obolibrary.org/obo/uo/releases/2026-01-16/uo.obo",
+        "version": "2026-01-16"
       }
     ],
     "instrument_configuration_list": [
-      {
-        "components": [
-          {
-            "component_type": "ionsource",
-            "order": 1,
-            "parameters": [
-              {
-                "accession": "MS:1000073",
-                "name": "electrospray ionization",
-                "unit": null,
-                "value": null
-              },
-              {
-                "accession": "MS:1000057",
-                "name": "electrospray inlet",
-                "unit": null,
-                "value": null
-              }
-            ]
-          },
-          {
-            "component_type": "analyzer",
-            "order": 2,
-            "parameters": [
-              {
-                "accession": "MS:1000079",
-                "name": "fourier transform ion cyclotron resonance mass spectrometer",
-                "unit": null,
-                "value": null
-              }
-            ]
-          },
-          {
-            "component_type": "detector",
-            "order": 3,
-            "parameters": [
-              {
-                "accession": "MS:1000624",
-                "name": "inductive detector",
-                "unit": null,
-                "value": null
-              }
-            ]
-          }
-        ],
-        "id": 0,
-        "parameters": [
-          {
-            "accession": "MS:1000448",
-            "name": "LTQ FT",
-            "unit": null,
-            "value": null
-          },
-          {
-            "accession": "MS:1000529",
-            "name": "instrument serial number",
-            "unit": null,
-            "value": "SN06061F"
-          }
-        ],
-        "software_reference": "Xcalibur"
-      },
       {
         "components": [
           {
@@ -446,9 +422,70 @@
           }
         ],
         "software_reference": "Xcalibur"
+      },
+      {
+        "components": [
+          {
+            "component_type": "ionsource",
+            "order": 1,
+            "parameters": [
+              {
+                "accession": "MS:1000073",
+                "name": "electrospray ionization",
+                "unit": null,
+                "value": null
+              },
+              {
+                "accession": "MS:1000057",
+                "name": "electrospray inlet",
+                "unit": null,
+                "value": null
+              }
+            ]
+          },
+          {
+            "component_type": "analyzer",
+            "order": 2,
+            "parameters": [
+              {
+                "accession": "MS:1000079",
+                "name": "fourier transform ion cyclotron resonance mass spectrometer",
+                "unit": null,
+                "value": null
+              }
+            ]
+          },
+          {
+            "component_type": "detector",
+            "order": 3,
+            "parameters": [
+              {
+                "accession": "MS:1000624",
+                "name": "inductive detector",
+                "unit": null,
+                "value": null
+              }
+            ]
+          }
+        ],
+        "id": 0,
+        "parameters": [
+          {
+            "accession": "MS:1000448",
+            "name": "LTQ FT",
+            "unit": null,
+            "value": null
+          },
+          {
+            "accession": "MS:1000529",
+            "name": "instrument serial number",
+            "unit": null,
+            "value": "SN06061F"
+          }
+        ],
+        "software_reference": "Xcalibur"
       }
     ],
-    "scan_settings_list": [],
     "run": {
       "default_data_processing_id": "pwiz_Reader_Thermo_conversion",
       "default_instrument_id": 0,
@@ -456,42 +493,19 @@
       "id": "small",
       "start_time": "2005-07-20T19:44:22Z"
     },
-    "software_list": [
+    "scan_settings_list": [],
+    "sample_list": [
       {
-        "id": "Xcalibur",
+        "id": "_x0031_",
+        "name": "",
         "parameters": [
           {
-            "accession": "MS:1000532",
-            "name": "Xcalibur",
+            "accession": "MS:1000002",
+            "name": "sample name",
             "unit": null,
-            "value": null
+            "value": 1
           }
-        ],
-        "version": "1.1 Beta 7"
-      },
-      {
-        "id": "pwiz",
-        "parameters": [
-          {
-            "accession": "MS:1000615",
-            "name": "ProteoWizard software",
-            "unit": null,
-            "value": null
-          }
-        ],
-        "version": "3.0.23307"
-      },
-      {
-        "id": "mzpeak_prototyping_convert1",
-        "parameters": [
-          {
-            "accession": "MS:1000799",
-            "name": "custom unreleased software tool",
-            "unit": null,
-            "value": "mzpeak_prototyping_convert"
-          }
-        ],
-        "version": "0.1.0"
+        ]
       }
     ],
     "data_processing_method_list": [
@@ -530,7 +544,6 @@
         ]
       }
     ],
-    "version": "0.9.0",
     "file_description": {
       "contents": [
         {
@@ -574,19 +587,6 @@
         }
       ]
     },
-    "cv_list": [
-      {
-        "full_name": "Proteomics Standards Initiative Mass Spectrometry Ontology",
-        "id": "MS",
-        "uri": "http://purl.obolibrary.org/obo/ms/4.1.249/psi-ms.obo",
-        "version": "4.1.249"
-      },
-      {
-        "full_name": "Units of measurement ontology",
-        "id": "UO",
-        "uri": "http://purl.obolibrary.org/obo/uo/releases/2026-01-16/uo.obo",
-        "version": "2026-01-16"
-      }
-    ]
+    "version": "0.9.0"
   }
 }

@@ -6,20 +6,12 @@ use std::{
 };
 
 use crate::{
-    BufferContext,
-    archive::{ArchiveReader, ArchiveSource, DataKind, FileIndex},
-    buffer_descriptors::{ArrayIndex, SerializedArrayIndex, arrow_to_array_type},
-    constants::{
+    BufferContext, archive::{ArchiveReader, ArchiveSource, DataKind, FileIndex}, buffer_descriptors::{ArrayIndex, SerializedArrayIndex, arrow_to_array_type}, constants::{
         CHROMATOGRAM, CHROMATOGRAM_ARRAY_INDEX, INDEX,
         PRECURSOR, SCAN, SELECTED_ION, SOURCE_INDEX, SPECTRUM,
         SPECTRUM_ARRAY_INDEX, SPECTRUM_INDEX, WAVELENGTH_SPECTRUM_ARRAY_INDEX,
-    },
-    filter::RegressionDeltaModel,
-    param::MetadataMapping,
-    reader::{
-        index::{QueryIndex, SpectrumDataIndex, SpectrumMetadataIndexLike, SpectrumPointIndex},
-        utils::MaskSet,
-        visitor::{
+    }, filter::RegressionDeltaModel, param::MetadataMapping, peak_series::BufferFormat, reader::{
+        index::{QueryIndex, SpectrumChunkIndex, SpectrumDataIndex, SpectrumMetadataIndexLike, SpectrumPointIndex}, utils::MaskSet, visitor::{
             CompoundIndexVisitor, DoubleIndexed, Indexed, MzChromatogramBuilder,
             MzPrecursorVisitor, MzScanVisitor, MzSelectedIonVisitor, MzSpectrumVisitor,
         },
@@ -397,10 +389,19 @@ impl PeakMetadata {
             }
         }
         if has_arrays {
-            let index = SpectrumDataIndex::Point(SpectrumPointIndex::from_reader(
-                reader,
-                &this.array_indices,
-            ));
+            let index = if BufferFormat::Point.prefix() == this.array_indices.prefix {
+                SpectrumDataIndex::Point(SpectrumPointIndex::from_reader(
+                    reader,
+                    &this.array_indices,
+                ))
+            } else if BufferFormat::Chunk.prefix() == this.array_indices.prefix {
+                SpectrumDataIndex::Chunk(SpectrumChunkIndex::from_reader(
+                    reader,
+                    &this.array_indices,
+                ))
+            } else {
+                panic!("Prefix {} not recognized", this.array_indices.prefix)
+            };
             this.query_index = index;
             Some(this)
         } else {

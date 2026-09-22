@@ -10,7 +10,7 @@ import numpy as np
 
 import pyarrow as pa
 try:
-    import pynumpress
+    import pynumpress # pyright: ignore  # noqa: I001
 except ImportError:
     pynumpress = None
 
@@ -19,6 +19,7 @@ from pyarrow import parquet as pq
 
 from .util import _SeekableIter, _SeekableMixin, Span, _slice_to_range, DTYPES
 from .filters import null_delta_decode, fill_nulls
+from .grid import grid_model_from, GridLike
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -438,6 +439,7 @@ NUMPRESS_LINEAR = {"cv_id": 1, "accession": 1002312}
 DELTA_ENCODING_CURIE = "MS:1003089"
 NO_COMPRESSION_CURIE = "MS:1000576"
 NUMPRESS_LINEAR_CURIE = "MS:1002312"
+GRID_CURIE = "MS:1003826"
 
 NUMPRESS_SLOF_CURIE = "MS:1002314"
 NUMPRESS_PIC_CURIE = "MS:1002313"
@@ -455,6 +457,18 @@ psims_dtypes = {
 
 
 _SpectrumArrays = dict[str, np.ndarray]
+
+
+def find_transform_for(name: str, array_index: dict[str, dict]):
+    array_name = array_index[name]["array_name"]
+    for colname, entry in array_index.items():
+        if (
+            entry["array_name"] == array_name
+            and BufferFormat.from_str(entry["buffer_format"])
+            == BufferFormat.ChunkTransform
+        ):
+            return colname
+    raise KeyError(name)
 
 
 class _BatchCleanerBase:
@@ -656,6 +670,9 @@ class _ChunkBatchCleaner(_BatchCleanerBase):
         }
         return has_transforms
 
+    def find_transform_for(self, name: str):
+        return find_transform_for(name, self.array_index)
+
     def find_axis_prefix(self):
         axis_prefix = None
         for k, v in self.array_index.items():
@@ -687,6 +704,7 @@ class _ChunkBatchCleaner(_BatchCleanerBase):
     def prescan_chunks(self, chunks: list[dict[str, Any]]):
         n = 0
         numpress_chunks = []
+        main_key = f"{self.axis_prefix}_chunk_values"
         for chunk in chunks:
             # The +1 is to account for the starting point
             encoding = chunk["chunk_encoding"].as_py()
@@ -696,7 +714,10 @@ class _ChunkBatchCleaner(_BatchCleanerBase):
                 NO_COMPRESSION_CURIE,
                 DELTA_ENCODING_CURIE,
             ):
-                n += len(chunk[f"{self.axis_prefix}_chunk_values"]) + 1
+                n += len(chunk[main_key]) + 1
+            elif encoding == GRID_CURIE:
+                grid_chunk = chunk[self.find_transform_for(main_key)]
+                n += len(grid_chunk['indices'])
             elif encoding in (NUMPRESS_LINEAR, NUMPRESS_LINEAR_CURIE):
                 if pynumpress is None:
                     raise ImportError("Decoding MS-Numpress compressed arrays requires the `pynumpress` library.")
@@ -836,6 +857,7 @@ class _ChunkBatchCleaner(_BatchCleanerBase):
                     main_axis_array[offset : offset + chunk_size] = steps
                 else:
                     main_axis_array[offset : offset + chunk_size] = np.asarray(steps)
+            # Numpress linear encoding
             elif encoding in (NUMPRESS_LINEAR, NUMPRESS_LINEAR_CURIE):
                 part: np.ndarray = next(numpress_chunks_it)
                 if coordinate_range is not None:
@@ -853,6 +875,18 @@ class _ChunkBatchCleaner(_BatchCleanerBase):
                         part = np.asarray(part)
                         chunk_size = len(part)
                 main_axis_array[offset : offset + chunk_size] = part
+            # Grid encoding
+            elif encoding == GRID_CURIE:
+                grid_transform = self.find_transform_for(values_key)
+                grid_chunk = chunk[grid_transform]
+                values = self.grid_decode(grid_chunk, True)
+                if coordinate_range is not None:
+                    mask = (values >= coordinate_range.start) & (
+                        values <= coordinate_range.end
+                    )
+                    values = values[mask]
+                chunk_size = len(values)
+                main_axis_array[offset : offset + chunk_size] = values
             else:
                 raise ValueError(f"Unsupported chunk encoding {encoding}")
 
@@ -865,7 +899,12 @@ class _ChunkBatchCleaner(_BatchCleanerBase):
                 ) or k in skip:
                     continue
                 else:
-                    if v.values is not None:
+                    if k in self.has_transforms and self.has_transforms[k] == GRID_CURIE:
+                        values = self.grid_decode(v, delta_encoded=False)
+                        if mask is not None:
+                            values = values[mask]
+                        arrays_of[k][offset : offset + chunk_size] = values
+                    elif v.values is not None:
                         values = np.asarray(v.values)
                         if k in self.has_transforms:
                             if self.has_transforms[k] == NUMPRESS_SLOF_CURIE:
@@ -891,6 +930,18 @@ class _ChunkBatchCleaner(_BatchCleanerBase):
             offset += chunk_size
         arrays_of[self.axis_prefix] = main_axis_array
         return offset, had_nulls
+
+    def grid_decode(self, grid_chunk: pa.StructScalar, delta_encoded: bool = False) -> np.ndarray:
+        grid_type = grid_chunk['grid_type'].as_py()
+        grid_params = np.asarray(grid_chunk['parameters'].values)
+        grid_model: GridLike = grid_model_from(grid_type, grid_params)
+
+        indices = np.asarray(grid_chunk["indices"].values)
+        # Primary encoding dimension is sorted and delta encoded
+        if delta_encoded:
+            indices = np.cumsum(indices)
+        values = grid_model.from_index(indices)
+        return values
 
     def expand(self, chunks: list[dict[str, Any]], coordinate_range: Span[float] | None = None):
         axis_prefix = self.axis_prefix

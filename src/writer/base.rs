@@ -25,12 +25,22 @@ use parquet::{
 };
 
 use crate::{
-    BufferContext, ToMzPeakDataSeries, archive::{FileEntry, MzPeakArchiveType}, chunk_series::{ArrowArrayChunk, ChunkingStrategy}, constants::{
-        CV_LIST_KEY, DATA_PROCESSING_METHOD_LIST_KEY, FILE_DESCRIPTION_KEY, INSTRUMENT_CONFIGURATION_LIST_KEY, MS_RUN_KEY, MZPEAK_VERSION, SAMPLE_LIST_KEY, SCAN_SETTINGS_LIST_KEY, SOFTWARE_LIST_KEY, VERSION_KEY
-    }, filter::select_delta_model, param::ControlledVocabularyEntry, peak_series::{INTENSITY_ARRAY, WAVELENGTH_ARRAY, array_map_to_schema_arrays_and_excess}, spectrum::AuxiliaryArray, writer::{
+    BufferContext, ToMzPeakDataSeries,
+    archive::{FileEntry, MzPeakArchiveType},
+    chunk_series::{ArrowArrayChunk, ChunkingStrategy},
+    constants::{
+        CV_LIST_KEY, DATA_PROCESSING_METHOD_LIST_KEY, FILE_DESCRIPTION_KEY,
+        INSTRUMENT_CONFIGURATION_LIST_KEY, MS_RUN_KEY, MZPEAK_VERSION, SAMPLE_LIST_KEY,
+        SCAN_SETTINGS_LIST_KEY, SOFTWARE_LIST_KEY, VERSION_KEY,
+    },
+    filter::select_delta_model,
+    param::ControlledVocabularyEntry,
+    peak_series::{INTENSITY_ARRAY, WAVELENGTH_ARRAY, array_map_to_schema_arrays_and_excess},
+    spectrum::AuxiliaryArray,
+    writer::{
         ArrayBufferWriter, ArrayBufferWriterVariants, ArrayBuffersBuilder, ChromatogramBuilder,
         MiniPeakWriterType, SpectrumBuilder, WavelengthSpectrumBuilder, WriteBatchConfig,
-    }
+    },
 };
 
 macro_rules! implement_mz_metadata {
@@ -239,7 +249,7 @@ impl GenericDataArrayWriter {
                     buffer.drop_zero_intensity(),
                     buffer.nullify_zero_intensity(),
                     buffer.fields(),
-                    buffer.grid_policies()
+                    buffer.grid_policies(),
                 )?;
 
                 if let Some(chunks) = chunks {
@@ -302,7 +312,7 @@ impl GenericDataArrayWriter {
                 buffer_ref.drop_zero_intensity(),
                 buffer_ref.nullify_zero_intensity(),
                 buffer_ref.fields(),
-                buffer_ref.grid_policies()
+                buffer_ref.grid_policies(),
             )?;
             if let Some(chunks) = chunks {
                 let size = chunks.len();
@@ -556,7 +566,7 @@ pub trait AbstractMzPeakWriter {
                     buffer_ref.drop_zero_intensity(),
                     buffer_ref.nullify_zero_intensity(),
                     buffer_ref.fields(),
-                    buffer_ref.grid_policies()
+                    buffer_ref.grid_policies(),
                 )?;
 
                 if let Some(chunks) = chunks {
@@ -750,7 +760,7 @@ pub trait AbstractMzPeakWriter {
                 is_profile,
                 nullify_zero_intensity,
                 buffer_ref.fields(),
-                buffer_ref.grid_policies()
+                buffer_ref.grid_policies(),
             )?;
 
             if let Some(chunks) = chunks {
@@ -825,7 +835,7 @@ pub trait AbstractMzPeakWriter {
                 false,
                 false,
                 buffer_ref.fields(),
-                buffer_ref.grid_policies()
+                buffer_ref.grid_policies(),
             )?;
 
             if let Some(chunks) = chunks {
@@ -892,6 +902,90 @@ pub trait AbstractMzPeakWriter {
             .ok_or_else(|| io::Error::other("Cannot create peak writer"))
     }
 
+    fn configure_spectrum_grids_from<
+        CI: ToMzPeakDataSeries + CentroidLike,
+        DI: ToMzPeakDataSeries + DeconvolutedCentroidLike,
+    >(&mut self, spectrum: &impl SpectrumLike<CI, DI>) {
+        if self.spectrum_data_buffer_mut().grid_policies().is_some()
+            || self
+                .get_or_create_spectrum_peak_writer()
+                .ok()
+                .and_then(|v| v.grid_policies())
+                .is_some()
+        {
+            let mut policy_targets = Vec::new();
+            self.spectrum_data_buffer_mut().clear_current_grids();
+            if let Some(w) = self.spectrum_peak_writer() {
+                w.clear_current_grids();
+            }
+
+            if let Some(policies) = self.spectrum_data_buffer_mut().grid_policies_mut() {
+                for (_, policy) in policies.iter_mut() {
+                    let grid = spectrum
+                        .raw_arrays()
+                        .and_then(|a| policy.model_from_array_map(a, Some(5e-4)));
+                    if grid.is_some() {
+                        policy_targets.push((policy.array_type.clone(), grid.clone()));
+                        policy.set_current_grid(grid);
+                        log::trace!(
+                            "Set grid to {grid:?} @ {:?} for {}",
+                            policy.array_type,
+                            spectrum.id()
+                        );
+                    } else {
+                        let grid = policy.model_from_peaks(spectrum.peaks(), Some(5e-4));
+                        log::trace!(
+                            "Set grid to {grid:?} @ {:?} for {} from peaks",
+                            policy.array_type,
+                            spectrum.id()
+                        );
+                        policy.set_current_grid(grid);
+                        policy_targets.push((policy.array_type.clone(), grid.clone()));
+                    }
+                }
+            }
+
+            if let Some(peak_policies) = self
+                .spectrum_peak_writer()
+                .and_then(|w| w.grid_policies_mut())
+            {
+                for (_, policy) in peak_policies.iter_mut() {
+                    if let Some((_, grid)) = policy_targets
+                        .iter()
+                        .find(|pair| pair.0 == policy.array_type)
+                    {
+                        log::trace!(
+                            "Set peak grid to {grid:?} @ {:?} for {} from primary arrays (reuse)",
+                            policy.array_type,
+                            spectrum.id()
+                        );
+                        policy.set_current_grid(grid.clone());
+                    } else {
+                        let grid = spectrum
+                            .raw_arrays()
+                            .and_then(|a| policy.model_from_array_map(a, Some(5e-4)));
+                        if grid.is_some() {
+                            policy.set_current_grid(grid);
+                            log::trace!(
+                                "Set peak grid to {grid:?} @ {:?} for {} from primary arrays",
+                                policy.array_type,
+                                spectrum.id()
+                            );
+                        } else {
+                            let grid = policy.model_from_peaks(spectrum.peaks(), Some(5e-4));
+                            log::trace!(
+                                "Set peak grid to {grid:?} @ {:?} for {} from peaks",
+                                policy.array_type,
+                                spectrum.id()
+                            );
+                            policy.set_current_grid(grid);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Write the spectrum data of any dimensions to the data buffer.
     ///
     /// Uses [`SpectrumLike::peaks`] to decide which kind of data to write.
@@ -911,6 +1005,8 @@ pub trait AbstractMzPeakWriter {
         } else {
             None
         };
+
+        self.configure_spectrum_grids_from(spectrum);
 
         let entry_derived = if matches!(
             spectrum.peaks(),
@@ -989,19 +1085,18 @@ pub trait AbstractMzPeakWriter {
         buffer_size: usize,
         encryption_properties: &HashMap<String, Arc<FileEncryptionProperties>>,
     ) -> io::Result<MiniPeakWriterType<S>> {
-        let peak_buffer: ArrayBufferWriterVariants = if peak_buffer_builder.use_chunked_encoding().is_some() {
-            peak_buffer_builder.include_time(include_time).build_chunked(
-                Arc::new(Schema::empty()),
-                BufferContext::Spectrum,
-                false,
-            ).into()
-        } else {
-            peak_buffer_builder.include_time(include_time).build(
-                Arc::new(Schema::empty()),
-                BufferContext::Spectrum,
-                false,
-            ).into()
-        };
+        let peak_buffer: ArrayBufferWriterVariants =
+            if peak_buffer_builder.use_chunked_encoding().is_some() {
+                peak_buffer_builder
+                    .include_time(include_time)
+                    .build_chunked(Arc::new(Schema::empty()), BufferContext::Spectrum, false)
+                    .into()
+            } else {
+                peak_buffer_builder
+                    .include_time(include_time)
+                    .build(Arc::new(Schema::empty()), BufferContext::Spectrum, false)
+                    .into()
+            };
 
         let peak_encrytion_props = encryption_properties
             .get(&FileEntry::from(MzPeakArchiveType::SpectrumPeakDataArrays).name)
@@ -1011,7 +1106,7 @@ pub trait AbstractMzPeakWriter {
             &peak_buffer,
             peak_buffer.index_path(),
             shuffle_mz,
-            None,
+            peak_buffer.chunking_strategy(),
             compression,
             write_batch_config,
             peak_encrytion_props,
@@ -1070,10 +1165,8 @@ pub trait AbstractMzPeakWriter {
 
         for c in parquet_schema.columns().iter() {
             if c.name().ends_with("index") {
-                builder = builder.set_column_encoding(
-                    c.path().clone(),
-                    Encoding::DELTA_BINARY_PACKED
-                );
+                builder =
+                    builder.set_column_encoding(c.path().clone(), Encoding::DELTA_BINARY_PACKED);
             }
         }
 
@@ -1277,7 +1370,15 @@ pub trait AbstractMzPeakWriter {
                 data_props = data_props
                     .set_dictionary_page_size_limit(DEFAULT_DICTIONARY_PAGE_SIZE_LIMIT * 2);
             }
-            if c.name().ends_with("_index") {
+            if colpath.ends_with("_index") {
+                log::debug!("{}: delta binary packing", c.path());
+                data_props =
+                    data_props.set_column_encoding(c.path().clone(), Encoding::DELTA_BINARY_PACKED);
+            }
+            if colpath.contains("_grid") && colpath.contains("indices") && matches!(
+                c.physical_type(),
+                parquet::basic::Type::INT32
+            ) {
                 log::debug!("{}: delta binary packing", c.path());
                 data_props =
                     data_props.set_column_encoding(c.path().clone(), Encoding::DELTA_BINARY_PACKED);

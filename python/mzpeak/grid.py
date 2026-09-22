@@ -70,7 +70,7 @@ class LinearGrid(GridLike):
         ii = ((values - (low * scale)) / step_size).astype(np.uint32)
         X = np.stack([np.ones_like(ii), ii], -1)
         par = np.linalg.lstsq(X, values)[0]
-        return cls(par[0], par[1])
+        return cls(par[0], par[1], scale)
 
     def parameters(self):
         return np.array([self.intercept, self.slope, self.scale])
@@ -138,8 +138,8 @@ class BrukerTimsTOFTimsLinearGrid2(GridLike):
 
     c6: float
     c7: float
-    intercept: float
     slope: float
+    intercept: float
 
     def from_index(self, value: int | npt.NDArray[np.uint32]):
         return 1.0 / (self.c6 + self.c7 / (self.intercept + self.slope * value))
@@ -149,7 +149,7 @@ class BrukerTimsTOFTimsLinearGrid2(GridLike):
         return ((self.c7 / d) - self.intercept) / self.slope
 
     def parameters(self):
-        return np.array([self.c6, self.c7, self.intercept, self.slope])
+        return np.array([self.c6, self.c7, self.slope, self.intercept])
 
 
 @dataclass
@@ -222,5 +222,7 @@ def grid_model_from(accession: str, parameters: npt.NDArray[np.float64]) -> Grid
             return SquareRootLinearGrid(*parameters)
         case BrukerTimsTOFTimsLinearGrid2.accession:
             return BrukerTimsTOFTimsLinearGrid2(*parameters)
+        case BrukerTimsTOFMzGrid2.accession:
+            return BrukerTimsTOFMzGrid2(*parameters)
         case _:
             raise KeyError(accession)

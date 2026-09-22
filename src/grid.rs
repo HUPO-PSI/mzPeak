@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 
-use mzdata::io::tdf::clamp_u32;
+use mzdata::io::tdf::{MzCalibrationModel2, TimsCalibrationModel2, clamp_u32};
 use mzdata::params::{ParamDescribed, ParamLike};
-use mzdata::spectrum::ArrayType;
+use mzdata::spectrum::{ArrayType, BinaryArrayMap};
+use mzdata::spectrum::bindata::{BuildArrayMapFrom, ByteArrayView};
 use mzdata::{
     curie,
     params::{CURIE, Param, ParamValue},
 };
-use mzpeaks::Tolerance;
+use mzpeaks::{CentroidLike, DeconvolutedCentroidLike, MZLocated, MassLocated, Tolerance};
 
 #[inline(always)]
 fn param_list_to_floats(param: &Param) -> Option<impl Iterator<Item = Option<f64>> + '_> {
@@ -29,6 +30,10 @@ pub trait GridModelLike {
     fn from_index(&self, index: u32) -> f64;
     fn parameters(&self) -> Vec<f64>;
     fn from_param(parameters: &Param) -> Option<Self>
+    where
+        Self: Sized;
+
+    fn from_parameters(grid_type: CURIE, parameters: &[f64]) -> Option<Self>
     where
         Self: Sized;
 
@@ -104,7 +109,7 @@ impl LinearGrid {
                 let y = ($v * scale);
                 let x = (y - low) / step_size;
                 (x, y)
-            }}
+            }};
         }
 
         let mut ymean = [0.0; 4];
@@ -140,7 +145,11 @@ impl LinearGrid {
             let xd = x.map(|x| x - xmean);
             let yd = y.map(|y| y - ymean);
 
-            for ((y, x), yo) in yd.into_iter().zip(xd.iter().copied()).zip(xydiff.iter_mut()) {
+            for ((y, x), yo) in yd
+                .into_iter()
+                .zip(xd.iter().copied())
+                .zip(xydiff.iter_mut())
+            {
                 *yo += y * x;
             }
             for (x, xo) in xd.into_iter().zip(xdiff.iter_mut()) {
@@ -150,7 +159,6 @@ impl LinearGrid {
 
         let mut xydiff = xydiff.into_iter().sum::<f64>();
         let mut xdiff = xdiff.into_iter().sum::<f64>();
-
 
         for v in last {
             let (x, y) = xy!(v scalar);
@@ -166,11 +174,11 @@ impl LinearGrid {
         let model = Self::new(intercept, slope, scale);
 
         if values.is_empty() {
-            return Some(model)
+            return Some(model);
         }
-        let min = *values.first().unwrap();
-        let max = *values.last().unwrap();
-        (model.from_index(model.to_index(min)) < model.from_index(model.to_index(max))).then(|| model)
+        let (min, max) = GridPolicy::minmax(values).unwrap();
+        (model.from_index(model.to_index(min)) < model.from_index(model.to_index(max)))
+            .then(|| model)
     }
 }
 
@@ -188,7 +196,7 @@ impl GridModelLike for LinearGrid {
     }
 
     fn parameters(&self) -> Vec<f64> {
-        vec![self.intercept, self.slope]
+        vec![self.intercept, self.slope, self.scale]
     }
 
     fn from_param(parameters: &Param) -> Option<Self>
@@ -196,6 +204,20 @@ impl GridModelLike for LinearGrid {
         Self: Sized,
     {
         Self::from_param(parameters)
+    }
+
+    fn from_parameters(grid_type: CURIE, parameters: &[f64]) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        if parameters.len() > 3 || parameters.len() < 2 || grid_type != Self::ACCESSION {
+            return None;
+        }
+        Some(Self::new(
+            parameters[0],
+            parameters[1],
+            parameters.get(2).copied().unwrap_or(1.0),
+        ))
     }
 }
 
@@ -257,12 +279,11 @@ impl SquareRootLinearGrid {
                 let y = ($v * scale).sqrt();
                 let x = (y - low_sqrt) / step_size;
                 (x, y)
-            }}
+            }};
         }
 
         let (it, last) = values.as_chunks::<4>();
         for v in it {
-
             let (x, y) = xy!(v vector);
             for (y, yo) in y.into_iter().zip(ymean.iter_mut()) {
                 *yo += y;
@@ -291,7 +312,11 @@ impl SquareRootLinearGrid {
             let xd = x.map(|x| x - xmean);
             let yd = y.map(|y| y - ymean);
 
-            for ((y, x), yo) in yd.into_iter().zip(xd.iter().copied()).zip(xydiff.iter_mut()) {
+            for ((y, x), yo) in yd
+                .into_iter()
+                .zip(xd.iter().copied())
+                .zip(xydiff.iter_mut())
+            {
                 *yo += y * x;
             }
             for (x, xo) in xd.into_iter().zip(xdiff.iter_mut()) {
@@ -315,11 +340,12 @@ impl SquareRootLinearGrid {
         let intercept = ymean - slope * xmean;
         let model = Self::new(intercept, slope, scale);
         if values.is_empty() {
-            return Some(model)
+            return Some(model);
         }
-        let min = *values.first().unwrap();
-        let max = *values.last().unwrap();
-        (model.from_index(model.to_index(min)) < model.from_index(model.to_index(max))).then(|| model)
+
+        let (min, max) = GridPolicy::minmax(values).unwrap();
+        (model.from_index(model.to_index(min)) < model.from_index(model.to_index(max)))
+            .then(|| model)
     }
 }
 
@@ -345,6 +371,20 @@ impl GridModelLike for SquareRootLinearGrid {
         Self: Sized,
     {
         Self::from_param(parameters)
+    }
+
+    fn from_parameters(grid_type: CURIE, parameters: &[f64]) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        if parameters.len() > 3 || parameters.len() < 2 || grid_type != Self::ACCESSION {
+            return None;
+        }
+        Some(Self::new(
+            parameters[0],
+            parameters[1],
+            parameters.get(2).copied().unwrap_or(1.0),
+        ))
     }
 }
 
@@ -412,12 +452,19 @@ impl GridModelLike for TimsTofMzGrid2 {
     }
 
     fn parameters(&self) -> Vec<f64> {
-        self.0.as_param().value().as_slice().iter().map(|v| v.to_f64().unwrap()).collect()
+        self.0
+            .as_param()
+            .value()
+            .as_slice()
+            .iter()
+            .map(|v| v.to_f64().unwrap())
+            .collect()
     }
 
     fn from_param(parameters: &Param) -> Option<Self>
     where
-        Self: Sized {
+        Self: Sized,
+    {
         let v = parameters.as_slice();
         let mut it = v.iter();
         let c0 = it.next()?.to_f64().ok()?;
@@ -427,7 +474,35 @@ impl GridModelLike for TimsTofMzGrid2 {
         let c4 = it.next()?.to_f64().ok()?;
         let digitizer_timebase = it.next()?.to_f64().ok()?;
         let digitizer_delay = it.next()?.to_f64().ok()?;
-        Some(Self(mzdata::io::tdf::MzCalibrationModel2::new(2, c0, beta, c2, c3, c4, digitizer_timebase, digitizer_delay)))
+        Some(Self(mzdata::io::tdf::MzCalibrationModel2::new(
+            2,
+            c0,
+            beta,
+            c2,
+            c3,
+            c4,
+            digitizer_timebase,
+            digitizer_delay,
+        )))
+    }
+
+    fn from_parameters(grid_type: CURIE, parameters: &[f64]) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        if parameters.len() != 7 || grid_type != Self::ACCESSION {
+            return None;
+        }
+        Some(Self::new(MzCalibrationModel2::new(
+            0,
+            parameters[0],
+            parameters[1],
+            parameters[2],
+            parameters[3],
+            parameters[4],
+            parameters[5],
+            parameters[6],
+        )))
     }
 }
 
@@ -502,6 +577,21 @@ impl GridModelLike for TimsTofTimsLinearGrid2 {
 
     fn from_param(param: &Param) -> Option<Self> {
         Self::from_param(param)
+    }
+
+    fn from_parameters(grid_type: CURIE, parameters: &[f64]) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        if parameters.len() != 4 || grid_type != Self::ACCESSION {
+            return None;
+        }
+        Some(Self::new(TimsCalibrationModel2::new(
+            parameters[0],
+            parameters[1],
+            parameters[2],
+            parameters[3],
+        )))
     }
 }
 
@@ -581,14 +671,38 @@ impl GridModelLike for GridEncoding {
     {
         match parameters.curie()? {
             LinearGrid::ACCESSION => LinearGrid::from_param(parameters).map(Self::from),
-            SquareRootLinearGrid::ACCESSION => SquareRootLinearGrid::from_param(parameters).map(Self::from),
-            TimsTofTimsLinearGrid2::ACCESSION => TimsTofTimsLinearGrid2::from_param(parameters).map(Self::from),
+            SquareRootLinearGrid::ACCESSION => {
+                SquareRootLinearGrid::from_param(parameters).map(Self::from)
+            }
+            TimsTofTimsLinearGrid2::ACCESSION => {
+                TimsTofTimsLinearGrid2::from_param(parameters).map(Self::from)
+            }
             TimsTofMzGrid2::ACCESSION => TimsTofMzGrid2::from_param(parameters).map(Self::from),
             _ => None,
         }
     }
-}
 
+    fn from_parameters(grid_type: CURIE, parameters: &[f64]) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        match grid_type {
+            LinearGrid::ACCESSION => {
+                LinearGrid::from_parameters(grid_type, parameters).map(Self::from)
+            }
+            SquareRootLinearGrid::ACCESSION => {
+                SquareRootLinearGrid::from_parameters(grid_type, parameters).map(Self::from)
+            }
+            TimsTofTimsLinearGrid2::ACCESSION => {
+                TimsTofTimsLinearGrid2::from_parameters(grid_type, parameters).map(Self::from)
+            }
+            TimsTofMzGrid2::ACCESSION => {
+                TimsTofMzGrid2::from_parameters(grid_type, parameters).map(Self::from)
+            }
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct GridPolicy {
@@ -598,26 +712,130 @@ pub struct GridPolicy {
     pub fallback_square_root_linear: bool,
     /// The maximum error to tolerate when using a fitted grid
     pub maximum_error_tolerance: Option<Tolerance>,
+    #[serde(skip)]
+    pub current_grid: Option<GridEncoding>,
 }
 
 impl GridPolicy {
-    pub const fn new(array_type: ArrayType, fallback_square_root_linear: bool, maximum_error_tolerance: Option<Tolerance>) -> Self {
-        Self { array_type, fallback_square_root_linear, maximum_error_tolerance }
+    pub const fn new(
+        array_type: ArrayType,
+        fallback_square_root_linear: bool,
+        maximum_error_tolerance: Option<Tolerance>,
+    ) -> Self {
+        Self {
+            array_type,
+            fallback_square_root_linear,
+            maximum_error_tolerance,
+            current_grid: None,
+        }
     }
 
-    pub const fn quadratic(array_type: ArrayType, maximum_error_tolerance: Option<Tolerance>) -> Self {
-        Self { array_type, fallback_square_root_linear: true, maximum_error_tolerance }
+    pub const fn quadratic(
+        array_type: ArrayType,
+        maximum_error_tolerance: Option<Tolerance>,
+    ) -> Self {
+        Self {
+            array_type,
+            fallback_square_root_linear: true,
+            maximum_error_tolerance,
+            current_grid: None,
+        }
     }
 
     pub const fn linear(array_type: ArrayType, maximum_error_tolerance: Option<Tolerance>) -> Self {
-        Self { array_type, fallback_square_root_linear: false, maximum_error_tolerance }
+        Self {
+            array_type,
+            fallback_square_root_linear: false,
+            maximum_error_tolerance,
+            current_grid: None,
+        }
     }
 
     pub fn find_grid_model_param<P: ParamDescribed>(p: &P) -> Option<GridEncoding> {
-        p.params().iter().find_map(|par| GridEncoding::from_param(par))
+        p.params()
+            .iter()
+            .find_map(|par| GridEncoding::from_param(par))
     }
 
-    pub fn model_from(&self, array: &[f64], low: f64, high: f64, scale: Option<f64>) -> Option<GridEncoding> {
+    pub fn minmax(values: &[f64]) -> Option<(f64, f64)> {
+        if values.is_empty() {
+            return None;
+        }
+        Some(
+            values
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), v| {
+                    (min.min(*v), max.max(*v))
+                }),
+        )
+    }
+
+    fn padding(low: f64, high: f64) -> f64 {
+        ((high - low) * 0.05).min(5.0).max(0.0)
+    }
+
+    pub fn model_from_array_map(&self, arrays: &BinaryArrayMap, scale: Option<f64>) -> Option<GridEncoding> {
+        arrays.get(&self.array_type).and_then(|v| {
+            if let Some(model) = Self::find_grid_model_param(v) {
+                return Some(model)
+            }
+            let v = v.to_f64().ok()?;
+            let (low, high) = Self::minmax(&v).unwrap();
+            let pad = Self::padding(low, high);
+            self.model_from(&v, (low - pad).max(0.0), high + pad, scale)
+        })
+    }
+
+    pub fn model_from_peaks<
+        C: CentroidLike + BuildArrayMapFrom,
+        D: DeconvolutedCentroidLike + BuildArrayMapFrom,
+    >(
+        &self,
+        peaks: mzdata::spectrum::RefPeakDataLevel<'_, C, D>,
+        scale: Option<f64>,
+    ) -> Option<GridEncoding> {
+        if peaks.is_empty() {
+            return None;
+        }
+        match peaks {
+            mzdata::spectrum::RefPeakDataLevel::Missing
+            | mzdata::spectrum::RefPeakDataLevel::RawData(_) => None,
+            mzdata::spectrum::RefPeakDataLevel::Centroid(peak_set_vec) => {
+                if self.array_type == ArrayType::MZArray {
+                    let mzs: Vec<_> = peak_set_vec.iter().map(|p| p.mz()).collect();
+                    let low = mzs.first().copied().unwrap();
+                    let high = mzs.last().copied().unwrap();
+                    let pad = Self::padding(low, high);
+                    self.model_from(&mzs, (low - pad).max(0.0), high + pad, scale)
+                } else {
+                    let arrays = BuildArrayMapFrom::as_arrays(peak_set_vec.as_slice());
+                    self.model_from_array_map(&arrays, scale)
+                }
+            }
+            mzdata::spectrum::RefPeakDataLevel::Deconvoluted(peak_set_vec) => {
+                if self.array_type == ArrayType::MZArray {
+                    let mzs: Vec<_> = peak_set_vec
+                        .iter()
+                        .map(|p| mzdata::utils::mass_charge_ratio(p.neutral_mass(), p.charge()))
+                        .collect();
+                    let (low, high) = Self::minmax(&mzs).unwrap();
+                    let pad = Self::padding(low, high);
+                    self.model_from(&mzs, (low - pad).max(0.0), high + pad, scale)
+                } else {
+                    let arrays = BuildArrayMapFrom::as_arrays(peak_set_vec.as_slice());
+                    self.model_from_array_map(&arrays, scale)
+                }
+            }
+        }
+    }
+
+    pub fn model_from(
+        &self,
+        array: &[f64],
+        low: f64,
+        high: f64,
+        scale: Option<f64>,
+    ) -> Option<GridEncoding> {
         if array.is_empty() {
             return None;
         }
@@ -628,24 +846,36 @@ impl GridPolicy {
         };
 
         if let Some(thresh) = self.maximum_error_tolerance {
-            let passes = match thresh {
+            let (passes, max_err) = match thresh {
                 Tolerance::PPM(t) => {
                     let err = model.error(array, true);
                     let max_err = err.iter().copied().reduce(|a, b| a.max(b)).unwrap();
-                    t <= max_err
-                },
+                    (t >= max_err, max_err)
+                }
                 Tolerance::Da(t) => {
                     let err = model.error(array, false);
                     let max_err = err.iter().copied().reduce(|a, b| a.max(b)).unwrap();
-                    t <= max_err
-                },
+                    (t >= max_err, max_err)
+                }
             };
-            passes.then(|| model)
+            if passes {
+                Some(model)
+            } else {
+                log::warn!("Failed to construct satisfactory model, error was {max_err}");
+                None
+            }
         } else {
             Some(model)
         }
     }
-}
 
+    pub fn current_grid(&self) -> Option<&GridEncoding> {
+        self.current_grid.as_ref()
+    }
+
+    pub fn set_current_grid(&mut self, current_grid: Option<GridEncoding>) {
+        self.current_grid = current_grid;
+    }
+}
 
 pub type GridPolicyTable = HashMap<ArrayType, GridPolicy>;

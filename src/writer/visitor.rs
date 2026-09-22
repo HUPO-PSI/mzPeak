@@ -763,6 +763,7 @@ impl VisitorBase for ParamValueBuilder {
         self.integer.append_null();
         self.string.append_null();
         self.float.append_null();
+
     }
 
     fn map_metadata_columns(&self) -> Vec<MetadataColumn> {
@@ -810,7 +811,11 @@ impl StructVisitor<mzdata::params::Value> for ParamValueBuilder {
                 true
             }
             mzdata::params::Value::List(_values) => {
-                unimplemented!()
+                self.string.append_null();
+                self.integer.append_null();
+                self.float.append_null();
+                self.boolean.append_null();
+                true
             }
         }
     }

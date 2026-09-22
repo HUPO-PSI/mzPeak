@@ -781,6 +781,39 @@ pub fn nullify_at_zero_pair(
     RecordBatch::try_new(Arc::new(Schema::new(schema)), cols)
 }
 
+
+pub fn delta_encode_integer<T: num_traits::PrimInt>(array: &[T]) -> Vec<T> {
+    let mut buffer = Vec::with_capacity(array.len());
+    if array.is_empty() {
+        return buffer
+    }
+    let mut it = array.iter();
+    let mut last = it.next().copied().unwrap();
+    buffer.push(last);
+    for item in it {
+        buffer.push(*item - last);
+        last = *item;
+    }
+    buffer
+}
+
+
+pub fn delta_decode_integer<T: num_traits::PrimInt>(array: &[T]) -> Vec<T> {
+        let mut buffer = Vec::with_capacity(array.len());
+    if array.is_empty() {
+        return buffer
+    }
+    let mut it = array.iter();
+    let mut last = it.next().copied().unwrap();
+    buffer.push(last);
+    for item in it {
+        last = last + *item;
+        buffer.push(last);
+    }
+    buffer
+}
+
+
 /// Delta-encode an Arrow array containing nulls. Nulls are encoded as null values, and treated as 0.0
 /// for the purposes of computing the next delta.
 ///

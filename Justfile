@@ -1,4 +1,4 @@
-export RUST_LOG := "debug"
+export RUST_LOG := "mzpeak_prototyping=debug"
 
 small:
     cargo r -r --example convert -- -y -z -u small.mzML -o small.mzpeak
@@ -14,7 +14,8 @@ numpress:
             --intensity-numpress-slof \
             -c numpress:50 \
             --chromatogram-chunked-encoding delta:50 \
-            -y -z -u small.mzML -o small.numpress.mzpeak
+            --peak-encoding point \
+            -y -z small.mzML -o small.numpress.mzpeak
 
 small_point:
     cargo r --example convert -- -y -z -u small.mzML -o small.mzpeak
