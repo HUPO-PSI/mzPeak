@@ -494,7 +494,7 @@ impl GridModelLike for TimsTofMzGrid2 {
             return None;
         }
         Some(Self::new(MzCalibrationModel2::new(
-            0,
+            2,
             parameters[0],
             parameters[1],
             parameters[2],
@@ -879,3 +879,47 @@ impl GridPolicy {
 }
 
 pub type GridPolicyTable = HashMap<ArrayType, GridPolicy>;
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    use std::io;
+    use mzdata::{self, prelude::*};
+
+    #[test]
+    fn test_load_from_tdf() -> io::Result<()> {
+        let mut reader = mzdata::MZReader::open_path("test/data/diaPASEF.d")?;
+        match &mut reader {
+            mzdata::io::MZReaderType::BrukerTDF(reader) => {
+                reader.set_export_models_as_params(true);
+            },
+            _ => panic!("Not a Bruker TDF"),
+        }
+
+        let spectrum = reader.get_spectrum_by_index(0).unwrap();
+        let arrays = spectrum.raw_arrays().unwrap();
+
+        let v = arrays.ion_mobility().unwrap().0;
+        eprintln!("{:?}", &v[0..5]);
+
+        let mz_grid = GridPolicy::find_grid_model_param(arrays.get(&ArrayType::MZArray).unwrap()).unwrap();
+        let im_grid = GridPolicy::find_grid_model_param(arrays.get(&ArrayType::MeanInverseReducedIonMobilityArray).unwrap()).unwrap();
+        eprintln!("{im_grid:?}");
+        eprintln!("{:?}", im_grid.parameters());
+        assert!(matches!(mz_grid, GridEncoding::TimsTofMzGrid2(_)));
+        assert!(matches!(im_grid, GridEncoding::TimsTofTims2(_)));
+
+        let dup = GridEncoding::from_parameters(mz_grid.grid_type(), &mz_grid.parameters()).unwrap();
+        assert_eq!(mz_grid, dup);
+
+        let dup = GridEncoding::from_parameters(im_grid.grid_type(), &im_grid.parameters()).unwrap();
+        assert_eq!(im_grid, dup);
+
+        eprintln!("{:?}", dup.parameters());
+        for (i, j) in im_grid.parameters().into_iter().zip(dup.parameters()) {
+            assert_eq!(i, j);
+        }
+        Ok(())
+    }
+}

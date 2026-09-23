@@ -138,8 +138,8 @@ class BrukerTimsTOFTimsLinearGrid2(GridLike):
 
     c6: float
     c7: float
-    slope: float
     intercept: float
+    slope: float
 
     def from_index(self, value: int | npt.NDArray[np.uint32]):
         return 1.0 / (self.c6 + self.c7 / (self.intercept + self.slope * value))
@@ -149,7 +149,7 @@ class BrukerTimsTOFTimsLinearGrid2(GridLike):
         return ((self.c7 / d) - self.intercept) / self.slope
 
     def parameters(self):
-        return np.array([self.c6, self.c7, self.slope, self.intercept])
+        return np.array([self.c6, self.c7, self.intercept, self.slope])
 
 
 @dataclass
@@ -209,8 +209,8 @@ class BrukerTimsTOFMzGrid2(GridLike):
             self.c2,
             self.c3,
             self.c4,
+            self.slope,
             self.intercept,
-            self.slope
         ])
 
 

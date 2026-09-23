@@ -2948,4 +2948,26 @@ mod test {
         assert!(peaks.len() > 0);
         Ok(())
     }
+
+    #[test_log::test]
+    fn test_read_grids() -> io::Result<()> {
+        let reader = MzPeakReader::new("diaPASEF.grid.mzpeak")?;
+        let ref_reader = MzPeakReader::new("diaPASEF.ref.mzpeak")?;
+
+        for (test, reference) in reader.zip(ref_reader) {
+            assert_eq!(test.id(), reference.id());
+            assert_eq!(test.index(), reference.index());
+            let test_arrs = test.raw_arrays().unwrap();
+            let ref_arrs = reference.raw_arrays().unwrap();
+            for (k, v) in test_arrs.iter() {
+                let r = ref_arrs.get(k).unwrap();
+                for (i, (a, b)) in r.to_f64().unwrap().iter().zip(v.to_f64().unwrap().iter()).enumerate() {
+                    let e = *a - *b;
+                    assert!(e.abs() < 1e-6, "{e} = {a} - {b} at {i} for {k} in {}", test.id());
+                }
+            }
+        }
+
+        Ok(())
+    }
 }

@@ -27,6 +27,15 @@ small_chunked:
 has_uv:
     cargo r -r --example convert -- -y -z -u "./test/data/TOFsulfasMS4GHzDualMode+DADSpectra+UVSignal272-NoProfile.mzML" -o "./has_uv.mzpeak"
 
+diapasef_tdf:
+    cargo r -r --example convert -- \
+        test/data/diaPASEF.d \
+        -o diaPASEF.ref.mzpeak
+    cargo r -r --example convert -- \
+        --peak-encoding grid -G \
+        test/data/diaPASEF.d \
+        -o diaPASEF.grid.mzpeak
+
 small_unpacked:
     unzip -o small.mzpeak -d small.unpacked.mzpeak
 
@@ -44,4 +53,4 @@ pytest:
 
 alias t := test
 
-example_files: small has_uv imaging small_unpacked
+example_files: small has_uv imaging small_unpacked diapasef_tdf

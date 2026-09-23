@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from mzpeak import MzPeakFile
+from mzpeak import grid as gridlib
 from mzpeak.file_index import DataKind, EntityType, FileIndex
 from mzpeak.filters import find_where_not_zero_run
 from mzpeak.mz_reader import BufferFormat
@@ -227,3 +228,32 @@ def test_file_index_entry(small: MzPeakFile):
             mins, maxes = col.statistics()
             assert mins.min() == 1
             assert maxes.max() == 2
+
+
+def test_diapasef_grid():
+    ref_reader = MzPeakFile("diaPASEF.ref.mzpeak")
+    grid_reader = MzPeakFile("diaPASEF.grid.mzpeak")
+    for (ref, grid) in zip(ref_reader, grid_reader):
+        assert ref['index'] == grid['index']
+        assert ref['id'] == grid['id']
+        assert np.allclose(ref['m/z array'], grid['m/z array'])
+        assert np.allclose(ref['mean inverse reduced ion mobility array'],
+                           grid['mean inverse reduced ion mobility array'])
+
+
+def test_linear_bruker_grid():
+    model = gridlib.BrukerTimsTOFTimsLinearGrid2(
+        *[
+            0.020932469715718494,
+            131.22279563838268,
+            222.46486824959476,
+            -0.1539079919581615,
+        ]
+    )
+
+    ref = np.array([1.04673088, 1.09940738, 1.10500427, 1.06803995, 1.06467665])
+    ii = np.array([533, 486, 481, 514, 517])
+    val = model.from_index(ii)
+
+    assert np.allclose(val, ref)
+    assert np.all(model.to_index(val).astype(int) == ii)

@@ -1349,6 +1349,8 @@ pub trait AbstractMzPeakWriter {
                 .set_data_page_row_count_limit(data_page_size);
         }
 
+        let mut dict_page_mult = 1;
+
         for c in parquet_schema.columns().iter() {
             let colpath = c.path().to_string();
             if (colpath.contains("_mz_") || colpath.contains(".mz"))
@@ -1367,23 +1369,22 @@ pub trait AbstractMzPeakWriter {
                     "{}: ion mobility detected, increasing dictionary size",
                     c.path()
                 );
-                data_props = data_props
-                    .set_dictionary_page_size_limit(DEFAULT_DICTIONARY_PAGE_SIZE_LIMIT * 2);
+                dict_page_mult = dict_page_mult.max(2)
             }
             if colpath.ends_with("_index") {
                 log::debug!("{}: delta binary packing", c.path());
                 data_props =
                     data_props.set_column_encoding(c.path().clone(), Encoding::DELTA_BINARY_PACKED);
             }
-            if colpath.contains("_grid") && colpath.contains("indices") && matches!(
-                c.physical_type(),
-                parquet::basic::Type::INT32
-            ) {
-                log::debug!("{}: delta binary packing", c.path());
+            if colpath.contains("_grid") && colpath.contains("indices") {
                 data_props =
-                    data_props.set_column_encoding(c.path().clone(), Encoding::DELTA_BINARY_PACKED);
+                    data_props.set_column_encoding(c.path().clone(), Encoding::BYTE_STREAM_SPLIT);
+                data_props = data_props.set_column_dictionary_enabled(c.path().clone(), false)
             }
         }
+
+        data_props = data_props
+                    .set_dictionary_page_size_limit(DEFAULT_DICTIONARY_PAGE_SIZE_LIMIT * dict_page_mult);
 
         if let Some(encryption_props) = encryption_properties {
             data_props = data_props.with_file_encryption_properties(encryption_props)
