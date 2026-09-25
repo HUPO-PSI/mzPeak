@@ -239,49 +239,11 @@ impl ChunkingStrategy {
                 }
                 visited.insert(idx);
                 let b: &mut StructBuilder = chunk_builder.field_builder(idx).unwrap();
+                let mut b = GridArrayBuilder::new(b);
                 if chunk.chunk_encoding.is_grid() {
                     let encoded = chunk.chunk_values.as_struct();
-                    let indices_builder: &mut LargeListBuilder<Box<dyn ArrayBuilder>> =
-                        b.field_builder(2).unwrap();
-                    let indices_values_builder: &mut UInt32Builder = indices_builder
-                        .values()
-                        .as_any_mut()
-                        .downcast_mut()
-                        .unwrap();
-                    let indices = encoded.column(2).as_list::<i64>();
-                    indices_values_builder
-                        .append_array(indices.value(0).as_primitive::<UInt32Type>());
-                    indices_builder.append(true);
-
-                    let parameters_builder: &mut LargeListBuilder<Box<dyn ArrayBuilder>> =
-                        b.field_builder(1).unwrap();
-                    let parameters_values_builder: &mut Float64Builder = parameters_builder
-                        .values()
-                        .as_any_mut()
-                        .downcast_mut()
-                        .unwrap();
-                    let parameters = encoded.column(1).as_list::<i64>();
-                    parameters_values_builder
-                        .append_array(parameters.value(0).as_primitive::<Float64Type>());
-                    parameters_builder.append(true);
-
-                    let grid_type_builder: &mut LargeStringBuilder = b.field_builder(0).unwrap();
-                    let grid_type = encoded.column(0).as_string::<i64>();
-                    grid_type_builder.append_value(grid_type.value(0));
-
-                    b.append(true);
+                    b.append(encoded);
                 } else {
-                    let grid_type_builder: &mut LargeStringBuilder = b.field_builder(0).unwrap();
-                    grid_type_builder.append_null();
-
-                    let parameters_builder: &mut LargeListBuilder<Box<dyn ArrayBuilder>> =
-                        b.field_builder(1).unwrap();
-                    parameters_builder.append_null();
-
-                    let indices_builder: &mut LargeListBuilder<Box<dyn ArrayBuilder>> =
-                        b.field_builder(2).unwrap();
-                    indices_builder.append_null();
-
                     b.append_null();
                 }
             }
@@ -524,6 +486,89 @@ impl ChunkingStrategy {
     }
 }
 
+
+struct GridArrayBuilder<'a> {
+    builder: &'a mut StructBuilder,
+}
+
+impl<'a> GridArrayBuilder<'a> {
+    const fn new(builder: &'a mut StructBuilder) -> Self {
+        Self { builder }
+    }
+
+    fn append_indices(&mut self, indices: &ArrayRef) {
+        let indices_builder: &mut LargeListBuilder<Box<dyn ArrayBuilder>> =
+            self.builder.field_builder(2).unwrap();
+        match indices.data_type() {
+            DataType::UInt32 => {
+                let indices_values_builder: &mut UInt32Builder = indices_builder
+                    .values()
+                    .as_any_mut()
+                    .downcast_mut()
+                    .unwrap();
+                indices_values_builder.append_array(indices.as_primitive::<UInt32Type>());
+                indices_builder.append(true);
+            }
+            DataType::UInt16 => {
+                let indices_values_builder: &mut UInt16Builder = indices_builder
+                    .values()
+                    .as_any_mut()
+                    .downcast_mut()
+                    .unwrap();
+                indices_values_builder.append_array(indices.as_primitive::<UInt16Type>());
+                indices_builder.append(true);
+            }
+            DataType::UInt8 => {
+                let indices_values_builder: &mut UInt8Builder = indices_builder
+                    .values()
+                    .as_any_mut()
+                    .downcast_mut()
+                    .unwrap();
+                indices_values_builder.append_array(indices.as_primitive::<UInt8Type>());
+                indices_builder.append(true);
+            }
+            x => unimplemented!("{x:?}"),
+        }
+    }
+
+    fn append(&mut self, encoded: &StructArray) {
+        let indices = encoded.column(2).as_list::<i64>();
+        self.append_indices(&indices.value(0));
+
+        let parameters_builder: &mut LargeListBuilder<Box<dyn ArrayBuilder>> =
+            self.builder.field_builder(1).unwrap();
+        let parameters_values_builder: &mut Float64Builder = parameters_builder
+            .values()
+            .as_any_mut()
+            .downcast_mut()
+            .unwrap();
+        let parameters = encoded.column(1).as_list::<i64>();
+        parameters_values_builder.append_array(parameters.value(0).as_primitive::<Float64Type>());
+        parameters_builder.append(true);
+
+        let grid_type_builder: &mut LargeStringBuilder = self.builder.field_builder(0).unwrap();
+        let grid_type = encoded.column(0).as_string::<i64>();
+        grid_type_builder.append_value(grid_type.value(0));
+
+        self.builder.append(true);
+    }
+
+    fn append_null(&mut self) {
+        let grid_type_builder: &mut LargeStringBuilder = self.builder.field_builder(0).unwrap();
+        grid_type_builder.append_null();
+
+        let parameters_builder: &mut LargeListBuilder<Box<dyn ArrayBuilder>> =
+            self.builder.field_builder(1).unwrap();
+        parameters_builder.append_null();
+
+        let indices_builder: &mut LargeListBuilder<Box<dyn ArrayBuilder>> =
+            self.builder.field_builder(2).unwrap();
+        indices_builder.append_null();
+
+        self.builder.append_null();
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BufferTransformEncoder(BufferTransform, Option<GridEncoding>);
 
@@ -641,49 +686,11 @@ impl BufferTransformEncoder {
             }
             BufferTransform::GridEncoding => {
                 let b: &mut StructBuilder = chunk_builder.field_builder(idx).unwrap();
+                let mut b = GridArrayBuilder::new(b);
                 if let Some(chunk_segment) = chunk.arrays.get(buffer_name)  {
                     let encoded = chunk_segment.as_struct();
-                    let indices_builder: &mut LargeListBuilder<Box<dyn ArrayBuilder>> =
-                        b.field_builder(2).unwrap();
-                    let indices_values_builder: &mut UInt32Builder = indices_builder
-                        .values()
-                        .as_any_mut()
-                        .downcast_mut()
-                        .unwrap();
-                    let indices = encoded.column(2).as_list::<i64>();
-                    indices_values_builder
-                        .append_array(indices.value(0).as_primitive::<UInt32Type>());
-                    indices_builder.append(true);
-
-                    let parameters_builder: &mut LargeListBuilder<Box<dyn ArrayBuilder>> =
-                        b.field_builder(1).unwrap();
-                    let parameters_values_builder: &mut Float64Builder = parameters_builder
-                        .values()
-                        .as_any_mut()
-                        .downcast_mut()
-                        .unwrap();
-                    let parameters = encoded.column(1).as_list::<i64>();
-                    parameters_values_builder
-                        .append_array(parameters.value(0).as_primitive::<Float64Type>());
-                    parameters_builder.append(true);
-
-                    let grid_type_builder: &mut LargeStringBuilder = b.field_builder(0).unwrap();
-                    let grid_type = encoded.column(0).as_string::<i64>();
-                    grid_type_builder.append_value(grid_type.value(0));
-
-                    b.append(true);
+                    b.append(encoded);
                 } else {
-                    let grid_type_builder: &mut LargeStringBuilder = b.field_builder(0).unwrap();
-                    grid_type_builder.append_null();
-
-                    let parameters_builder: &mut LargeListBuilder<Box<dyn ArrayBuilder>> =
-                        b.field_builder(1).unwrap();
-                    parameters_builder.append_null();
-
-                    let indices_builder: &mut LargeListBuilder<Box<dyn ArrayBuilder>> =
-                        b.field_builder(2).unwrap();
-                    indices_builder.append_null();
-
                     b.append_null();
                 }
             }

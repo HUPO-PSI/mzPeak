@@ -1232,7 +1232,18 @@ pub trait AbstractMzPeakWriter {
             {
                 log::debug!("{}: shuffling", c.path());
                 data_props =
+                    data_props.set_column_encoding(c.path().clone(), Encoding::BYTE_STREAM_SPLIT)
+                              .set_column_dictionary_enabled(c.path().clone(), false);
+            }
+            if colpath.contains("intensity") && matches!(c.physical_type(), parquet::basic::Type::INT32) {
+                data_props =
+                    data_props.set_column_encoding(c.path().clone(), Encoding::BYTE_STREAM_SPLIT)
+                              .set_column_dictionary_enabled(c.path().clone(), false);
+            }
+            if colpath.contains("_grid") && colpath.contains("indices") {
+                data_props =
                     data_props.set_column_encoding(c.path().clone(), Encoding::BYTE_STREAM_SPLIT);
+                data_props = data_props.set_column_dictionary_enabled(c.path().clone(), false)
             }
             if colpath.contains("ion_mobility") {
                 log::debug!(
@@ -1362,7 +1373,8 @@ pub trait AbstractMzPeakWriter {
             {
                 log::debug!("{}: shuffling", c.path());
                 data_props =
-                    data_props.set_column_encoding(c.path().clone(), Encoding::BYTE_STREAM_SPLIT);
+                    data_props.set_column_encoding(c.path().clone(), Encoding::BYTE_STREAM_SPLIT)
+                              .set_column_dictionary_enabled(c.path().clone(), false);
             }
             if colpath.contains("ion_mobility") {
                 log::debug!(
@@ -1375,6 +1387,11 @@ pub trait AbstractMzPeakWriter {
                 log::debug!("{}: delta binary packing", c.path());
                 data_props =
                     data_props.set_column_encoding(c.path().clone(), Encoding::DELTA_BINARY_PACKED);
+            }
+            if colpath.contains("intensity") && matches!(c.physical_type(), parquet::basic::Type::INT32) {
+                data_props =
+                    data_props.set_column_encoding(c.path().clone(), Encoding::BYTE_STREAM_SPLIT)
+                              .set_column_dictionary_enabled(c.path().clone(), false);
             }
             if colpath.contains("_grid") && colpath.contains("indices") {
                 data_props =

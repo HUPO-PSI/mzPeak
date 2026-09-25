@@ -1,11 +1,6 @@
 use clap::Parser;
 use mzdata::{
-    self,
-    io::MZReaderType,
-    meta::{DataProcessing, ProcessingMethod, Software},
-    params::Param,
-    prelude::*,
-    spectrum::{ArrayType, bindata::BinaryArrayMap3D},
+    self, io::MZReaderType, meta::{DataProcessing, ProcessingMethod, Software}, params::Param, prelude::*, spectrum::{ArrayType, bindata::BinaryArrayMap3D},
 };
 use mzpeak_prototyping::{
     archive::make_common_encryption_properties,
@@ -449,6 +444,10 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
     output_path: &Path,
     args: &ConvertArgs,
 ) -> io::Result<()> {
+    if let MZReaderType::BrukerTDF(reader) = &mut reader {
+        reader.set_consolidate_peaks(false);
+        reader.set_export_models_as_params(true);
+    }
     let n = reader.len();
     let n_chroma = reader.count_chromatograms();
     log::debug!("{n} spectra and {n_chroma} chromatograms found");
@@ -570,6 +569,7 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
             .add_imaging_position_visitors();
     }
 
+
     writer.copy_metadata_from(&reader);
     add_processing_metadata(&mut writer);
 
@@ -581,11 +581,7 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
     // Read entries out of the input file in another thread
     let read_handle = thread::spawn(move || {
         let result = panic::catch_unwind(AssertUnwindSafe(|| {
-            // Disable old behavior of flattening 3D spectra removing the ion mobility dimension
-            if let MZReaderType::BrukerTDF(tdfspectrum_reader_type) = &mut reader {
-                tdfspectrum_reader_type.set_consolidate_peaks(false);
-                tdfspectrum_reader_type.set_export_models_as_params(true);
-            }
+
             // Loop over the spectra in the file and send them to be written
             for mut entry in reader.iter() {
                 // Make sure that if there's ion mobility that the spectrum is sorted by m/z
