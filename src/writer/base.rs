@@ -491,13 +491,13 @@ pub trait AbstractMzPeakWriter {
         let buffers: ArrayBufferWriterVariants = ArrayBuffersBuilder::default()
             .add_default_fields_for_context(BufferContext::WavelengthSpectrum)
             .with_context(BufferContext::WavelengthSpectrum)
-            .add_override(
+            .add_mapping(
                 WAVELENGTH_ARRAY
                     .clone()
                     .with_dtype(mzdata::spectrum::BinaryDataArrayType::Float64),
                 WAVELENGTH_ARRAY.clone(),
             )
-            .add_override(
+            .add_mapping(
                 INTENSITY_ARRAY
                     .clone()
                     .with_context(BufferContext::WavelengthSpectrum)
@@ -879,7 +879,7 @@ pub trait AbstractMzPeakWriter {
             log::warn!("Initializing default spectrum peak writer");
             let peak_buffer_file = tempfile::tempfile()?;
             let builder = ArrayBuffersBuilder::default()
-                .extend_overrides(
+                .extend_mappings(
                     self.spectrum_data_buffer_mut()
                         .overrides()
                         .iter()
@@ -1394,9 +1394,12 @@ pub trait AbstractMzPeakWriter {
                               .set_column_dictionary_enabled(c.path().clone(), false);
             }
             if colpath.contains("_grid") && colpath.contains("indices") {
-                data_props =
-                    data_props.set_column_encoding(c.path().clone(), Encoding::BYTE_STREAM_SPLIT);
-                data_props = data_props.set_column_dictionary_enabled(c.path().clone(), false)
+                if colpath.contains("_mz_") || colpath.contains(".mz") && !shuffle_mz {}
+                else {
+                    data_props =
+                        data_props.set_column_encoding(c.path().clone(), Encoding::BYTE_STREAM_SPLIT);
+                    data_props = data_props.set_column_dictionary_enabled(c.path().clone(), false)
+                }
             }
         }
 

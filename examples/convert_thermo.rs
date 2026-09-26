@@ -357,8 +357,8 @@ fn convert_file(
     let mut builder = convert::configure_writer_builder(&args);
 
     for (from, to) in overrides.iter() {
-        builder = builder.add_spectrum_array_override(from.clone(), to.clone());
-        builder = builder.add_chromatogram_array_override(from.clone(), to.clone());
+        builder = builder.add_spectrum_array_mapping(from.clone(), to.clone());
+        builder = builder.add_chromatogram_array_mapping(from.clone(), to.clone());
     }
 
     builder = builder.add_spectrum_peak_type::<ThermoPeak>();

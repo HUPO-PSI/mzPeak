@@ -15,12 +15,18 @@ use parquet::{
 use mzdata::{meta::FileMetadataConfig, params::ControlledVocabulary, prelude::*};
 
 use crate::{
-    BufferContext, ToMzPeakDataSeries, archive::{FileIndex, MzPeakArchiveType}, chunk_series::ChunkingStrategy, constants::SPECTRUM_ARRAY_INDEX, param::ControlledVocabularyEntry, peak_series::ArrayIndex, writer::{
+    BufferContext, ToMzPeakDataSeries,
+    archive::{FileIndex, MzPeakArchiveType},
+    chunk_series::ChunkingStrategy,
+    constants::SPECTRUM_ARRAY_INDEX,
+    param::ControlledVocabularyEntry,
+    peak_series::ArrayIndex,
+    writer::{
         AbstractMzPeakWriter, ArrayBufferWriter, ArrayBufferWriterVariants, ArrayBuffersBuilder,
         ChromatogramBuilder, MiniPeakWriterType, SpectrumBuilder, VisitorBase,
         WavelengthSpectrumBuilder, WriteBatchConfig, base::GenericDataArrayWriter,
         builder::SpectrumFieldVisitors, implement_mz_metadata,
-    }
+    },
 };
 
 /// Writer for the MzPeak format that writes the different data types to separate files
@@ -164,8 +170,13 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
         &self.encryption_properties
     }
 
-    fn add_index_metadata(&mut self, key: &str, value: &impl serde::Serialize) -> Result<(), serde_json::Error> {
-        self.file_index.add_metadata(key, serde_json::to_value(value)?);
+    fn add_index_metadata(
+        &mut self,
+        key: &str,
+        value: &impl serde::Serialize,
+    ) -> Result<(), serde_json::Error> {
+        self.file_index
+            .add_metadata(key, serde_json::to_value(value)?);
         Ok(())
     }
 
@@ -182,7 +193,9 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
     }
 
     fn use_chunked_encoding_for_peaks(&self) -> Option<&ChunkingStrategy> {
-        self.separate_peak_writer.as_ref().and_then(|v| v.buffers().chunking_strategy())
+        self.separate_peak_writer
+            .as_ref()
+            .and_then(|v| v.buffers().chunking_strategy())
     }
 }
 
@@ -231,19 +244,20 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
             mask_zero_intensity_runs,
         );
 
-        let chromatogram_buffers = if let Some(_encoding) = use_chromatogram_chunked_encoding.as_ref() {
-            ArrayBufferWriterVariants::ChunkBuffers(chromatogram_buffers_builder.build_chunked(
-                Arc::new(Schema::empty()),
-                BufferContext::Chromatogram,
-                false,
-            ))
-        } else {
-            ArrayBufferWriterVariants::PointBuffers(chromatogram_buffers_builder.build(
-                Arc::new(Schema::empty()),
-                BufferContext::Chromatogram,
-                false,
-            ))
-        };
+        let chromatogram_buffers =
+            if let Some(_encoding) = use_chromatogram_chunked_encoding.as_ref() {
+                ArrayBufferWriterVariants::ChunkBuffers(chromatogram_buffers_builder.build_chunked(
+                    Arc::new(Schema::empty()),
+                    BufferContext::Chromatogram,
+                    false,
+                ))
+            } else {
+                ArrayBufferWriterVariants::PointBuffers(chromatogram_buffers_builder.build(
+                    Arc::new(Schema::empty()),
+                    BufferContext::Chromatogram,
+                    false,
+                ))
+            };
 
         let data_props = Self::spectrum_data_writer_props(
             &spectrum_buffers,
@@ -309,7 +323,10 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
             buffer_size: buffer_size,
             mz_metadata: Default::default(),
             _t: PhantomData,
-            controlled_vocabularies: vec![ControlledVocabulary::MS.into(), ControlledVocabulary::UO.into()],
+            controlled_vocabularies: vec![
+                ControlledVocabulary::MS.into(),
+                ControlledVocabulary::UO.into(),
+            ],
         };
         this.add_spectrum_array_index();
         this
@@ -392,12 +409,15 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
             Some(self.spectrum_data_point_counter.to_string()),
         );
         self.spectrum_data_writer.finish()?;
-        self.file_index.push(MzPeakArchiveType::SpectrumDataArrays.into());
-        self.file_index.push(MzPeakArchiveType::SpectrumMetadata.into());
+        self.file_index
+            .push(MzPeakArchiveType::SpectrumDataArrays.into());
+        self.file_index
+            .push(MzPeakArchiveType::SpectrumMetadata.into());
         if let Some(peak_file_writer) = self.separate_peak_writer.take() {
             let peak_file = peak_file_writer.finish()?;
             drop(peak_file);
-            self.file_index.push(MzPeakArchiveType::SpectrumPeakDataArrays.into());
+            self.file_index
+                .push(MzPeakArchiveType::SpectrumPeakDataArrays.into());
         }
         let meta = self.spectrum_metadata_writer.finish()?;
         if !self.chromatogram_metadata_buffer.is_empty() {
@@ -411,7 +431,8 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
                 ArrowWriterOptions::new()
                     .with_properties(Self::spectrum_metadata_writer_props(&metadata_fields, None)),
             )?;
-            self.file_index.push(MzPeakArchiveType::ChromatogramMetadata.into());
+            self.file_index
+                .push(MzPeakArchiveType::ChromatogramMetadata.into());
             self.flush_chromatogram_metadata_records(&mut writer)?;
             self.append_key_value_metadata(
                 "chromatogram_count",
@@ -449,7 +470,8 @@ impl<C: CentroidLike + ToMzPeakDataSeries, D: DeconvolutedCentroidLike + ToMzPea
                 Some(self.chromatogram_data_point_counter.to_string()),
             ));
         }
-        self.file_index.push(MzPeakArchiveType::ChromatogramDataArrays.into());
+        self.file_index
+            .push(MzPeakArchiveType::ChromatogramDataArrays.into());
         Ok(meta)
     }
 }

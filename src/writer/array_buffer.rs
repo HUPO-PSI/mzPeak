@@ -966,7 +966,7 @@ impl ArrayBuffersBuilder {
 
     /// Register an new rule mapping from one [`BufferName`]-like to another [`BufferName`]-like
     /// when later writing arrays
-    pub fn add_override(mut self, from: impl Into<BufferName>, to: impl Into<BufferName>) -> Self {
+    pub fn add_mapping(mut self, from: impl Into<BufferName>, to: impl Into<BufferName>) -> Self {
         let from = from.into();
         let to = to.into();
         if from.context != self.buffer_context || to.context != self.buffer_context {
@@ -977,18 +977,19 @@ impl ArrayBuffersBuilder {
         self
     }
 
-    pub fn extend_overrides(
+    /// A convenience wrapper around [`Self::add_mapping`] to add an iterator of mappings
+    pub fn extend_mappings(
         mut self,
         iter: impl Iterator<Item = (BufferName, BufferName)>,
     ) -> Self {
         for (k, v) in iter {
-            self = self.add_override(k, v);
+            self = self.add_mapping(k, v);
         }
         self
     }
 
-    /// Get a copy of the set of registered override rules
-    pub fn overrides(&self) -> BufferOverrideTable {
+    /// Get a copy of the set of registered array mapping rules
+    pub fn array_mappings(&self) -> BufferOverrideTable {
         self.overrides.clone()
     }
 
@@ -1011,12 +1012,14 @@ impl ArrayBuffersBuilder {
         self.array_fields.is_empty()
     }
 
+    /// Set the grid policies for this array writer
     pub fn grid_policies(mut self, policies: GridPolicyTable) -> Self {
         let _ = self.grid_policies.insert(policies);
         self
     }
 
-    pub fn grid_policies_ref(&self) -> Option<&HashMap<ArrayType, GridPolicy>> {
+    /// Borrow the grid policy table to make configuration decisions with
+    pub fn grid_policies_ref(&self) -> Option<&GridPolicyTable> {
         self.grid_policies.as_ref()
     }
 
@@ -1435,7 +1438,7 @@ mod test {
         let mut reader = mzdata::MZReader::open_path("small.mzML")?;
         let fields = crate::writer::sample_array_types_from_spectrum_source(
             &mut reader,
-            &builder.overrides(),
+            &builder.array_mappings(),
             builder.chunking_strategy.as_ref(),
             false,
             None,

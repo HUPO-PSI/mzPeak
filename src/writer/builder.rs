@@ -158,23 +158,23 @@ impl MzPeakWriterBuilder {
 
     /// Add a rule to store the `from` buffer as the type given by the `to` buffer name for the
     /// spectrum data.
-    pub fn add_spectrum_array_override(
+    pub fn add_spectrum_array_mapping(
         mut self,
         from: impl Into<BufferName> + Clone,
         to: impl Into<BufferName> + Clone,
     ) -> Self {
-        self.spectrum_arrays = self.spectrum_arrays.add_override(from.clone(), to.clone());
+        self.spectrum_arrays = self.spectrum_arrays.add_mapping(from.clone(), to.clone());
         self
     }
 
     /// Add a rule to store the `from` buffer as the type given by the `to` buffer name for the
     /// spectrum peak data.
-    pub fn add_spectrum_peak_array_override(
+    pub fn add_spectrum_peak_array_mapping(
         mut self,
         from: impl Into<BufferName> + Clone,
         to: impl Into<BufferName> + Clone,
     ) -> Self {
-        self.spectrum_peak_arrays = self.spectrum_peak_arrays.add_override(from, to);
+        self.spectrum_peak_arrays = self.spectrum_peak_arrays.add_mapping(from, to);
         self
     }
 
@@ -203,12 +203,12 @@ impl MzPeakWriterBuilder {
 
     /// Add a rule to store the `from` buffer as the type given by the `to` buffer name for the
     /// chromatogram data.
-    pub fn add_chromatogram_array_override(
+    pub fn add_chromatogram_array_mapping(
         mut self,
         from: impl Into<BufferName>,
         to: impl Into<BufferName>,
     ) -> Self {
-        self.chromatogram_arrays = self.chromatogram_arrays.add_override(from, to);
+        self.chromatogram_arrays = self.chromatogram_arrays.add_mapping(from, to);
         self
     }
 
@@ -346,15 +346,15 @@ impl MzPeakWriterBuilder {
     }
 
     pub fn spectrum_overrides(&self) -> BufferOverrideTable {
-        self.spectrum_arrays.overrides()
+        self.spectrum_arrays.array_mappings()
     }
 
     pub fn spectrum_peak_overrides(&self) -> BufferOverrideTable {
-        self.spectrum_peak_arrays.overrides()
+        self.spectrum_peak_arrays.array_mappings()
     }
 
     pub fn chromatogram_overrides(&self) -> BufferOverrideTable {
-        self.chromatogram_arrays.overrides()
+        self.chromatogram_arrays.array_mappings()
     }
 
     pub fn get_encryption_properties(&self) -> &HashMap<String, Arc<FileEncryptionProperties>> {

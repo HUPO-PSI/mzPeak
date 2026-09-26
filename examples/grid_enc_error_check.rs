@@ -3,8 +3,7 @@ use std::{io, path::PathBuf};
 use clap::Parser;
 use mzdata::{self, io::MZReader, prelude::*};
 use mzpeak_prototyping::{
-    filter::median,
-    grid::{GridModelLike, SquareRootLinearGrid},
+    filter::median, grid::{GridEncoding, GridModelLike, LinearGrid, SquareRootLinearGrid},
 };
 
 #[derive(Parser, Default)]
@@ -15,6 +14,8 @@ struct App {
     scale: f64,
     #[arg(short, long)]
     ppm_error: bool,
+    #[arg(short, long)]
+    quadratic: bool,
 }
 
 fn main() -> io::Result<()> {
@@ -43,12 +44,23 @@ fn main() -> io::Result<()> {
 
         let low = window.lower_bound as f64;
         let high = window.upper_bound as f64;
-        let grid = SquareRootLinearGrid::fit(
-            &mzs,
-            low - 5.0,
-            high + 5.0,
-            args.scale,
-        ).unwrap();
+        let grid: GridEncoding = if args.quadratic {
+            let grid = SquareRootLinearGrid::fit(
+                &mzs,
+                low - 5.0,
+                high + 5.0,
+                args.scale,
+            ).unwrap();
+            grid.into()
+        } else {
+            let grid = LinearGrid::fit(
+                &mzs,
+                low - 5.0,
+                high + 5.0,
+                args.scale,
+            ).unwrap();
+            grid.into()
+        };
 
         let e: Vec<_> = grid.error(&mzs, args.ppm_error).iter().map(|v| v.abs()).collect();
         let median_e = median(&e).unwrap_or_default();

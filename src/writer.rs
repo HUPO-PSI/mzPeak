@@ -1819,8 +1819,8 @@ mod test {
 
         for (k, v) in spectrum_overrides.iter() {
             builder = builder
-                .add_spectrum_array_override(k.clone(), v.clone())
-                .add_spectrum_peak_array_override(k.clone(), v.clone())
+                .add_spectrum_array_mapping(k.clone(), v.clone())
+                .add_spectrum_peak_array_mapping(k.clone(), v.clone())
         }
 
         builder = builder

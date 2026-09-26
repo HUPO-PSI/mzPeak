@@ -483,12 +483,12 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
 
     // Apply all the data type conversion rules generated from the user input
     for (from, to) in overrides.iter() {
-        builder = builder.add_spectrum_array_override(from.clone(), to.clone());
-        builder = builder.add_chromatogram_array_override(from.clone(), to.clone());
+        builder = builder.add_spectrum_array_mapping(from.clone(), to.clone());
+        builder = builder.add_chromatogram_array_mapping(from.clone(), to.clone());
     }
 
     for (from, to) in args.create_type_overrides_for_peaks() {
-        builder = builder.add_spectrum_peak_array_override(from, to);
+        builder = builder.add_spectrum_peak_array_mapping(from, to);
     }
 
     // Read the array types before using them to configure the grid policies so we can then build
