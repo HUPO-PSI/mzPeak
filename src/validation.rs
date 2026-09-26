@@ -1,13 +1,18 @@
 use std::io;
 use std::sync::Arc;
 
-use parquet::{basic::ZstdLevel, encryption::encrypt::FileEncryptionProperties, file::properties::WriterPropertiesBuilder};
+use parquet::{
+    arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
+    basic::ZstdLevel,
+    encryption::encrypt::FileEncryptionProperties,
+    file::{properties::WriterPropertiesBuilder, reader::ChunkReader},
+};
 use sha2::{self, Digest};
 
 use crate::archive::{FileEntry, FileIndex};
 
 use arrow::{
-    array::{ArrayRef, RecordBatch},
+    array::{Array, ArrayRef, LargeStringArray, RecordBatch, UInt64Array},
     datatypes::{DataType, Field, Schema},
 };
 
@@ -121,6 +126,156 @@ impl<T: io::Seek + io::Write> io::Seek for SHA512HashingStream<T> {
     }
 }
 
+/// The SHA-512 checksum of the raw bytes of a single Parquet column chunk
+/// (dictionary page, if any, plus all data pages), as laid out in the file.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ColumnChunkChecksum {
+    /// The name of the file the column chunk was read from
+    pub filename: String,
+    /// The index of the row group this column chunk belongs to
+    pub row_group: usize,
+    /// The index of the column within the row group
+    pub column: usize,
+    /// The dotted path of the column in the Parquet schema
+    pub path: String,
+    /// The byte offset of the first page of the chunk in the file
+    pub offset: u64,
+    /// The number of bytes in the chunk (total compressed size)
+    pub length: u64,
+    /// The hex-encoded SHA-512 digest of the chunk's bytes
+    pub digest: String,
+}
+
+/// Compute a SHA-512 checksum of every column chunk in every row group of a Parquet file
+///
+/// # Note
+/// `filename` should be the file's name relative to the root of the archive, without
+///  any leading slashes.
+pub fn checksum_parquet_segments<T: ChunkReader + 'static>(
+    reader: &'static T,
+    filename: &str,
+) -> io::Result<Vec<ColumnChunkChecksum>>
+where
+    &'static T: ChunkReader + 'static,
+{
+    let builder = ParquetRecordBatchReaderBuilder::try_new(reader)?;
+    let meta = builder.metadata();
+    let mut checksums = Vec::new();
+    for (row_group, rg) in meta.row_groups().iter().enumerate() {
+        for (column, col) in rg.columns().iter().enumerate() {
+            // `byte_range` starts at the dictionary page when present, else the first data page
+            let (offset, length) = col.byte_range();
+            let blob = reader.get_bytes(offset, length as usize)?;
+            if blob.len() as u64 != length {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    format!(
+                        "Expected {length} bytes for row group {row_group} column {}, read {}",
+                        col.column_path(),
+                        blob.len()
+                    ),
+                ));
+            }
+            checksums.push(ColumnChunkChecksum {
+                filename: filename.to_string(),
+                row_group,
+                column,
+                path: col.column_path().string(),
+                offset,
+                length,
+                digest: hex::encode(sha2::Sha512::digest(&blob)),
+            });
+        }
+    }
+    Ok(checksums)
+}
+
+/// The Arrow schema used to store [`ColumnChunkChecksum`] records
+pub fn column_chunk_checksum_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("filename", DataType::LargeUtf8, false),
+        Field::new("row_group", DataType::UInt64, false),
+        Field::new("column", DataType::UInt64, false),
+        Field::new("path", DataType::LargeUtf8, false),
+        Field::new("offset", DataType::UInt64, false),
+        Field::new("length", DataType::UInt64, false),
+        Field::new("digest", DataType::LargeUtf8, false),
+    ]))
+}
+
+/// Convert a slice of [`ColumnChunkChecksum`] into a [`RecordBatch`] with the
+/// schema from [`column_chunk_checksum_schema`], suitable for writing to Parquet.
+pub fn column_chunk_checksums_to_record_batch(checksums: &[ColumnChunkChecksum]) -> RecordBatch {
+    let filenames = LargeStringArray::from_iter_values(checksums.iter().map(|c| c.filename.as_str()));
+    let row_groups = UInt64Array::from_iter_values(checksums.iter().map(|c| c.row_group as u64));
+    let columns = UInt64Array::from_iter_values(checksums.iter().map(|c| c.column as u64));
+    let paths = LargeStringArray::from_iter_values(checksums.iter().map(|c| c.path.as_str()));
+    let offsets = UInt64Array::from_iter_values(checksums.iter().map(|c| c.offset));
+    let lengths = UInt64Array::from_iter_values(checksums.iter().map(|c| c.length));
+    let digests = LargeStringArray::from_iter_values(checksums.iter().map(|c| c.digest.as_str()));
+
+    RecordBatch::try_new(
+        column_chunk_checksum_schema(),
+        vec![
+            Arc::new(filenames) as ArrayRef,
+            Arc::new(row_groups),
+            Arc::new(columns),
+            Arc::new(paths),
+            Arc::new(offsets),
+            Arc::new(lengths),
+            Arc::new(digests),
+        ],
+    )
+    .unwrap()
+}
+
+/// Convert a [`RecordBatch`] produced by [`column_chunk_checksums_to_record_batch`]
+/// (or read back from a Parquet file holding it) into [`ColumnChunkChecksum`] records.
+///
+/// Columns are looked up by name, and an error is returned if one is missing,
+/// has the wrong type, or contains nulls.
+pub fn column_chunk_checksums_from_record_batch(
+    batch: &RecordBatch,
+) -> io::Result<Vec<ColumnChunkChecksum>> {
+    fn column<'a, A: 'static>(batch: &'a RecordBatch, name: &str) -> io::Result<&'a A> {
+        let array = batch.column_by_name(name).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("Missing column {name:?}"))
+        })?;
+        if array.null_count() > 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Column {name:?} contains nulls"),
+            ));
+        }
+        array.as_any().downcast_ref::<A>().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Column {name:?} has unexpected type {}", array.data_type()),
+            )
+        })
+    }
+
+    let filenames = column::<LargeStringArray>(batch, "filename")?;
+    let row_groups = column::<UInt64Array>(batch, "row_group")?;
+    let columns = column::<UInt64Array>(batch, "column")?;
+    let paths = column::<LargeStringArray>(batch, "path")?;
+    let offsets = column::<UInt64Array>(batch, "offset")?;
+    let lengths = column::<UInt64Array>(batch, "length")?;
+    let digests = column::<LargeStringArray>(batch, "digest")?;
+
+    Ok((0..batch.num_rows())
+        .map(|i| ColumnChunkChecksum {
+            filename: filenames.value(i).to_string(),
+            row_group: row_groups.value(i) as usize,
+            column: columns.value(i) as usize,
+            path: paths.value(i).to_string(),
+            offset: offsets.value(i),
+            length: lengths.value(i),
+            digest: digests.value(i).to_string(),
+        })
+        .collect())
+}
+
 pub fn join_summaries_with_index<'a>(
     summaries: &'a [DigestSummary],
     file_index: &'a FileIndex,
@@ -167,11 +322,17 @@ pub fn build_provenance_table<'a>(
     RecordBatch::try_new(schema, vec![names as ArrayRef, salts, digests]).unwrap()
 }
 
-pub fn write_provenance_table<W: io::Write + Send>(stream: &mut W, provenance_table: RecordBatch, encryption_props: Arc<FileEncryptionProperties>) -> io::Result<()> {
+pub fn write_provenance_table<W: io::Write + Send>(
+    stream: &mut W,
+    provenance_table: RecordBatch,
+    encryption_props: Arc<FileEncryptionProperties>,
+) -> io::Result<()> {
     let props = WriterPropertiesBuilder::default()
         .set_compression(parquet::basic::Compression::ZSTD(ZstdLevel::default()))
-        .with_file_encryption_properties(encryption_props).build();
-    let mut writer = parquet::arrow::ArrowWriter::try_new(stream, provenance_table.schema(), Some(props))?;
+        .with_file_encryption_properties(encryption_props)
+        .build();
+    let mut writer =
+        parquet::arrow::ArrowWriter::try_new(stream, provenance_table.schema(), Some(props))?;
     writer.write(&provenance_table)?;
     writer.finish()?;
     Ok(())
@@ -180,6 +341,7 @@ pub fn write_provenance_table<W: io::Write + Send>(stream: &mut W, provenance_ta
 #[cfg(feature = "async")]
 mod async_impl {
     use super::*;
+    use parquet::arrow::async_reader::AsyncFileReader;
 
     /// A helper that computes a SHA-512 checksum of a readable asynchronous stream
     pub async fn checksum_stream_async<R: tokio::io::AsyncReadExt + Unpin>(
@@ -196,6 +358,47 @@ mod async_impl {
         }
         Ok(hex::encode(context.finalize()))
     }
+
+    /// Compute a SHA-512 checksum of every column chunk in every row group of a Parquet file
+    /// read through an [`AsyncFileReader`]
+    ///
+    /// # Note
+    /// `filename` should be the file's name relative to the root of the archive, without
+    ///  any leading slashes.
+    pub async fn checksum_parquet_segments_async<R: AsyncFileReader>(
+        reader: &mut R,
+        filename: &str,
+    ) -> io::Result<Vec<ColumnChunkChecksum>> {
+        let meta = reader.get_metadata(None).await?;
+        let mut checksums = Vec::new();
+        for (row_group, rg) in meta.row_groups().iter().enumerate() {
+            for (column, col) in rg.columns().iter().enumerate() {
+                // `byte_range` starts at the dictionary page when present, else the first data page
+                let (offset, length) = col.byte_range();
+                let blob = reader.get_bytes(offset..offset + length).await?;
+                if blob.len() as u64 != length {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        format!(
+                            "Expected {length} bytes for row group {row_group} column {}, read {}",
+                            col.column_path(),
+                            blob.len()
+                        ),
+                    ));
+                }
+                checksums.push(ColumnChunkChecksum {
+                    filename: filename.to_string(),
+                    row_group,
+                    column,
+                    path: col.column_path().string(),
+                    offset,
+                    length,
+                    digest: hex::encode(sha2::Sha512::digest(&blob)),
+                });
+            }
+        }
+        Ok(checksums)
+    }
 }
 #[cfg(feature = "async")]
-pub use async_impl::checksum_stream_async;
+pub use async_impl::{checksum_parquet_segments_async, checksum_stream_async};
