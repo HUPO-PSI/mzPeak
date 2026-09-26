@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     collections::HashMap,
     fs, io,
     marker::PhantomData,
@@ -118,6 +117,8 @@ pub struct MzPeakReaderTypeOfSource<
     pub query_indices: QueryIndex,
     prefer_spectra_peaks: SignalLoadingPreference,
     spectrum_metadata_cache: Option<Vec<SpectrumDescription>>,
+    chromatogram_metadata_cache: Option<Vec<ChromatogramDescription>>,
+    wavelength_spectrum_metadata_cache: Option<Vec<SpectrumDescription>>,
     spectrum_data_cache: CacheBuffer,
     spectrum_peak_cache: CacheBuffer,
     _t: PhantomData<(C, D)>,
@@ -264,12 +265,15 @@ impl<
         let s = self
             .get_spectrum_metadata_by_id(id)
             .map_err(|e| SpectrumAccessError::IOError(Some(e)))?
-            .unwrap();
+            .ok_or_else(|| SpectrumAccessError::SpectrumIdNotFound(id.to_string()))?;
         self.index = s.index;
         Ok(self)
     }
 
     fn start_from_index(&mut self, index: usize) -> Result<&mut Self, SpectrumAccessError> {
+        if index >= self.len() {
+            return Err(SpectrumAccessError::SpectrumIndexNotFound(index));
+        }
         self.index = index;
         Ok(self)
     }
@@ -345,6 +349,8 @@ impl<
             metadata,
             query_indices,
             spectrum_metadata_cache: None,
+            chromatogram_metadata_cache: None,
+            wavelength_spectrum_metadata_cache: None,
             spectrum_data_cache: Default::default(),
             spectrum_peak_cache: Default::default(),
             _t: Default::default(),
@@ -431,19 +437,36 @@ impl<
     }
 
     /// Load the descriptive metadata for all chromatograms
+    ///
+    /// This method caches the data after its first use.
     pub fn load_all_chromatogram_metadata(
         &mut self,
-    ) -> io::Result<Option<Cow<'_, [ChromatogramDescription]>>> {
-        Ok(Some(Cow::Owned(self.load_all_chromatgram_metadata_impl()?)))
+    ) -> io::Result<Option<&[ChromatogramDescription]>> {
+        if self.chromatogram_metadata_cache.is_none() {
+            self.chromatogram_metadata_cache = Some(
+                self.load_all_chromatgram_metadata_impl().inspect_err(|e| {
+                    log::error!("Failed to load chromatogram metadata cache: {e}")
+                })?,
+            );
+        }
+        Ok(self.chromatogram_metadata_cache.as_deref())
     }
 
     /// Load the descriptive metadata for all wavelength spectra
+    ///
+    /// This method caches the data after its first use.
     pub fn load_all_wavelength_spectrum_metadata(
         &mut self,
-    ) -> io::Result<Option<Cow<'_, [SpectrumDescription]>>> {
-        Ok(Some(Cow::Owned(
-            self.load_all_wavelength_spectrum_metadata_impl()?,
-        )))
+    ) -> io::Result<Option<&[SpectrumDescription]>> {
+        if self.wavelength_spectrum_metadata_cache.is_none() {
+            self.wavelength_spectrum_metadata_cache = Some(
+                self.load_all_wavelength_spectrum_metadata_impl()
+                    .inspect_err(|e| {
+                        log::error!("Failed to load wavelength spectrum metadata cache: {e}")
+                    })?,
+            );
+        }
+        Ok(self.wavelength_spectrum_metadata_cache.as_deref())
     }
 
     /// The location of the archive.
@@ -1397,8 +1420,9 @@ impl<
         &mut self,
         index: u64,
     ) -> io::Result<Option<ChromatogramDescription>> {
-        self.load_all_chromatgram_metadata_impl()
-            .map(|v| v.into_iter().nth(index as usize))
+        Ok(self
+            .load_all_chromatogram_metadata()?
+            .and_then(|v| v.get(index as usize).cloned()))
     }
 
     /// Read the complete data arrays for the chromatogram at `index`
@@ -1449,6 +1473,9 @@ impl<
         &mut self,
         index: u64,
     ) -> io::Result<Option<SpectrumDescription>> {
+        if let Some(cache) = self.wavelength_spectrum_metadata_cache.as_ref() {
+            return Ok(cache.get(index as usize).cloned());
+        }
         let mut facet = MzPeakWavelengthSpectrumFacet(self, CacheBuffer::with_max_size(0));
         if facet.has_facet() {
             facet.get_metadata(index)
@@ -1877,10 +1904,11 @@ impl<
     /// Retrieve a complete chromatogram by its unique ID
     pub fn get_chromatogram_by_id(&mut self, id: &str) -> Option<Chromatogram> {
         if let Some(description) = self
-            .load_all_chromatgram_metadata_impl()
-            .ok()?
-            .into_iter()
+            .load_all_chromatogram_metadata()
+            .ok()??
+            .iter()
             .find(|v| v.id == id)
+            .cloned()
         {
             let arrays = if self.detail_level == DetailLevel::Full {
                 self.get_chromatogram_arrays(description.index as u64)
@@ -2831,6 +2859,78 @@ mod test {
         assert_eq!(out.len(), 1);
         // This is just a wrapper around `load_all_chromatgram_metadata_impl` currently.
         assert_eq!(ChromatogramSource::count_chromatograms(&reader), 1);
+        Ok(())
+    }
+
+    #[test_log::test]
+    #[rstest::rstest]
+    #[case::packed("small.mzpeak")]
+    #[case::unpacked("small.unpacked.mzpeak")]
+    #[case::packed_chunks("small.chunked.mzpeak")]
+    fn test_chromatogram_metadata_cache(#[case] path: &str) -> io::Result<()> {
+        let mut reader = MzPeakReader::new(path)?;
+        let expected = reader.load_all_chromatgram_metadata_impl()?;
+        assert!(reader.chromatogram_metadata_cache.is_none());
+
+        // Point lookups fill the cache and agree with the uncached decoder
+        let first = reader.get_chromatogram_metadata(0)?.unwrap();
+        assert_eq!(first.id, expected[0].id);
+        assert_eq!(first.index, expected[0].index);
+        assert_eq!(
+            reader.chromatogram_metadata_cache.as_ref().map(|v| v.len()),
+            Some(expected.len())
+        );
+        assert!(reader.get_chromatogram_metadata(expected.len() as u64)?.is_none());
+
+        // Bulk access borrows from the cache rather than rebuilding it
+        let all = reader.load_all_chromatogram_metadata()?.unwrap();
+        let bulk_ptr = all.as_ptr();
+        assert_eq!(all.len(), expected.len());
+        drop(all);
+        assert!(std::ptr::eq(
+            bulk_ptr,
+            reader.chromatogram_metadata_cache.as_ref().unwrap().as_ptr()
+        ));
+
+        let by_id = reader.get_chromatogram_by_id(&expected[0].id).unwrap();
+        assert_eq!(by_id.index(), expected[0].index);
+        assert!(reader.get_chromatogram_by_id("no such chromatogram").is_none());
+        Ok(())
+    }
+
+    #[test_log::test]
+    fn test_wavelength_metadata_cache_absent() -> io::Result<()> {
+        // A file without a wavelength facet caches an empty list and yields no spectra
+        let mut reader = MzPeakReader::new("small.mzpeak")?;
+        assert!(reader.wavelength_spectrum_metadata_cache.is_none());
+        assert!(reader.get_wavelength_spectrum_metadata(0)?.is_none());
+        let all = reader.load_all_wavelength_spectrum_metadata()?.unwrap();
+        assert!(all.is_empty());
+        drop(all);
+        assert!(reader.wavelength_spectrum_metadata_cache.is_some());
+        assert!(reader.get_wavelength_spectrum_metadata(0)?.is_none());
+        Ok(())
+    }
+
+    #[test_log::test]
+    fn test_wavelength_metadata_cache() -> io::Result<()> {
+        let mut reader = MzPeakReader::new("has_uv.mzpeak")?;
+        let expected = reader.load_all_wavelength_spectrum_metadata_impl()?;
+        assert!(!expected.is_empty());
+        let first = reader.get_wavelength_spectrum_metadata(0)?.unwrap();
+        assert_eq!(first.id, expected[0].id);
+
+        let all = reader.load_all_wavelength_spectrum_metadata()?.unwrap();
+        assert_eq!(all.len(), expected.len());
+        drop(all);
+
+        // Cached lookups match the uncached facet path
+        let last = expected.len() - 1;
+        let cached = reader.get_wavelength_spectrum_metadata(last as u64)?.unwrap();
+        assert_eq!(cached.id, expected[last].id);
+        assert!(reader
+            .get_wavelength_spectrum_metadata(expected.len() as u64)?
+            .is_none());
         Ok(())
     }
 
