@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from upath import UPath  # noqa: TC004
 
 try:
-    import pynumpress
+    import pynumpress # pyright: ignore[reportMissingImports]  # noqa: I001
 except ImportError:
     pynumpress = None
 
@@ -464,6 +464,18 @@ class MzPeakNamespaceAggregation:
                 flatten_columns=self.flatten_columns
             )
 
+    def find_file_index_entry(
+        self, entity_type: EntityType, data_kind: DataKind
+    ) -> FileEntry | None:
+        return self.file_index.find(entity_type, data_kind)
+
+    def _find_and_bind_columns(self, kind: DataKind, handle: pq.ParquetFile):
+        index_entry = self.find_file_index_entry(self.entity_type, kind)
+        if index_entry:
+            for col in index_entry.column_mapping:
+                col._namespace_file_handle = handle
+        return index_entry
+
 
 class StorageStrategyBase:
     def _read_spectra(self) -> tuple[pd.DataFrame, pd.Series]:
@@ -501,7 +513,10 @@ class MultiFileStorage(StorageStrategyBase):
         self.flatten_columns = flatten_columns
 
     def find_file_index_entry(self, entity_type: EntityType, data_kind: DataKind) -> FileEntry | None:
-        return self.namespaces.file_index.find(entity_type, data_kind)
+        return self.namespaces.find_file_index_entry(entity_type, data_kind)
+
+    def _find_and_bind_columns(self, kind: DataKind, handle: pq.ParquetFile):
+        return self.namespaces._find_and_bind_columns(kind, handle)
 
     def _read_spectra(self):
         if self.namespaces.metadata is None:
@@ -516,11 +531,8 @@ class MultiFileStorage(StorageStrategyBase):
             return (df, id_index)
 
         bat = self.namespaces.metadata.read()
-        index_entry = self.find_file_index_entry(self.entity_type, DataKind.Metadata)
+        index_entry = self._find_and_bind_columns(DataKind.Metadata, self.namespaces.metadata)
         if index_entry:
-            for col in index_entry.column_mapping:
-                col._namespace_file_handle = self.namespaces.metadata
-
             name_map = index_entry.renaming_map()
             bat = _NameCleaningNode.clean_table(bat, mapper=lambda x: name_map.get(x, x))
 
@@ -998,7 +1010,348 @@ class _EntityCollectionMixin(Sequence[_SpectrumType]):
         return RTLocator(self)
 
 
-class MzPeakFile(_EntityCollectionMixin):
+class _MzPeakFileBase:
+    _archive: zipfile.ZipFile | Path | UPath
+    """The actual storage backend that routes file opening and I/O operations"""
+    _archive_storage: ArchiveStorage
+    """The kind of storage being used that differentiates between local and remote and zip archive vs. unpacked directory"""
+    _source: Any
+    """The object provided to open the file"""
+
+    _spectrum_namespace_aggregator: MzPeakNamespaceAggregation
+    """The collection of files that compose spectrum metadata. :attr:`spectrum_metadata` is an in-memory view of it."""
+
+    _chromatogram_namespace_aggregator: MzPeakNamespaceAggregation
+    """The collection of files that compose chromatogram metadata. :attr:`chromatogram_metadata` is an in-memory view of it."""
+
+    _wavelength_spectrum_namespace_aggregator: MzPeakNamespaceAggregation
+    """The collection of files that compose wavelength spectrum metadata. :attr:`_wavelength_spectrum_metadata` is an in-memory view of it."""
+
+    file_metadata: dict[str, Any]
+
+    file_index: FileIndex
+
+    def __init__(
+        self,
+        path: str | Path | UPath | zipfile.ZipFile | IO[bytes],
+        flatten_columns: bool = False,
+    ):
+        self.file_index = FileIndex()
+        self._spectrum_namespace_aggregator = MzPeakNamespaceAggregation(
+            EntityType.Spectrum, flatten_columns=flatten_columns
+        )
+        self._chromatogram_namespace_aggregator = MzPeakNamespaceAggregation(
+            EntityType.Chromatogram, flatten_columns=flatten_columns
+        )
+        self._wavelength_spectrum_namespace_aggregator = MzPeakNamespaceAggregation(
+            EntityType.WavelengthSpectrum, flatten_columns=flatten_columns
+        )
+
+        if isinstance(path, zipfile.ZipFile):
+            self._source = path
+            self._from_zip_archive(path)
+        elif isinstance(path, (str, Path, UPath)):
+            if isinstance(path, str):
+                if has_upath and "://" in path:
+                    path = UPath(path)
+                else:
+                    if "://" in path:
+                        logger.warning(
+                            "%r resembles a URI but `universal_pathlib` is not installed",
+                            path,
+                        )
+                    path = Path(path)
+            self._source = path
+            self._from_path(path)
+        else:
+            self._source = path
+            self._from_zip_archive(zipfile.ZipFile(path))
+
+        self._unpack_namespaces()
+        self._init_metadata()
+
+    @property
+    def filename(self) -> str | None:
+        """The name of the data file"""
+        if isinstance(self._source, (Path, UPath)):
+            return self._source.name
+        elif isinstance(self._source, zipfile.ZipFile):
+            return self._source.filename
+
+    def close(self):
+        self._spectrum_namespace_aggregator.close()
+        self._chromatogram_namespace_aggregator.close()
+        self._wavelength_spectrum_namespace_aggregator.close()
+        if self.spectrum_data:
+            self.spectrum_data.close()
+        if self.spectrum_peak_data:
+            self.spectrum_peak_data.close()
+        if self.chromatogram_data:
+            self.chromatogram_data.close()
+        if self.wavelength_data:
+            self.wavelength_data.close()
+        if hasattr(self._archive, "close"):
+            self._archive.close()
+
+    def _upath_opener(self, f: UPath) -> pq.ParquetFile:
+        """Open a UPath-based file using the :class:`Path`-like API"""
+        return pq.ParquetFile(pa.PythonFile(f.open("rb")))
+
+    def _path_opener(self, f: Path) -> pq.ParquetFile:
+        """Open a native file system file using :class:`pa.OSFile` with less Python overhead"""
+        return pq.ParquetFile(pa.OSFile(str(f)))
+
+    def _zip_opener(self, f: zipfile.ZipExtFile) -> pq.ParquetFile:
+        """Open a :class:`zipfile.ZipExtFile` file-like object"""
+        return pq.ParquetFile(pa.PythonFile(f))
+
+    def _from_directory(self, path: Path):
+        self._archive_storage = ArchiveStorage.Directory
+        self._archive = path
+        index_path = path / FileIndex.FILE_NAME
+        visited = set()
+        if has_upath and isinstance(path, UPath):
+            opener = self._upath_opener
+        else:
+            opener = self._path_opener
+        if index_path.exists():
+            self.file_index = FileIndex.from_json(json.load(index_path.open()))
+            for e in self.file_index:
+                f = path / e.name
+                if f in visited:
+                    continue
+                visited.add(f)
+                self._receive_entry(e, f, opener=opener)
+        else:
+            raise FileNotFoundError(
+                f"Failed to find {FileIndex.FILE_NAME} in unpacked mzPeak archive {path}"
+            )
+
+    def _receive_entry(self, e: FileEntry, f, opener: Callable[[Any], pq.ParquetFile]):
+        match e.entry_type():
+            # receive mass spectra
+            case (EntityType.Spectrum, DataKind.DataArrays):
+                self.spectrum_data = MzPeakArrayDataReader(
+                    opener(f), namespace="spectrum"
+                )
+            case (EntityType.Spectrum, DataKind.Metadata):
+                self._spectrum_namespace_aggregator.metadata = opener(f)
+            case (EntityType.Spectrum, DataKind.Scans):
+                self._spectrum_namespace_aggregator.scans = opener(f)
+            case (EntityType.Spectrum, DataKind.Precursors):
+                self._spectrum_namespace_aggregator.precursors = opener(f)
+            case (EntityType.Spectrum, DataKind.SelectedIons):
+                self._spectrum_namespace_aggregator.selected_ions = opener(f)
+            case (EntityType.Spectrum, DataKind.Peaks):
+                self.spectrum_peak_data = MzPeakArrayDataReader(
+                    opener(f), namespace="spectrum"
+                )
+
+            # receive chromatograms
+            case (EntityType.Chromatogram, DataKind.DataArrays):
+                self.chromatogram_data = MzPeakArrayDataReader(
+                    opener(f), namespace="chromatogram"
+                )
+            case (EntityType.Chromatogram, DataKind.Metadata):
+                self._chromatogram_namespace_aggregator.metadata = opener(f)
+            case (EntityType.Chromatogram, DataKind.Precursors):
+                self._chromatogram_namespace_aggregator.precursors = opener(f)
+            case (EntityType.Chromatogram, DataKind.SelectedIons):
+                self._chromatogram_namespace_aggregator.selected_ions = opener(f)
+            case (EntityType.Chromatogram, DataKind.Products):
+                self._chromatogram_namespace_aggregator.products = opener(f)
+
+            # receive wavelength spectra
+            case (EntityType.WavelengthSpectrum, DataKind.DataArrays):
+                self._wavelength_spectrum_data = MzPeakArrayDataReader(
+                    opener(f),
+                    namespace="wavelength_spectrum",
+                )
+            case (EntityType.WavelengthSpectrum, DataKind.Metadata):
+                self._wavelength_spectrum_namespace_aggregator.metadata = opener(f)
+            case (EntityType.WavelengthSpectrum, DataKind.Scans):
+                self._wavelength_spectrum_namespace_aggregator.scans = opener(f)
+
+            # Something else
+            case _:
+                pass
+
+    def _from_zip_archive(self, archive: zipfile.ZipFile):
+        self._archive_storage = ArchiveStorage.Zip
+        self._archive = archive
+        visited = set()
+
+        try:
+            f = archive.getinfo(FileIndex.FILE_NAME)
+        except KeyError as err:
+            raise FileNotFoundError(
+                f"Failed to find {FileIndex.FILE_NAME} in mzPeak ZIP archive {archive}"
+            ) from err
+
+        self.file_index = FileIndex.from_json(json.load(archive.open(f)))
+        for e in self.file_index:
+            if e.name in visited:
+                continue
+            visited.add(e.name)
+            f = archive.open(e.name)
+            self._receive_entry(e, f, self._zip_opener)
+
+    def _from_path(self, path: Path):
+        if path.is_dir():
+            if path.is_file():
+                try:
+                    archive = zipfile.ZipFile(path.open("rb"))
+                    self._from_zip_archive(archive)
+                    return
+                except (OSError, ValueError):
+                    pass
+            self._from_directory(path)
+        else:
+            archive = zipfile.ZipFile(path.open("rb"))
+            self._from_zip_archive(archive)
+
+    def _unpack_namespaces(self):
+        # Provide the file index
+        self._spectrum_namespace_aggregator.file_index = self.file_index
+        self._chromatogram_namespace_aggregator.file_index = self.file_index
+        self._wavelength_spectrum_namespace_aggregator.file_index = self.file_index
+
+    def _init_metadata(self):
+        metadata = {}
+        if self._spectrum_namespace_aggregator.metadata:
+            for k, v in self._spectrum_namespace_aggregator.metadata.metadata.metadata.items():
+                k = k.decode("utf8")
+                if k == "ARROW:schema":
+                    continue
+                try:
+                    v = json.loads(v)
+                except json.JSONDecodeError:
+                    pass
+                metadata[k] = v
+        metadata.update(self.file_index.metadata)
+        self.file_metadata = metadata
+
+    def open_stream(self, name: str | FileEntry) -> IO[bytes]:
+        if isinstance(name, FileEntry):
+            name = name.name
+        match self._archive_storage:
+            case ArchiveStorage.Zip:
+                return self._archive.open(name)
+            case ArchiveStorage.Directory:
+                return (self._archive / name).open(mode="rb")
+            case _:
+                raise TypeError(
+                    f"Do not understand how to open a stream from {self._archive} of type {self._archive_storage}"
+                )
+
+    def list_files(self) -> list[str]:
+        match self._archive_storage:
+            case ArchiveStorage.Zip:
+                return [f.filename for f in self._archive.filelist]
+            case ArchiveStorage.Directory:
+                return [f.name for f in self._archive.glob("*")]
+            case _:
+                raise TypeError(
+                    f"Do not understand how to list files from {self._archive} of type {self._archive_storage}"
+                )
+
+    def observed_mz_range(self) -> tuple[float | None, float | None]:
+        """
+        Query the spectrum metadata to obtain the lowest and highest observed m/z as reported
+        by columns mapped to `MS:1000528` and `MS:1000527`.
+
+        This queries Parquet row group statistics.
+
+        Returns
+        -------
+        min_mz : float | None
+            The lowest observed m/z
+        max_mz : float | None
+            The highest observed m/z
+        """
+        ns = self.spectrum_metadata.namespace
+        fi = ns.file_index.find(EntityType.Spectrum, DataKind.Metadata)
+        lowest = fi.mapping(accession="MS:1000528")
+        highest = fi.mapping(accession="MS:1000527")
+        min_mz = None
+        max_mz = None
+        if lowest is not None:
+            try:
+                lowest_mins, _lowest_maxes = lowest.statistics(ns.metadata)
+                min_mz = lowest_mins.min()
+            except KeyError:
+                pass
+        if highest is not None:
+            try:
+                _highest_mins, highest_maxes = highest.statistics(ns.metadata)
+                max_mz = highest_maxes.max()
+            except KeyError:
+                pass
+        return (min_mz, max_mz)
+
+    def _checksum_file(self, name: str | FileEntry) -> str:
+        with self.open_stream(name) as stream:
+            chk = hashlib.sha512()
+            while buf := stream.read(2**16):
+                chk.update(buf)
+        return chk.hexdigest()
+
+    def check_entry_integrity(self, entry: FileEntry) -> bool | None:
+        """
+        Check if an entry's checksum matches the checksum stored in the file index.
+
+        Parameters
+        ----------
+        entry : :class:`FileEntry`
+            The file entry to check
+
+        Returns
+        -------
+        bool | None
+            If :attr:`entry.checksum` is :const:`None`, this returns :const:`None`, otherwise whether or not
+            the :attr:`entry.checksum` matches the computed checksum.
+
+        See Also
+        --------
+        :meth:`check_archive_integrity`: Check the integrity all files in the archive
+        """
+        if entry.checksum is None:
+            return None
+        return self._checksum_file(entry) == entry.checksum
+
+    def check_archive_integrity(
+        self,
+    ) -> tuple[bool | None, list[tuple[FileEntry, str]]]:
+        """
+        Check if all the entries in the archive match their checksums.
+
+        Returns
+        -------
+        bool | None
+            Returns :const:`None` if *any* of the entries in this archive return :const:`None` from
+            :meth:`check_entry_integrity`, otherwise :const:`True` if all checksums match, :const:`False`
+            otherwise.
+
+        See Also
+        --------
+        :meth:`check_entry_integrity`: Check the integrity of a single file entry in the archive
+        """
+        failed = []
+        valid = True
+        for entry in self.file_index:
+            state = self.check_entry_integrity(entry)
+            match state:
+                case None:
+                    return None
+                case False:
+                    failed.append((entry, self._checksum_file(entry)))
+                    valid &= False
+                case _:
+                    continue
+        return valid, failed
+
+
+class MzPeakFile(_MzPeakFileBase, _EntityCollectionMixin):
     """
     An mzPeak reader for mass spectra, chromatograms, and other
     data types.
@@ -1098,209 +1451,6 @@ class MzPeakFile(_EntityCollectionMixin):
 
     file_index: FileIndex
 
-    @property
-    def filename(self) -> str | None:
-        """The name of the data file"""
-        if isinstance(self._source, (Path, UPath)):
-            return self._source.name
-        elif isinstance(self._source, zipfile.ZipFile):
-            return self._source.filename
-
-    def close(self):
-        self._spectrum_namespace_aggregator.close()
-        self._chromatogram_namespace_aggregator.close()
-        self._wavelength_spectrum_namespace_aggregator.close()
-        if self.spectrum_data:
-            self.spectrum_data.close()
-        if self.spectrum_peak_data:
-            self.spectrum_peak_data.close()
-        if self.chromatogram_data:
-            self.chromatogram_data.close()
-        if self.wavelength_data:
-            self.wavelength_data.close()
-        if hasattr(self._archive, 'close'):
-            self._archive.close()
-
-    def _upath_opener(self, f: UPath) -> pq.ParquetFile:
-        """Open a UPath-based file using the :class:`Path`-like API"""
-        return pq.ParquetFile(pa.PythonFile(f.open("rb")))
-
-    def _path_opener(self, f: Path) -> pq.ParquetFile:
-        """Open a native file system file using :class:`pa.OSFile` with less Python overhead"""
-        return pq.ParquetFile(pa.OSFile(str(f)))
-
-    def _zip_opener(self, f: zipfile.ZipExtFile) -> pq.ParquetFile:
-        """Open a :class:`zipfile.ZipExtFile` file-like object"""
-        return pq.ParquetFile(pa.PythonFile(f))
-
-    def _from_directory(self, path: Path):
-        self._archive_storage = ArchiveStorage.Directory
-        self._archive = path
-        index_path = path / FileIndex.FILE_NAME
-        visited = set()
-        if has_upath and isinstance(path, UPath):
-            opener = self._upath_opener
-        else:
-            opener = self._path_opener
-        if index_path.exists():
-            self.file_index = FileIndex.from_json(json.load(index_path.open()))
-            for e in self.file_index:
-                f = path / e.name
-                if f in visited:
-                    continue
-                visited.add(f)
-                self._receive_entry(e, f, opener=opener)
-        else:
-            raise FileNotFoundError(f"Failed to find {FileIndex.FILE_NAME} in unpacked mzPeak archive {path}")
-
-    def _receive_entry(self, e: FileEntry, f, opener: Callable[[Any], pq.ParquetFile]):
-        match e.entry_type():
-            # receive mass spectra
-            case (EntityType.Spectrum, DataKind.DataArrays):
-                self.spectrum_data = MzPeakArrayDataReader(opener(f), namespace="spectrum")
-            case (EntityType.Spectrum, DataKind.Metadata):
-                self._spectrum_namespace_aggregator.metadata = opener(f)
-            case (EntityType.Spectrum, DataKind.Scans):
-                self._spectrum_namespace_aggregator.scans = opener(f)
-            case (EntityType.Spectrum, DataKind.Precursors):
-                self._spectrum_namespace_aggregator.precursors = opener(f)
-            case (EntityType.Spectrum, DataKind.SelectedIons):
-                self._spectrum_namespace_aggregator.selected_ions = opener(f)
-            case (EntityType.Spectrum, DataKind.Peaks):
-                self.spectrum_peak_data = MzPeakArrayDataReader(opener(f), namespace="spectrum")
-
-            # receive chromatograms
-            case (EntityType.Chromatogram, DataKind.DataArrays):
-                self.chromatogram_data = MzPeakArrayDataReader(opener(f), namespace="chromatogram")
-            case (EntityType.Chromatogram, DataKind.Metadata):
-                self._chromatogram_namespace_aggregator.metadata = opener(f)
-            case (EntityType.Chromatogram, DataKind.Precursors):
-                self._chromatogram_namespace_aggregator.precursors = opener(f)
-            case (EntityType.Chromatogram, DataKind.SelectedIons):
-                self._chromatogram_namespace_aggregator.selected_ions = opener(f)
-            case (EntityType.Chromatogram, DataKind.Products):
-                self._chromatogram_namespace_aggregator.products = opener(f)
-
-            # receive wavelength spectra
-            case (EntityType.WavelengthSpectrum, DataKind.DataArrays):
-                self._wavelength_spectrum_data = MzPeakArrayDataReader(opener(f), namespace="wavelength_spectrum",
-                )
-            case (EntityType.WavelengthSpectrum, DataKind.Metadata):
-                self._wavelength_spectrum_namespace_aggregator.metadata = opener(f)
-            case (EntityType.WavelengthSpectrum, DataKind.Scans):
-                self._wavelength_spectrum_namespace_aggregator.scans = opener(f)
-
-            # Something else
-            case _:
-                pass
-
-    def _from_zip_archive(self, archive: zipfile.ZipFile):
-        self._archive_storage = ArchiveStorage.Zip
-        self._archive = archive
-        visited = set()
-
-        try:
-            f = archive.getinfo(FileIndex.FILE_NAME)
-        except KeyError as err:
-            raise FileNotFoundError(
-                f"Failed to find {FileIndex.FILE_NAME} in mzPeak ZIP archive {archive}"
-            ) from err
-
-        self.file_index = FileIndex.from_json(json.load(archive.open(f)))
-        for e in self.file_index:
-            if e.name in visited:
-                continue
-            visited.add(e.name)
-            f = archive.open(e.name)
-            self._receive_entry(e, f, self._zip_opener)
-
-    def _from_path(self, path: Path):
-        if path.is_dir():
-            if path.is_file():
-                try:
-                    archive = zipfile.ZipFile(path.open('rb'))
-                    self._from_zip_archive(archive)
-                    return
-                except (OSError, ValueError):
-                    pass
-            self._from_directory(path)
-        else:
-            archive = zipfile.ZipFile(path.open('rb'))
-            self._from_zip_archive(archive)
-
-    def open_stream(self, name: str | FileEntry) -> IO[bytes]:
-        if isinstance(name, FileEntry):
-            name = name.name
-        match self._archive_storage:
-            case ArchiveStorage.Zip:
-                return self._archive.open(name)
-            case ArchiveStorage.Directory:
-                return (self._archive / name).open(mode="rb")
-            case _:
-                raise TypeError(
-                    f"Do not understand how to open a stream from {self._archive} of type {self._archive_storage}"
-                )
-
-    def list_files(self) -> list[str]:
-        match self._archive_storage:
-            case ArchiveStorage.Zip:
-                return [f.filename for f in self._archive.filelist]
-            case ArchiveStorage.Directory:
-                return [f.name for f in self._archive.glob("*")]
-            case _:
-                raise TypeError(
-                    f"Do not understand how to list files from {self._archive} of type {self._archive_storage}"
-                )
-
-    def read_peaks_for(self, index: int) -> _SpectrumArrays | None:
-        '''
-        Read the centroid mass spectrum peak list for ``index`` if one is available.
-
-        Parameters
-        ----------
-        index : int
-            The index to read peaks for.
-
-        Returns
-        -------
-        dict[str, np.ndarray]
-            A map of named peak dimensions as :class:`np.ndarray`
-        '''
-        if self.spectrum_peak_data is not None:
-            return self.spectrum_peak_data[index]
-
-    def _init_metadata(self):
-        metadata = {}
-        if self.spectrum_metadata:
-            for k, v in self.spectrum_metadata.meta.metadata.items():
-                k = k.decode("utf8")
-                if k == "ARROW:schema":
-                    continue
-                try:
-                    v = json.loads(v)
-                except json.JSONDecodeError:
-                    pass
-                metadata[k] = v
-        metadata.update(self.file_index.metadata)
-        self.file_metadata = metadata
-
-        if self.spectrum_data and self.spectrum_metadata:
-            self.spectrum_data._delta_model_series = (
-                self.spectrum_metadata._get_mz_delta_model()
-            )
-
-    def _unpack_namespaces(self):
-        # Provide the file index
-        self._spectrum_namespace_aggregator.file_index = self.file_index
-        self._chromatogram_namespace_aggregator.file_index = self.file_index
-        self._wavelength_spectrum_namespace_aggregator.file_index = self.file_index
-
-        self.spectrum_metadata = MzPeakSpectrumMetadataReader(self._spectrum_namespace_aggregator)
-        self.chromatogram_metadata = MzPeakChromatogramMetadataReader(self._chromatogram_namespace_aggregator)
-        if self._wavelength_spectrum_namespace_aggregator.metadata is not None:
-            self._wavelength_spectrum_metadata = MzPeakSpectrumMetadataReader(self._wavelength_spectrum_namespace_aggregator)
-        else:
-            self._wavelength_spectrum_metadata = None
 
     def __init__(self, path: str | Path | UPath | zipfile.ZipFile | IO[bytes], flatten_columns: bool = False):
         self.file_index = FileIndex()
@@ -1337,6 +1487,47 @@ class MzPeakFile(_EntityCollectionMixin):
         self._unpack_namespaces()
         self._init_metadata()
 
+    def _unpack_namespaces(self):
+        super()._unpack_namespaces()
+
+        self.spectrum_metadata = MzPeakSpectrumMetadataReader(
+            self._spectrum_namespace_aggregator
+        )
+        self.chromatogram_metadata = MzPeakChromatogramMetadataReader(
+            self._chromatogram_namespace_aggregator
+        )
+        if self._wavelength_spectrum_namespace_aggregator.metadata is not None:
+            self._wavelength_spectrum_metadata = MzPeakSpectrumMetadataReader(
+                self._wavelength_spectrum_namespace_aggregator
+            )
+        else:
+            self._wavelength_spectrum_metadata = None
+
+    def _init_metadata(self):
+        super()._init_metadata()
+
+        if self.spectrum_data and self.spectrum_metadata:
+            self.spectrum_data._delta_model_series = (
+                self.spectrum_metadata._get_mz_delta_model()
+            )
+
+    def read_peaks_for(self, index: int) -> _SpectrumArrays | None:
+        """
+        Read the centroid mass spectrum peak list for ``index`` if one is available.
+
+        Parameters
+        ----------
+        index : int
+            The index to read peaks for.
+
+        Returns
+        -------
+        dict[str, np.ndarray]
+            A map of named peak dimensions as :class:`np.ndarray`
+        """
+        if self.spectrum_peak_data is not None:
+            return self.spectrum_peak_data[index]
+
     def read_chromatogram(
         self, index: int | str | Iterable[int | str] | slice
     ) -> _SpectrumType | list[_SpectrumType]:
@@ -1372,99 +1563,6 @@ class MzPeakFile(_EntityCollectionMixin):
             step = index.step or 1
             chrom = self.read_chromatogram(range(start, end, step))
         return chrom
-
-    def observed_mz_range(self) -> tuple[float | None, float | None]:
-        """
-        Query the spectrum metadata to obtain the lowest and highest observed m/z as reported
-        by columns mapped to `MS:1000528` and `MS:1000527`.
-
-        This queries Parquet row group statistics.
-
-        Returns
-        -------
-        min_mz : float | None
-            The lowest observed m/z
-        max_mz : float | None
-            The highest observed m/z
-        """
-        ns = self.spectrum_metadata.namespace
-        fi = ns.file_index.find(EntityType.Spectrum, DataKind.Metadata)
-        lowest = fi.mapping(accession="MS:1000528")
-        highest = fi.mapping(accession="MS:1000527")
-        min_mz = None
-        max_mz = None
-        if lowest is not None:
-            try:
-                lowest_mins, _lowest_maxes = lowest.statistics(ns.metadata)
-                min_mz = lowest_mins.min()
-            except KeyError:
-                pass
-        if highest is not None:
-            try:
-                _highest_mins, highest_maxes = highest.statistics(ns.metadata)
-                max_mz = highest_maxes.max()
-            except KeyError:
-                pass
-        return (min_mz, max_mz)
-
-    def _checksum_file(self, name: str | FileEntry) -> str:
-        with self.open_stream(name) as stream:
-            chk = hashlib.sha512()
-            while buf := stream.read(2**16):
-                chk.update(buf)
-        return chk.hexdigest()
-
-    def check_entry_integrity(self, entry: FileEntry) -> bool | None:
-        """
-        Check if an entry's checksum matches the checksum stored in the file index.
-
-        Parameters
-        ----------
-        entry : :class:`FileEntry`
-            The file entry to check
-
-        Returns
-        -------
-        bool | None
-            If :attr:`entry.checksum` is :const:`None`, this returns :const:`None`, otherwise whether or not
-            the :attr:`entry.checksum` matches the computed checksum.
-
-        See Also
-        --------
-        :meth:`check_archive_integrity`: Check the integrity all files in the archive
-        """
-        if entry.checksum is None:
-            return None
-        return self._checksum_file(entry) == entry.checksum
-
-    def check_archive_integrity(self) -> tuple[bool | None, list[tuple[FileEntry, str]]]:
-        """
-        Check if all the entries in the archive match their checksums.
-
-        Returns
-        -------
-        bool | None
-            Returns :const:`None` if *any* of the entries in this archive return :const:`None` from
-            :meth:`check_entry_integrity`, otherwise :const:`True` if all checksums match, :const:`False`
-            otherwise.
-
-        See Also
-        --------
-        :meth:`check_entry_integrity`: Check the integrity of a single file entry in the archive
-        """
-        failed = []
-        valid = True
-        for entry in self.file_index:
-            state = self.check_entry_integrity(entry)
-            match state:
-                case None:
-                    return None
-                case False:
-                    failed.append((entry, self._checksum_file(entry)))
-                    valid &= False
-                case _:
-                    continue
-        return valid, failed
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.filename!r}, prefer_peaks={self.prefer_peaks})"
@@ -1528,11 +1626,18 @@ class MzPeakFile(_EntityCollectionMixin):
     def to_sql(self, **kwargs):
         import datafusion
         ctx = datafusion.SessionContext(**kwargs)
-        ctx.from_arrow(pa.table(self.spectra.reset_index()), "spectra")
-        ctx.from_arrow(pa.table(self.scans.reset_index()), "scans")
-        ctx.from_arrow(pa.table(self.precursors.reset_index()), "precursors")
-        ctx.from_arrow(pa.table(self.selected_ions.reset_index()), "selected_ions")
-        ctx.from_arrow(pa.table(self.chromatograms.reset_index()), "chromatograms")
+
+        def _index_to_arrow(df: pd.DataFrame):
+            name = df.index.name
+            df = df.reset_index()
+            col = df[name]
+            df[name] = col.convert_dtypes(dtype_backend="pyarrow")
+
+        ctx.from_arrow(pa.table(_index_to_arrow(self.spectra)), "spectra")
+        ctx.from_arrow(pa.table(_index_to_arrow(self.scans)), "scans")
+        ctx.from_arrow(pa.table(_index_to_arrow(self.precursors)), "precursors")
+        ctx.from_arrow(pa.table(_index_to_arrow(self.selected_ions)), "selected_ions")
+        ctx.from_arrow(pa.table(_index_to_arrow(self.chromatograms)), "chromatograms")
         return ctx
 
     @property
