@@ -3,10 +3,12 @@ use std::{
     fs, io,
     marker::PhantomData,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use arrow::{
-    array::{Array, ArrayRef, AsArray, UInt64Array}, datatypes::{DataType, Float32Type, Float64Type},
+    array::{Array, ArrayRef, AsArray, UInt64Array},
+    datatypes::{DataType, Float32Type, Float64Type},
 };
 
 use identity_hash::BuildIdentityHasher;
@@ -38,9 +40,12 @@ use parquet::{
 };
 
 use crate::{
-    BufferContext, archive::{
-        ArchiveReader, ArchiveSource, DataKind, DirectorySource, DispatchArchiveSource, EntityType, FileEntry, SplittingZipArchiveSource, ZipArchiveBytesSource,
-    }, reader::{
+    BufferContext,
+    archive::{
+        ArchiveReader, ArchiveSource, DataKind, DirectorySource, DispatchArchiveSource, EntityType,
+        FileEntry, SplittingZipArchiveSource, ZipArchiveBytesSource,
+    },
+    reader::{
         chunk::ChunkDataReader,
         index::{
             BasicQueryIndex, ChromatogramQueryIndex, PageQuery, QueryIndex, SpanDynNumeric,
@@ -68,7 +73,7 @@ pub(crate) mod cache;
 pub(crate) use cache::{CacheBuffer, DataCacheBlock, DataCacheFrontend};
 pub(crate) mod utils;
 
-pub use utils::{IntoQueryRange, MaskSet, BatchIterator};
+pub use utils::{BatchIterator, IntoQueryRange, MaskSet};
 
 pub mod index;
 pub mod visitor;
@@ -78,7 +83,6 @@ mod object_store_async;
 
 pub use metadata::ReaderMetadata;
 use point::PointDataArrayReader;
-
 
 /// Express a preference for loading profile data, centroid data, or both, when the option
 /// is available.
@@ -116,9 +120,9 @@ pub struct MzPeakReaderTypeOfSource<
     pub metadata: ReaderMetadata,
     pub query_indices: QueryIndex,
     prefer_spectra_peaks: SignalLoadingPreference,
-    spectrum_metadata_cache: Option<Vec<SpectrumDescription>>,
-    chromatogram_metadata_cache: Option<Vec<ChromatogramDescription>>,
-    wavelength_spectrum_metadata_cache: Option<Vec<SpectrumDescription>>,
+    spectrum_metadata_cache: Option<Arc<Vec<SpectrumDescription>>>,
+    chromatogram_metadata_cache: Option<Arc<Vec<ChromatogramDescription>>>,
+    wavelength_spectrum_metadata_cache: Option<Arc<Vec<SpectrumDescription>>>,
     spectrum_data_cache: CacheBuffer,
     spectrum_peak_cache: CacheBuffer,
     _t: PhantomData<(C, D)>,
@@ -400,7 +404,9 @@ impl<
     /// ## Returns
     /// - The main status flag: `Some` if all entries have a checksum recorded. `None` otherwise.
     /// - Each failed entry and its computed checksum if it was resolved, None otherwise.
-    pub fn check_archive_integrity(&self) -> io::Result<(Option<bool>, Vec<(FileEntry, Option<String>)>)> {
+    pub fn check_archive_integrity(
+        &self,
+    ) -> io::Result<(Option<bool>, Vec<(FileEntry, Option<String>)>)> {
         self.handle.check_archive_integrity()
     }
 
@@ -430,10 +436,11 @@ impl<
         if self.spectrum_metadata_cache.is_none() {
             self.spectrum_metadata_cache = Some(
                 self.load_all_spectrum_metadata_impl()
-                    .inspect_err(|e| log::error!("Failed to load spectrum metadata cache: {e}"))?,
+                    .inspect_err(|e| log::error!("Failed to load spectrum metadata cache: {e}"))
+                    .map(Arc::new)?,
             );
         }
-        Ok(self.spectrum_metadata_cache.as_deref())
+        Ok(self.spectrum_metadata_cache.as_deref().map(|v| &**v))
     }
 
     /// Load the descriptive metadata for all chromatograms
@@ -444,12 +451,12 @@ impl<
     ) -> io::Result<Option<&[ChromatogramDescription]>> {
         if self.chromatogram_metadata_cache.is_none() {
             self.chromatogram_metadata_cache = Some(
-                self.load_all_chromatgram_metadata_impl().inspect_err(|e| {
-                    log::error!("Failed to load chromatogram metadata cache: {e}")
-                })?,
+                self.load_all_chromatgram_metadata_impl()
+                    .inspect_err(|e| log::error!("Failed to load chromatogram metadata cache: {e}"))
+                    .map(Arc::new)?,
             );
         }
-        Ok(self.chromatogram_metadata_cache.as_deref())
+        Ok(self.chromatogram_metadata_cache.as_deref().map(|v| &**v))
     }
 
     /// Load the descriptive metadata for all wavelength spectra
@@ -466,7 +473,10 @@ impl<
                     })?,
             );
         }
-        Ok(self.wavelength_spectrum_metadata_cache.as_deref())
+        Ok(self
+            .wavelength_spectrum_metadata_cache
+            .as_deref()
+            .map(|v| &**v))
     }
 
     /// The location of the archive.
@@ -649,10 +659,7 @@ impl<
         let builder = self.handle.spectrum_metadata().ok()?;
 
         let schema = builder.parquet_schema();
-        let i = schema
-            .columns()
-            .iter()
-            .position(|c| c.name() == "time")?;
+        let i = schema.columns().iter().position(|c| c.name() == "time")?;
 
         let mask = ProjectionMask::leaves(schema, [i]);
         let mut reader = builder
@@ -664,9 +671,9 @@ impl<
         let batch = reader.next()?;
         let arr = batch.ok()?.column(0).clone();
         if matches!(arr.data_type(), DataType::Float64) {
-            return Some(arr)
+            return Some(arr);
         } else {
-            return arrow::compute::cast(&arr, &DataType::Float64).ok()
+            return arrow::compute::cast(&arr, &DataType::Float64).ok();
         }
     }
 
@@ -702,9 +709,12 @@ impl<
                     let time_axis = time_axis.as_primitive::<Float64Type>();
                     let start = time_axis.value(index_range.start() as usize);
                     let end = time_axis.value(index_range.end() as usize);
-                    self.get_spectrum_index_range_for_time_range(SimpleInterval::new(start, end), ms_level_range)?
+                    self.get_spectrum_index_range_for_time_range(
+                        SimpleInterval::new(start, end),
+                        ms_level_range,
+                    )?
                 } else {
-                    return Ok((Box::new(std::iter::empty()), Default::default()))
+                    return Ok((Box::new(std::iter::empty()), Default::default()));
                 }
             }
         };
@@ -928,30 +938,25 @@ impl<
         };
         if let Some(fentry) = self
             .file_index()
-            .find_entry(&EntityType::Spectrum, &DataKind::Scans) {
+            .find_entry(&EntityType::Spectrum, &DataKind::Scans)
+        {
             if let Some(col) = fentry.column_mapping_for(curie!(MS:1000016)) {
                 let (min, max) = col.parquet_statistics(&arc);
 
                 let min = min.and_then(|min| match min.data_type() {
                     DataType::Float32 => {
-                        arrow::compute::min(min.as_primitive::<Float32Type>())
-                            .map(|v| v as f64)
+                        arrow::compute::min(min.as_primitive::<Float32Type>()).map(|v| v as f64)
                     }
-                    DataType::Float64 => {
-                        arrow::compute::min(min.as_primitive::<Float64Type>())
-                    }
+                    DataType::Float64 => arrow::compute::min(min.as_primitive::<Float64Type>()),
                     dtype => {
                         unimplemented!("Lowest scan start time type {dtype:?} not yet implemented")
                     }
                 });
                 let max = max.and_then(|max| match max.data_type() {
                     DataType::Float32 => {
-                        arrow::compute::max(max.as_primitive::<Float32Type>())
-                            .map(|v| v as f64)
+                        arrow::compute::max(max.as_primitive::<Float32Type>()).map(|v| v as f64)
                     }
-                    DataType::Float64 => {
-                        arrow::compute::max(max.as_primitive::<Float64Type>())
-                    }
+                    DataType::Float64 => arrow::compute::max(max.as_primitive::<Float64Type>()),
                     dtype => {
                         unimplemented!("Highest scan start time type {dtype:?} not yet implemented")
                     }
@@ -960,8 +965,7 @@ impl<
             } else {
                 (None, None)
             }
-        }
-        else {
+        } else {
             (None, None)
         }
     }
@@ -1058,7 +1062,11 @@ impl<
         &self,
         cache_capacity: usize,
     ) -> Option<MzPeakWavelengthSpectrumFacet<'_, T, C, D>> {
-        let facet = MzPeakWavelengthSpectrumFacet(self, CacheBuffer::with_max_size(cache_capacity));
+        let facet = MzPeakWavelengthSpectrumFacet(
+            self,
+            CacheBuffer::with_max_size(cache_capacity),
+            self.wavelength_spectrum_metadata_cache.clone(),
+        );
         facet.has_facet().then(|| facet)
     }
 
@@ -1196,9 +1204,12 @@ impl<
                     let time_axis = time_axis.as_primitive::<Float64Type>();
                     let start = time_axis.value(index_range.start() as usize);
                     let end = time_axis.value(index_range.end() as usize);
-                    self.get_spectrum_index_range_for_time_range(SimpleInterval::new(start, end), ms_level_range)?
+                    self.get_spectrum_index_range_for_time_range(
+                        SimpleInterval::new(start, end),
+                        ms_level_range,
+                    )?
                 } else {
-                    return Ok((Box::new(std::iter::empty()), Default::default()))
+                    return Ok((Box::new(std::iter::empty()), Default::default()));
                 }
             }
         };
@@ -1476,7 +1487,11 @@ impl<
         if let Some(cache) = self.wavelength_spectrum_metadata_cache.as_ref() {
             return Ok(cache.get(index as usize).cloned());
         }
-        let mut facet = MzPeakWavelengthSpectrumFacet(self, CacheBuffer::with_max_size(0));
+        let mut facet = MzPeakWavelengthSpectrumFacet(
+            self,
+            CacheBuffer::with_max_size(0),
+            self.wavelength_spectrum_metadata_cache.clone(),
+        );
         if facet.has_facet() {
             facet.get_metadata(index)
         } else {
@@ -1489,7 +1504,11 @@ impl<
         &mut self,
         index: u64,
     ) -> io::Result<Option<BinaryArrayMap>> {
-        let mut facet = MzPeakWavelengthSpectrumFacet(self, CacheBuffer::with_max_size(0));
+        let mut facet = MzPeakWavelengthSpectrumFacet(
+            self,
+            CacheBuffer::with_max_size(0),
+            self.wavelength_spectrum_metadata_cache.clone(),
+        );
         if facet.has_facet() {
             facet.get_data(index)
         } else {
@@ -1701,12 +1720,16 @@ impl<
 
     pub(crate) fn load_all_wavelength_spectrum_metadata_impl(
         &self,
-    ) -> io::Result<Vec<SpectrumDescription>> {
-        let mut facet = MzPeakWavelengthSpectrumFacet(self, CacheBuffer::with_max_size(0));
+    ) -> io::Result<Arc<Vec<SpectrumDescription>>> {
+        let mut facet = MzPeakWavelengthSpectrumFacet(
+            self,
+            CacheBuffer::with_max_size(0),
+            self.wavelength_spectrum_metadata_cache.clone(),
+        );
         if facet.has_facet() {
             facet.load_all_metadata()
         } else {
-            Ok(Vec::new())
+            Ok(Arc::new(Vec::new()))
         }
     }
 
@@ -2179,6 +2202,9 @@ pub trait MzPeakSpectrumFacet: Sized {
 
     /// Load a single observation's metadata
     fn get_metadata(&mut self, index: u64) -> io::Result<Option<SpectrumDescription>> {
+        if let Some(cache) = self.metadata_cache() {
+            return Ok(cache.get(index as usize).cloned());
+        }
         let mut decoder = SpectrumMetadataDecoder::new(self.metadata());
 
         let builder = SpectrumMetadataReader(self.metadata_reader()?);
@@ -2246,7 +2272,7 @@ pub trait MzPeakSpectrumFacet: Sized {
 
     /// Load all metadata in one shot. This consumes more memory but is more efficient working in
     /// batches than [`Self::get_metadata`]
-    fn load_all_metadata(&mut self) -> io::Result<Vec<SpectrumDescription>> {
+    fn load_all_metadata(&mut self) -> io::Result<Arc<Vec<SpectrumDescription>>> {
         log::trace!("Loading all {:?} metadata", self.buffer_context());
 
         let mut decoder = SpectrumMetadataDecoder::new(self.metadata());
@@ -2305,8 +2331,13 @@ pub trait MzPeakSpectrumFacet: Sized {
 
         let descriptions = decoder.finish();
         log::trace!("Finished loading all {:?} metadata", self.buffer_context());
-        Ok(descriptions)
+        Ok(Arc::new(descriptions))
     }
+
+    /// Borrow the cached metadata, if it is available
+    fn metadata_cache(&self) -> Option<&Arc<Vec<SpectrumDescription>>>;
+
+    fn cache_metadata(&mut self, metadata_collection: Arc<Vec<SpectrumDescription>>);
 
     /// Load the auxiliary arrays for a single observation.
     fn load_auxiliary_arrays_for(&self, index: u64) -> io::Result<Vec<DataArray>> {
@@ -2437,13 +2468,58 @@ pub trait MzPeakSpectrumFacet: Sized {
     }
 }
 
+pub struct FacetIter<T: MzPeakSpectrumFacet> {
+    source: T,
+    index: usize,
+}
+
+impl<T: MzPeakSpectrumFacet> Iterator for FacetIter<T> {
+    type Item = T::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.read_next()
+    }
+}
+
+impl<T: MzPeakSpectrumFacet> FacetIter<T> {
+    pub fn new(source: T, index: usize) -> Self {
+        Self { source, index }
+    }
+
+    fn read_next(&mut self) -> Option<T::Item> {
+        let i = self.index;
+        self.index += 1;
+        self.source.get(i)
+    }
+}
+
 /// A [`MzPeakSpectrumFacet`] for wavelength spectra
 pub struct MzPeakWavelengthSpectrumFacet<
     'a,
     T: ArchiveSource,
     C: CentroidLike + BuildArrayMapFrom + BuildFromArrayMap,
     D: DeconvolutedCentroidLike + BuildArrayMapFrom + BuildFromArrayMap,
->(&'a MzPeakReaderTypeOfSource<T, C, D>, CacheBuffer);
+>(
+    &'a MzPeakReaderTypeOfSource<T, C, D>,
+    CacheBuffer,
+    Option<Arc<Vec<SpectrumDescription>>>,
+);
+
+impl<
+    'a,
+    T: ArchiveSource,
+    C: CentroidLike + BuildArrayMapFrom + BuildFromArrayMap,
+    D: DeconvolutedCentroidLike + BuildArrayMapFrom + BuildFromArrayMap,
+> IntoIterator for MzPeakWavelengthSpectrumFacet<'a, T, C, D>
+{
+    type Item = <Self as MzPeakSpectrumFacet>::Item;
+
+    type IntoIter = FacetIter<Self>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        FacetIter::new(self, 0)
+    }
+}
 
 impl<
     'a,
@@ -2525,6 +2601,14 @@ impl<
     {
         None
     }
+
+    fn metadata_cache(&self) -> Option<&Arc<Vec<SpectrumDescription>>> {
+        self.2.as_ref()
+    }
+
+    fn cache_metadata(&mut self, metadata_collection: Arc<Vec<SpectrumDescription>>) {
+        self.2 = Some(metadata_collection);
+    }
 }
 
 /// A [`MzPeakSpectrumFacet`] for mass spectra
@@ -2533,7 +2617,27 @@ pub struct MzPeakMassSpectrumFacet<
     T: ArchiveSource,
     C: CentroidLike + BuildArrayMapFrom + BuildFromArrayMap,
     D: DeconvolutedCentroidLike + BuildArrayMapFrom + BuildFromArrayMap,
->(&'a MzPeakReaderTypeOfSource<T, C, D>, CacheBuffer);
+>(
+    &'a MzPeakReaderTypeOfSource<T, C, D>,
+    CacheBuffer,
+    Option<Arc<Vec<SpectrumDescription>>>,
+);
+
+impl<
+    'a,
+    T: ArchiveSource,
+    C: CentroidLike + BuildArrayMapFrom + BuildFromArrayMap,
+    D: DeconvolutedCentroidLike + BuildArrayMapFrom + BuildFromArrayMap,
+> IntoIterator for MzPeakMassSpectrumFacet<'a, T, C, D>
+{
+    type Item = <Self as MzPeakSpectrumFacet>::Item;
+
+    type IntoIter = FacetIter<Self>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        FacetIter::new(self, 0)
+    }
+}
 
 impl<
     'a,
@@ -2557,6 +2661,14 @@ impl<
             .iter()
             .find(|e| e.entity_type == EntityType::Spectrum)
             .is_some()
+    }
+
+    fn metadata_cache(&self) -> Option<&Arc<Vec<SpectrumDescription>>> {
+        self.2.as_ref()
+    }
+
+    fn cache_metadata(&mut self, metadata_collection: Arc<Vec<SpectrumDescription>>) {
+        self.2 = Some(metadata_collection);
     }
 
     fn metadata_index(&self) -> &Self::MetadataIndex {
@@ -2694,7 +2806,6 @@ mod test {
         Ok(())
     }
 
-
     #[test_log::test]
     #[rstest::rstest]
     #[case::packed("small.mzpeak")]
@@ -2704,8 +2815,14 @@ mod test {
     fn test_integrity_check(#[case] path: &str) -> io::Result<()> {
         let reader = MzPeakReader::new(path)?;
         let (state, failed) = reader.check_archive_integrity()?;
-        assert!(state.unwrap(), "Overall validation status failed: {failed:?}");
-        assert!(failed.is_empty(), "Failed file list is not empty: {failed:?}");
+        assert!(
+            state.unwrap(),
+            "Overall validation status failed: {failed:?}"
+        );
+        assert!(
+            failed.is_empty(),
+            "Failed file list is not empty: {failed:?}"
+        );
         Ok(())
     }
 
@@ -2880,21 +2997,32 @@ mod test {
             reader.chromatogram_metadata_cache.as_ref().map(|v| v.len()),
             Some(expected.len())
         );
-        assert!(reader.get_chromatogram_metadata(expected.len() as u64)?.is_none());
+        assert!(
+            reader
+                .get_chromatogram_metadata(expected.len() as u64)?
+                .is_none()
+        );
 
         // Bulk access borrows from the cache rather than rebuilding it
         let all = reader.load_all_chromatogram_metadata()?.unwrap();
         let bulk_ptr = all.as_ptr();
         assert_eq!(all.len(), expected.len());
-        drop(all);
         assert!(std::ptr::eq(
             bulk_ptr,
-            reader.chromatogram_metadata_cache.as_ref().unwrap().as_ptr()
+            reader
+                .chromatogram_metadata_cache
+                .as_ref()
+                .unwrap()
+                .as_ptr()
         ));
 
         let by_id = reader.get_chromatogram_by_id(&expected[0].id).unwrap();
         assert_eq!(by_id.index(), expected[0].index);
-        assert!(reader.get_chromatogram_by_id("no such chromatogram").is_none());
+        assert!(
+            reader
+                .get_chromatogram_by_id("no such chromatogram")
+                .is_none()
+        );
         Ok(())
     }
 
@@ -2906,7 +3034,6 @@ mod test {
         assert!(reader.get_wavelength_spectrum_metadata(0)?.is_none());
         let all = reader.load_all_wavelength_spectrum_metadata()?.unwrap();
         assert!(all.is_empty());
-        drop(all);
         assert!(reader.wavelength_spectrum_metadata_cache.is_some());
         assert!(reader.get_wavelength_spectrum_metadata(0)?.is_none());
         Ok(())
@@ -2922,15 +3049,18 @@ mod test {
 
         let all = reader.load_all_wavelength_spectrum_metadata()?.unwrap();
         assert_eq!(all.len(), expected.len());
-        drop(all);
 
         // Cached lookups match the uncached facet path
         let last = expected.len() - 1;
-        let cached = reader.get_wavelength_spectrum_metadata(last as u64)?.unwrap();
+        let cached = reader
+            .get_wavelength_spectrum_metadata(last as u64)?
+            .unwrap();
         assert_eq!(cached.id, expected[last].id);
-        assert!(reader
-            .get_wavelength_spectrum_metadata(expected.len() as u64)?
-            .is_none());
+        assert!(
+            reader
+                .get_wavelength_spectrum_metadata(expected.len() as u64)?
+                .is_none()
+        );
         Ok(())
     }
 
@@ -3061,9 +3191,19 @@ mod test {
             let ref_arrs = reference.raw_arrays().unwrap();
             for (k, v) in test_arrs.iter() {
                 let r = ref_arrs.get(k).unwrap();
-                for (i, (a, b)) in r.to_f64().unwrap().iter().zip(v.to_f64().unwrap().iter()).enumerate() {
+                for (i, (a, b)) in r
+                    .to_f64()
+                    .unwrap()
+                    .iter()
+                    .zip(v.to_f64().unwrap().iter())
+                    .enumerate()
+                {
                     let e = *a - *b;
-                    assert!(e.abs() < 1e-6, "{e} = {a} - {b} at {i} for {k} in {}", test.id());
+                    assert!(
+                        e.abs() < 1e-6,
+                        "{e} = {a} - {b} at {i} for {k} in {}",
+                        test.id()
+                    );
                 }
             }
         }
