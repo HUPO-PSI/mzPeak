@@ -1558,7 +1558,7 @@ mod async_impl {
         pub(crate) async fn load_cache_block(
             self,
             index_range: SimpleInterval<u64>,
-            metadata: &ReaderMetadata,
+            array_indices: Arc<ArrayIndex>,
             query_indices: &impl BasicChunkQueryIndex,
         ) -> io::Result<ChunkDataCacheBlock> {
             let (rows, predicate) = self.prepare_cache_block_query(index_range, query_indices);
@@ -1582,7 +1582,7 @@ mod async_impl {
             Ok(ChunkDataCacheBlock::new(
                 batch,
                 index_range,
-                metadata.spectra.array_indices.clone(),
+                array_indices,
                 None,
                 None,
                 context,

@@ -155,23 +155,44 @@ impl DataCacheBlock {
         row_group_index: usize,
         spectrum_index: u64,
     ) -> io::Result<Option<Self>> {
-        if reader.query_indices.spectrum.data_index.is_point() {
-            let builder = reader.handle.spectra_data().await?;
-            let builder = AsyncPointDataReader(builder, BufferContext::Spectrum);
+        let builder = reader.handle.spectra_data().await?;
+        Self::load_data_from_parts_async(
+            builder,
+            &reader.query_indices.spectrum.data_index,
+            reader.metadata.spectra.array_indices.clone(),
+            row_group_index,
+            spectrum_index,
+            BufferContext::Spectrum,
+        )
+        .await
+    }
+
+    #[cfg(feature = "async")]
+    /// The asynchronous twin of [`Self::load_data_from_parts`]
+    pub async fn load_data_from_parts_async<
+        T: parquet::arrow::async_reader::AsyncFileReader + Unpin + Send + 'static,
+        P: BasicQueryIndex + Default,
+        C: BasicQueryIndex + BasicChunkQueryIndex + Default,
+    >(
+        reader: parquet::arrow::ParquetRecordBatchStreamBuilder<T>,
+        query_index: &GenericDataIndex<P, C>,
+        array_index: Arc<ArrayIndex>,
+        row_group_index: usize,
+        index: u64,
+        buffer_context: BufferContext,
+    ) -> io::Result<Option<Self>> {
+        if query_index.is_point() {
+            let builder = AsyncPointDataReader(reader, buffer_context);
             let cache = builder
-                .load_cache_block_into(
-                    row_group_index,
-                    reader.metadata.spectra.array_indices.clone(),
-                )
+                .load_cache_block_into(row_group_index, array_index)
                 .await?;
             Ok(Some(Self::Point(cache)))
-        } else if let Some(query_index) = reader.query_indices.spectrum.data_index.as_chunked() {
-            let builder = reader.handle.spectra_data().await?;
-            let builder = AsyncChunkReader::new(builder, BufferContext::Spectrum);
+        } else if let Some(query_index) = query_index.as_chunked() {
+            let builder = AsyncChunkReader::new(reader, buffer_context);
             let cache = builder
                 .load_cache_block(
-                    SimpleInterval::new(spectrum_index, spectrum_index + CHUNK_CACHE_BLOCK_SIZE),
-                    &reader.metadata,
+                    SimpleInterval::new(index, index + CHUNK_CACHE_BLOCK_SIZE),
+                    array_index,
                     query_index,
                 )
                 .await?;
