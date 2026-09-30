@@ -809,7 +809,21 @@ impl BufferTransformEncoder {
 
     pub fn encode_arrow(&self, chunk_segment: &ArrayRef) -> ArrayRef {
         match self.0 {
-            BufferTransform::NumpressLinear => todo!(),
+            BufferTransform::NumpressLinear => {
+                let bytes_of = if matches!(chunk_segment.data_type(), DataType::Float64) {
+                    let array: &PrimitiveArray<Float64Type> =
+                        chunk_segment.as_any().downcast_ref().unwrap();
+                    let fp = numpress_rs::optimal_scaling(array.values());
+                    numpress_rs::numpress_compress(array.values(), fp).unwrap()
+                } else {
+                    let array = arrow::compute::cast(chunk_segment, &DataType::Float64).unwrap();
+                    let array = array.as_primitive::<Float64Type>();
+                    let values = array.values();
+                    let fp = numpress_rs::optimal_scaling(&values);
+                    numpress_rs::numpress_compress(&values, fp).unwrap()
+                };
+                Arc::new(UInt8Array::from(bytes_of))
+            },
             BufferTransform::NumpressPIC => {
                 let mut bytes = Vec::new();
                 if let Some(vals) = chunk_segment.as_primitive_opt::<Float32Type>() {
@@ -1007,7 +1021,9 @@ impl BufferTransformDecoder {
             };
         }
         match self.0 {
-            BufferTransform::NumpressLinear => todo!(),
+            BufferTransform::NumpressLinear => {
+                numpress_decoder!(numpress_rs::decode_linear);
+            },
             BufferTransform::NumpressSLOF => {
                 numpress_decoder!(numpress_rs::decode_slof);
             }
@@ -1051,7 +1067,7 @@ impl TryFrom<BufferTransform> for BufferTransformDecoder {
 pub struct ArrowArrayChunk {
     /// The index of source entity
     pub series_index: u64,
-    series_time: Option<f32>,
+    series_time: Option<f64>,
     /// The starting coordinate of the chunk axis
     pub chunk_start: f64,
     /// The ending coordinate of the chunk axis
@@ -1072,7 +1088,7 @@ impl ArrowArrayChunk {
     /// See [`Self::from_arrays`] for parameter descriptions
     pub fn build(
         series_index: u64,
-        series_time: Option<f32>,
+        series_time: Option<f64>,
         buffer_context: BufferContext,
         arrays: &BinaryArrayMap,
         encoding: &ChunkingStrategy,
@@ -1120,7 +1136,7 @@ impl ArrowArrayChunk {
     /// Prefer [`ArrowArrayChunk::from_arrays`] for constructing a block of [`ArrowArrayChunk`]
     pub fn new(
         series_index: u64,
-        series_time: Option<f32>,
+        series_time: Option<f64>,
         chunk_start: f64,
         chunk_end: f64,
         chunk_axis: BufferName,
@@ -1253,7 +1269,7 @@ impl ArrowArrayChunk {
 
             if include_time {
                 let b = this_builder
-                    .field_builder::<Float32Builder>(time_index)
+                    .field_builder::<Float64Builder>(time_index)
                     .unwrap();
                 b.append_option(chunk.series_time);
                 visited.insert(time_index);
@@ -1403,7 +1419,7 @@ impl ArrowArrayChunk {
     /// If `fields` is provided, any array not found in it will be returned as a [`AuxiliaryArray`].
     pub fn from_arrays(
         series_index: u64,
-        series_time: Option<f32>,
+        series_time: Option<f64>,
         main_axis: BufferName,
         arrays: &BinaryArrayMap,
         chunk_encoding: &ChunkingStrategy,
@@ -1566,7 +1582,9 @@ impl ArrowArrayChunk {
                     *intensities = nullif::nullif(&intensities.clone(), &masked).unwrap();
 
                     let (_, mzs) = arrow_arrays.get_mut(mz_idx).unwrap();
-                    *mzs = nullif::nullif(&mzs.clone(), &masked).unwrap();
+                    if grid_policies.as_ref().and_then(|v|v.get(&ArrayType::MZArray)?.current_grid()).is_none() {
+                        *mzs = nullif::nullif(&mzs.clone(), &masked).unwrap();
+                    }
                 }
             }
         }

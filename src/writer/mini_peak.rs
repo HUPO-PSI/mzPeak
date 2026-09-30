@@ -74,7 +74,7 @@ impl<W: Write + Send + Seek> MiniPeakWriterType<W> {
     >(
         &mut self,
         spectrum_count: u64,
-        spectrum_time: Option<f32>,
+        spectrum_time: Option<f64>,
         peaks: RefPeakDataLevel<C, D>,
     ) -> io::Result<EntryMetadataDerivedFromData> {
         let spectrum_time = if self.buffers.include_time() {

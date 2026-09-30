@@ -200,7 +200,7 @@ impl GenericDataArrayWriter {
         &mut self,
         binary_array_map: &BinaryArrayMap,
         is_profile: bool,
-        series_time: Option<f32>,
+        series_time: Option<f64>,
         series_index: u64,
     ) -> io::Result<EntryMetadataDerivedFromData> {
         let main_axis_array = binary_array_map
@@ -295,7 +295,7 @@ impl GenericDataArrayWriter {
         &mut self,
         peaks: &[C],
         series_index: u64,
-        series_time: Option<f32>,
+        series_time: Option<f64>,
     ) -> Result<EntryMetadataDerivedFromData, ArrayRetrievalError> {
         let ctx = self.buffers().buffer_context();
         if let Some(encoding) = self.use_chunked_encoding().cloned() {
@@ -642,7 +642,7 @@ pub trait AbstractMzPeakWriter {
                             writer
                                 .buffers()
                                 .include_time()
-                                .then(|| spectrum.start_time() as f32),
+                                .then(|| spectrum.start_time()),
                             series_index,
                         )?;
                         let entry_writer = self.wavelength_entry_buffer_mut();
@@ -713,7 +713,7 @@ pub trait AbstractMzPeakWriter {
         let is_profile = spectrum.signal_continuity() == SignalContinuity::Profile;
         let include_time = self.spectrum_data_buffer_mut().include_time();
         let spectrum_time = if include_time {
-            Some(spectrum.start_time() as f32)
+            Some(spectrum.start_time())
         } else {
             None
         };
@@ -814,7 +814,7 @@ pub trait AbstractMzPeakWriter {
     fn write_peaks<C: ToMzPeakDataSeries>(
         &mut self,
         spectrum_count: u64,
-        mut spectrum_time: Option<f32>,
+        mut spectrum_time: Option<f64>,
         peaks: &[C],
     ) -> Result<EntryMetadataDerivedFromData, ArrayRetrievalError> {
         let include_time = self.spectrum_data_buffer_mut().include_time();
@@ -1001,7 +1001,7 @@ pub trait AbstractMzPeakWriter {
         let peaks = spectrum.peaks();
 
         let spectrum_time = if self.spectrum_data_buffer_mut().include_time() {
-            Some(spectrum.start_time() as f32)
+            Some(spectrum.start_time())
         } else {
             None
         };

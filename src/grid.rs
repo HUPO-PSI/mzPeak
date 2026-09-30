@@ -3,8 +3,8 @@ use std::hash::Hash;
 
 use mzdata::io::tdf::{MzCalibrationModel2, TimsCalibrationModel2, clamp_u32};
 use mzdata::params::{ParamDescribed, ParamLike};
-use mzdata::spectrum::{ArrayType, BinaryArrayMap};
 use mzdata::spectrum::bindata::{BuildArrayMapFrom, ByteArrayView};
+use mzdata::spectrum::{ArrayType, BinaryArrayMap};
 use mzdata::{
     curie,
     params::{CURIE, Param, ParamValue},
@@ -25,32 +25,71 @@ fn param_list_to_floats(param: &Param) -> Option<impl Iterator<Item = Option<f64
 }
 
 pub trait GridModelLike {
+    /// Get the CURIE of the grid model used
     fn grid_type(&self) -> CURIE;
+    /// Convert from a real-value coordinate to a grid index
     fn to_index(&self, value: f64) -> u32;
+    /// A vectorized implementation of [`Self::to_index`].
+    ///
+    /// If no implementation is provided, this falls back to the scalar version
+    fn to_index_vector<const N: usize>(&self, value: &[f64; N]) -> [u32; N] {
+        value.map(|v| self.to_index(v))
+    }
+    /// Convert from a grid index to a real-value coordinate
     fn from_index(&self, index: u32) -> f64;
+    /// A vectorized version of [`Self::from_index`].
+    ///
+    /// If no implementation is provided, this falls back to the scalar version
+    fn from_index_vector<const N: usize>(&self, index: &[u32; N]) -> [f64; N] {
+        index.map(|i| self.from_index(i))
+    }
+    /// Get the parameters of the grid model in their expected serialization order
     fn parameters(&self) -> Vec<f64>;
+    /// Construct a grid model from a [`Param`] passed through from another source
     fn from_param(parameters: &Param) -> Option<Self>
     where
         Self: Sized;
 
+    /// Construct a grid model from just the grid type [`CURIE`] and its serialized parameters
     fn from_parameters(grid_type: CURIE, parameters: &[f64]) -> Option<Self>
     where
         Self: Sized;
 
+    /// Compute the round-trip error for encoding `values` with this model.
+    ///
+    /// If `ppm` is `true`, the error is reported in parts-per-million relative error.
     fn error(&self, values: &[f64], ppm: bool) -> Vec<f64> {
+        let mut out = Vec::with_capacity(values.len());
+        let it = values.chunks_exact(4);
+        let tail = it.remainder();
         if ppm {
-            values
-                .iter()
-                .copied()
-                .map(|v| (v - self.from_index(self.to_index(v))) / v * 1e6)
-                .collect()
+            for chunk in it {
+                let chunk = chunk.try_into().expect("must have 4 elements");
+                let idxs = self.to_index_vector::<4>(chunk);
+                let remap = self.from_index_vector::<4>(&idxs);
+                for (vt, v) in remap.into_iter().zip(chunk) {
+                    out.push((*v - vt) / v * 1e6);
+                }
+            }
+            for v in tail {
+                let vt = self.from_index(self.to_index(*v));
+                out.push((*v - vt) / v * 1e6);
+            }
         } else {
-            values
-                .iter()
-                .copied()
-                .map(|v| v - self.from_index(self.to_index(v)))
-                .collect()
+            for chunk in it {
+                let chunk = chunk.try_into().expect("must have 4 elements");
+                let idxs = self.to_index_vector::<4>(chunk);
+                let remap = self.from_index_vector::<4>(&idxs);
+                for (vt, v) in remap.into_iter().zip(chunk) {
+                    out.push(*v - vt);
+                }
+            }
+            for v in tail {
+                let vt = self.from_index(self.to_index(*v));
+                out.push(*v - vt);
+            }
         }
+        out
     }
 }
 
@@ -193,6 +232,20 @@ impl GridModelLike for LinearGrid {
 
     fn from_index(&self, index: u32) -> f64 {
         (index as f64 * self.slope + self.intercept) / self.scale
+    }
+
+    fn to_index_vector<const N: usize>(&self, value: &[f64; N]) -> [u32; N] {
+        value
+            .map(|v| v.mul_add(self.scale, -self.intercept))
+            .map(|v| v / self.slope)
+            .map(clamp_u32)
+    }
+
+    fn from_index_vector<const N: usize>(&self, index: &[u32; N]) -> [f64; N] {
+        let v_index = index.map(f64::from);
+        v_index
+            .map(|i| i.mul_add(self.slope, self.intercept))
+            .map(|v| v / self.scale)
     }
 
     fn parameters(&self) -> Vec<f64> {
@@ -360,6 +413,22 @@ impl GridModelLike for SquareRootLinearGrid {
 
     fn from_index(&self, index: u32) -> f64 {
         ((index as f64) * self.slope + self.intercept).powi(2) / self.scale
+    }
+
+    fn to_index_vector<const N: usize>(&self, value: &[f64; N]) -> [u32; N] {
+        value
+            .map(|v| (v * self.scale).sqrt())
+            .map(|v| v - self.intercept)
+            .map(|v| v / self.slope)
+            .map(clamp_u32)
+    }
+
+    fn from_index_vector<const N: usize>(&self, index: &[u32; N]) -> [f64; N] {
+        let v_index = index.map(f64::from);
+        v_index
+            .map(|i| i.mul_add(self.slope, self.intercept))
+            .map(|i| i.powi(2))
+            .map(|v| v / self.scale)
     }
 
     fn parameters(&self) -> Vec<f64> {
@@ -682,6 +751,18 @@ impl GridModelLike for GridEncoding {
         }
     }
 
+    fn to_index_vector<const N: usize>(&self, value: &[f64; N]) -> [u32; N] {
+        grid_dp!(self, grid, grid.to_index_vector::<N>(value))
+    }
+
+    fn from_index_vector<const N: usize>(&self, index: &[u32; N]) -> [f64; N] {
+        grid_dp!(self, grid, grid.from_index_vector::<N>(index))
+    }
+
+    fn error(&self, values: &[f64], ppm: bool) -> Vec<f64> {
+        grid_dp!(self, grid, grid.error(values, ppm))
+    }
+
     fn from_parameters(grid_type: CURIE, parameters: &[f64]) -> Option<Self>
     where
         Self: Sized,
@@ -774,10 +855,14 @@ impl GridPolicy {
         ((high - low) * 0.05).min(5.0).max(0.0)
     }
 
-    pub fn model_from_array_map(&self, arrays: &BinaryArrayMap, scale: Option<f64>) -> Option<GridEncoding> {
+    pub fn model_from_array_map(
+        &self,
+        arrays: &BinaryArrayMap,
+        scale: Option<f64>,
+    ) -> Option<GridEncoding> {
         arrays.get(&self.array_type).and_then(|v| {
             if let Some(model) = Self::find_grid_model_param(v) {
-                return Some(model)
+                return Some(model);
             }
             let v = v.to_f64().ok()?;
             let (low, high) = Self::minmax(&v).unwrap();
@@ -884,8 +969,8 @@ pub type GridPolicyTable = HashMap<ArrayType, GridPolicy>;
 mod test {
     use super::*;
 
-    use std::io;
     use mzdata::{self, prelude::*};
+    use std::io;
 
     #[test]
     fn test_load_from_tdf() -> io::Result<()> {
@@ -893,30 +978,32 @@ mod test {
         match &mut reader {
             mzdata::io::MZReaderType::BrukerTDF(reader) => {
                 reader.set_export_models_as_params(true);
-            },
+            }
             _ => panic!("Not a Bruker TDF"),
         }
 
         let spectrum = reader.get_spectrum_by_index(0).unwrap();
         let arrays = spectrum.raw_arrays().unwrap();
 
-        let v = arrays.ion_mobility().unwrap().0;
-        eprintln!("{:?}", &v[0..5]);
-
-        let mz_grid = GridPolicy::find_grid_model_param(arrays.get(&ArrayType::MZArray).unwrap()).unwrap();
-        let im_grid = GridPolicy::find_grid_model_param(arrays.get(&ArrayType::MeanInverseReducedIonMobilityArray).unwrap()).unwrap();
-        eprintln!("{im_grid:?}");
-        eprintln!("{:?}", im_grid.parameters());
+        let mz_grid =
+            GridPolicy::find_grid_model_param(arrays.get(&ArrayType::MZArray).unwrap()).unwrap();
+        let im_grid = GridPolicy::find_grid_model_param(
+            arrays
+                .get(&ArrayType::MeanInverseReducedIonMobilityArray)
+                .unwrap(),
+        )
+        .unwrap();
         assert!(matches!(mz_grid, GridEncoding::TimsTofMzGrid2(_)));
         assert!(matches!(im_grid, GridEncoding::TimsTofTims2(_)));
 
-        let dup = GridEncoding::from_parameters(mz_grid.grid_type(), &mz_grid.parameters()).unwrap();
+        let dup =
+            GridEncoding::from_parameters(mz_grid.grid_type(), &mz_grid.parameters()).unwrap();
         assert_eq!(mz_grid, dup);
 
-        let dup = GridEncoding::from_parameters(im_grid.grid_type(), &im_grid.parameters()).unwrap();
+        let dup =
+            GridEncoding::from_parameters(im_grid.grid_type(), &im_grid.parameters()).unwrap();
         assert_eq!(im_grid, dup);
 
-        eprintln!("{:?}", dup.parameters());
         for (i, j) in im_grid.parameters().into_iter().zip(dup.parameters()) {
             assert_eq!(i, j);
         }

@@ -63,7 +63,7 @@ pub trait ArrayBufferWriter {
     fn add<T: ToMzPeakDataSeries>(
         &mut self,
         series_index: u64,
-        series_time: Option<f32>,
+        series_time: Option<f64>,
         peaks: &[T],
     ) -> (Vec<AuxiliaryArray>, usize);
 
@@ -270,7 +270,7 @@ impl PointBuffers {
     pub fn add<T: ToMzPeakDataSeries>(
         &mut self,
         series_index: u64,
-        series_time: Option<f32>,
+        series_time: Option<f64>,
         peaks: &[T],
     ) -> (Vec<AuxiliaryArray>, usize) {
         let n_pts = peaks.len();
@@ -440,7 +440,7 @@ impl ArrayBufferWriter for PointBuffers {
     fn add<T: ToMzPeakDataSeries>(
         &mut self,
         series_index: u64,
-        series_time: Option<f32>,
+        series_time: Option<f64>,
         peaks: &[T],
     ) -> (Vec<AuxiliaryArray>, usize) {
         self.add(series_index, series_time, peaks)
@@ -582,7 +582,7 @@ impl ArrayBufferWriter for ChunkBuffers {
     fn add<T: ToMzPeakDataSeries>(
         &mut self,
         series_index: u64,
-        series_time: Option<f32>,
+        series_time: Option<f64>,
         peaks: &[T],
     ) -> (Vec<AuxiliaryArray>, usize) {
         self.is_profile_buffer.push(false);
@@ -736,7 +736,7 @@ impl ArrayBufferWriter for ArrayBufferWriterVariants {
     fn add<T: ToMzPeakDataSeries>(
         &mut self,
         series_index: u64,
-        series_time: Option<f32>,
+        series_time: Option<f64>,
         peaks: &[T],
     ) -> (Vec<AuxiliaryArray>, usize) {
         match self {

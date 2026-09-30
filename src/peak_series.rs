@@ -64,7 +64,7 @@ pub fn array_map_to_schema_arrays_and_excess(
     array_map: &BinaryArrayMap,
     primary_array_len: usize,
     source_index: u64,
-    source_time: Option<f32>,
+    source_time: Option<f64>,
     schema: Option<&Fields>,
     overrides: &BufferOverrideTable,
 ) -> Result<(Fields, Vec<ArrayRef>, Vec<AuxiliaryArray>), ArrayRetrievalError> {
@@ -77,7 +77,7 @@ pub fn array_map_to_schema_arrays_and_excess(
     arrays.push(index_array as ArrayRef);
     if let Some(source_time) = source_time {
         fields.push(context.time_field());
-        arrays.push(Arc::new(Float32Array::from_value(
+        arrays.push(Arc::new(Float64Array::from_value(
             source_time,
             primary_array_len,
         )));
@@ -132,7 +132,7 @@ pub fn array_map_to_schema_arrays(
     array_map: &BinaryArrayMap,
     primary_array_len: usize,
     source_index: u64,
-    source_time: Option<f32>,
+    source_time: Option<f64>,
     overrides: &BufferOverrideTable,
 ) -> Result<(Fields, Vec<ArrayRef>), ArrayRetrievalError> {
     let (fields, arrays, _aux) = array_map_to_schema_arrays_and_excess(
@@ -158,7 +158,7 @@ pub trait ToMzPeakDataSeries: Sized + BuildArrayMapFrom {
     /// Construct a collection of Arrow arrays from the specified peak list
     fn to_arrays(
         spectrum_index: u64,
-        spectrum_time: Option<f32>,
+        spectrum_time: Option<f64>,
         peaks: &[Self],
         overrides: &BufferOverrideTable,
     ) -> (Fields, Vec<ArrayRef>);
@@ -213,7 +213,7 @@ impl ToMzPeakDataSeries for CentroidPeak {
 
     fn to_arrays(
         spectrum_index: u64,
-        spectrum_time: Option<f32>,
+        spectrum_time: Option<f64>,
         peaks: &[Self],
         overrides: &BufferOverrideTable,
     ) -> (Fields, Vec<ArrayRef>) {
@@ -248,7 +248,7 @@ impl ToMzPeakDataSeries for IonMobilityAwareCentroidPeak {
 
     fn to_arrays(
         spectrum_index: u64,
-        spectrum_time: Option<f32>,
+        spectrum_time: Option<f64>,
         peaks: &[Self],
         overrides: &BufferOverrideTable,
     ) -> (Fields, Vec<ArrayRef>) {
@@ -278,7 +278,7 @@ impl ToMzPeakDataSeries for DeconvolutedPeak {
 
     fn to_arrays(
         spectrum_index: u64,
-        spectrum_time: Option<f32>,
+        spectrum_time: Option<f64>,
         peaks: &[Self],
         overrides: &BufferOverrideTable,
     ) -> (Fields, Vec<ArrayRef>) {
@@ -314,7 +314,7 @@ impl ToMzPeakDataSeries for IonMobilityAwareDeconvolutedPeak {
 
     fn to_arrays(
         spectrum_index: u64,
-        spectrum_time: Option<f32>,
+        spectrum_time: Option<f64>,
         peaks: &[Self],
         overrides: &BufferOverrideTable,
     ) -> (Fields, Vec<ArrayRef>) {

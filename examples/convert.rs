@@ -346,6 +346,23 @@ impl ConvertArgs {
             .clone()
             .or(self.chunked_encoding.clone())
     }
+
+    pub fn is_chunked(&self) -> bool {
+        self.chunked_encoding.is_some()
+    }
+
+    pub fn is_grid(&self) -> bool {
+        self.chunked_encoding.as_ref().is_some_and(|e| e.is_grid()) || (self.is_chunked() && self.grid_transform_ion_mobility)
+    }
+
+    pub fn is_peak_chunked(&self) -> bool {
+        self.peak_encoding.as_ref().and_then(|v| v.as_opt()).is_some()
+    }
+
+    pub fn is_peak_grid(&self) -> bool {
+        self.peak_encoding.as_ref().and_then(|v| v.as_opt()).is_some_and(|e| e.is_grid()) ||
+        (self.is_peak_chunked() && self.grid_transform_ion_mobility)
+    }
 }
 
 pub fn run_convert(filename: &Path, args: ConvertArgs) -> io::Result<()> {
@@ -496,9 +513,9 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
     let spectrum_array_types = builder.check_spectrum_array_types(&mut reader);
     log::debug!("Collected {spectrum_array_types:?} ahead of grid configuration");
 
+    let mut grid_policies = Vec::new();
     if args.chunked_encoding.as_ref().is_some_and(|g| g.is_grid())
     {
-        let mut grid_policies = Vec::new();
         grid_policies.push(if args.quadratic_mz_grid {
             (
                 ArrayType::MZArray,
@@ -510,23 +527,24 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
                 GridPolicy::linear(ArrayType::MZArray, Some(Tolerance::Da(1e-6))),
             )
         });
+    }
 
-        if args.grid_transform_ion_mobility {
-            for tp in spectrum_array_types.iter() {
-                if tp.is_ion_mobility() {
-                    grid_policies.push((tp.clone(), GridPolicy::linear(tp.clone(), Some(Tolerance::Da(1e-6)))));
-                }
+    if args.grid_transform_ion_mobility {
+        for tp in spectrum_array_types.iter() {
+            if tp.is_ion_mobility() {
+                grid_policies.push((tp.clone(), GridPolicy::linear(tp.clone(), Some(Tolerance::Da(1e-6)))));
             }
         }
-
+    }
+    if args.is_grid() {
         log::debug!("Setting spectrum grid policies");
         builder = builder.add_grid_policies(grid_policies.into_iter().collect());
     }
 
+    grid_policies = Vec::new();
     if args.peak_encoding.as_ref().and_then(|v| v.as_opt()).is_some_and(|g| g.is_grid())
     {
 
-        let mut grid_policies = Vec::new();
         grid_policies.push(if args.quadratic_mz_grid {
             (
                 ArrayType::MZArray,
@@ -538,16 +556,18 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
                 GridPolicy::linear(ArrayType::MZArray, Some(Tolerance::Da(1e-6))),
             )
         });
+    }
 
-        if args.grid_transform_ion_mobility {
-            for tp in spectrum_array_types.iter() {
-                if tp.is_ion_mobility() {
-                    log::debug!("Collecting grids for {tp:?}");
-                    grid_policies.push((tp.clone(), GridPolicy::linear(tp.clone(), Some(Tolerance::Da(1e-6)))));
-                }
+    if args.grid_transform_ion_mobility {
+        for tp in spectrum_array_types.iter() {
+            if tp.is_ion_mobility() {
+                log::debug!("Collecting grids for {tp:?}");
+                grid_policies.push((tp.clone(), GridPolicy::linear(tp.clone(), Some(Tolerance::Da(1e-6)))));
             }
         }
+    }
 
+    if args.is_peak_grid() {
         builder = builder.add_peak_grid_policies(grid_policies.into_iter().collect());
     }
 
@@ -592,7 +612,6 @@ pub fn convert_from_reader<R: io::Read + io::Seek + Send + 'static>(
                             if let Ok(sorted) =
                                 BinaryArrayMap3D::stack(&arrays).and_then(|v| v.unstack())
                             {
-                                log::warn!("Restacked arrays for {}", entry.description.id);
                                 *arrays = sorted;
                             }
                         }

@@ -64,7 +64,7 @@ impl BufferContext {
     }
 
     pub fn time_field(&self) -> FieldRef {
-        Arc::new(Field::new(self.time_name(), DataType::Float32, true))
+        Arc::new(Field::new(self.time_name(), DataType::Float64, true))
     }
 
     pub const fn name(&self) -> &'static str {
