@@ -2153,7 +2153,7 @@ impl VisitorBase for SpectrumDetailsBuilder {
             ),
             field!("number_of_auxiliary_arrays", DataType::UInt32),
             field!(
-                "mz_delta_model",
+                "coordinate_spacing_model",
                 DataType::LargeList(field!("item", DataType::Float64))
             ),
         ];
@@ -2239,6 +2239,11 @@ impl VisitorBase for SpectrumDetailsBuilder {
                 curie!(MS:1000285),
                 Unit::DetectorCounts
             ),
+            metacol!(
+                "coordinate spacing model",
+                [fields[18].name()],
+                curie!(MS:1003820)
+            )
         ]);
         for e in self.extra.iter() {
             cols.extend(e.map_metadata_columns());

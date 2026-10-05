@@ -787,6 +787,12 @@ class MzPeakSpectrumMetadataReader(_PrecursorReadMixin, _DataPointCountMixin):
             return self.spectra["median_delta"].to_numpy()
         elif "mz_delta_model" in self.spectra:
             return self.spectra["mz_delta_model"].to_numpy()
+        else:
+            entry = self.namespace.find_file_index_entry(EntityType.Spectrum, DataKind.Metadata)
+            if entry is not None:  # noqa: SIM102 cannot merge conditional and conditional assignment?
+                if col := entry.mapping(accession="MS:1003820"):
+                    key = '.'.join(col.path)
+                    return self.spectra[key].to_numpy()
         return None
 
 

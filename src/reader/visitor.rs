@@ -556,6 +556,7 @@ impl<'a> MzSpectrumVisitor<'a> {
                         curie!(MS:1000285) => {
                             self.visit_total_ion_current(spec_arr, index, colspec)
                         }
+                        curie!(MS:1003820) => {} // coordinate spacing model
                         curie!(MS:1003060) | curie!(MS:1003059) => {} // number of data points | number of peak
                         _ => self.visit_as_param(spec_arr, index, Some(colspec), None),
                     }
@@ -567,7 +568,8 @@ impl<'a> MzSpectrumVisitor<'a> {
                     "time"
                     | "auxiliary_arrays"
                     | "number_of_auxiliary_arrays"
-                    | "mz_delta_model" => {}
+                    | "mz_delta_model"
+                    | "coordinate_spacing_model" => {}
                     "polarity" => self.visit_polarity(spec_arr, index),
                     "spectrum_type" => self.visit_spectrum_type(spec_arr, index),
                     "mz_signal_continuity" => self.visit_mz_signal_continuity(spec_arr, index),

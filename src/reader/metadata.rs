@@ -1801,7 +1801,7 @@ impl<'a> PeakInfoDecoder<'a> {
                     .iter()
                     .zip(["mz_delta_model"])
                     .all(|(a, b)| a == b)
-                || spacing_model_col.is_some_and(|c| c.path == parts)
+                || spacing_model_col.is_some_and(|c| parts.starts_with(&c.path))
             {
                 median_i = Some(i);
                 self.has_models = true;

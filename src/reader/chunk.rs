@@ -928,7 +928,7 @@ impl<'a> ChunkDecoder<'a> {
                             self.delta_model,
                         );
                     }
-                    NUMPRESS_LINEAR => {
+                    NUMPRESS_LINEAR | GRID_ENCODING => {
                         // This chunk is never empty if it is valid
                     }
                     _ => {

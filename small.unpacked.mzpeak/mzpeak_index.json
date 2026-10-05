@@ -88,10 +88,16 @@
           "path": "total_ion_current",
           "accession": "MS:1000285",
           "unit": "MS:1000131"
+        },
+        {
+          "name": "coordinate spacing model",
+          "path": "coordinate_spacing_model",
+          "accession": "MS:1003820",
+          "unit": null
         }
       ],
       "parameters": [],
-      "checksum": "71f8441ab1cbe6e3f664690085a646c7e96cb0eebee401c5484984e469a5d0fe73949067378f6208f3f75f29172c77df57e4618bbeda53d23d26ed0a83acb3ce"
+      "checksum": "8e612215ae45697b416db05a4ac400aa9434bbd2b4cbeb31bb5cb809aeff5ec1cd886bceb1e828d4703fa04d26cd6c8f2de45345b68203086f7b4848ba8ef619"
     },
     {
       "name": "spectra_metadata_scans.parquet",
@@ -136,7 +142,7 @@
         }
       ],
       "parameters": [],
-      "checksum": "7774ba12e74affba11e4f42fd7a19f541e0425b0334d5ffa05aee8812196ae5576149040f3b92b33144b545994c2bc0f43834b3716236499909343070e8e2b82"
+      "checksum": "0f7efca171830dbd92744680652b4f637f7aa56d4fdaee6fb83e5d6b98e605b1f0fc62e869dc75ce594f58efa509fd5438bf249eecf6da11af32ef1b488eb560"
     },
     {
       "name": "spectra_metadata_precursors.parquet",
@@ -175,7 +181,7 @@
         }
       ],
       "parameters": [],
-      "checksum": "57fa5ce4e8ee8e93630f94ac3df164331fd5897ed444162d10df8eeb94b92e84df9e8e4cf744fce248dffdd1276136716f0af16131d43d1e765eee7761abbae4"
+      "checksum": "48efc6708f837ecfc8d54083bcb821234ac4ed369fe8367581bfc59756c4fad267c71e5b838725333eaba7c1d576b46a3496571c956aa4646c3eb1733fd31668"
     },
     {
       "name": "spectra_metadata_selected_ions.parquet",
@@ -202,7 +208,7 @@
         }
       ],
       "parameters": [],
-      "checksum": "a97fb80293a9a62f0e864e16b72f7a85464856626642454003649ed93ae5561c5e116b93149be207ff9cad5858745cc72c49e9076dc2298c59652ea356840a1c"
+      "checksum": "2c4a5f1b1cba51f2097e298c5f8efd941f3ce74d44cc18a78be26a1da07726ca7c25ac424cb33e3cf46b2a44f5d9128f651e9e228084e82767ebe0156ab7e97c"
     },
     {
       "name": "chromatograms_metadata.parquet",
@@ -304,74 +310,165 @@
       "data_kind": "data_arrays",
       "column_mapping": [],
       "parameters": [],
-      "checksum": "da949ca00ce8a2fab85c4b344a7f7b9ec0e8866e690322f5a0a2f7864b1a835514b710659ce820baf16a7b3ef5ff0e2ce8d46d4821dfb5d946f5ec33630e8f4d"
+      "checksum": "e6f0279a3128de358c98ec0e26950daa556a3540ab5d2b894a924111f8dc50057c1bfee88d309fcf9ae1e756977e3030b286a86803a3a6137ed9d892a1986301"
     }
   ],
   "metadata": {
-    "version": "0.9.0",
-    "instrument_configuration_list": [
+    "file_description": {
+      "contents": [
+        {
+          "accession": "MS:1000579",
+          "name": "MS1 spectrum",
+          "unit": null,
+          "value": null
+        },
+        {
+          "accession": "MS:1000580",
+          "name": "MSn spectrum",
+          "unit": null,
+          "value": null
+        }
+      ],
+      "source_files": [
+        {
+          "id": "RAW1",
+          "location": "file:///C:\\Users\\Joshua\\Dev\\learn-rust\\ffirawfilereader\\tests\\data",
+          "name": "small.RAW",
+          "parameters": [
+            {
+              "accession": "MS:1000569",
+              "name": "SHA-1",
+              "unit": null,
+              "value": "b43e9286b40e8b5dbc0dfa2e428495769ca96a96"
+            },
+            {
+              "accession": "MS:1000563",
+              "name": "Thermo RAW format",
+              "unit": null,
+              "value": null
+            },
+            {
+              "accession": "MS:1000768",
+              "name": "Thermo nativeID format",
+              "unit": null,
+              "value": null
+            }
+          ]
+        }
+      ]
+    },
+    "software_list": [
       {
-        "components": [
+        "id": "Xcalibur",
+        "parameters": [
           {
-            "component_type": "ionsource",
+            "accession": "MS:1000532",
+            "name": "Xcalibur",
+            "unit": null,
+            "value": null
+          }
+        ],
+        "version": "1.1 Beta 7"
+      },
+      {
+        "id": "pwiz",
+        "parameters": [
+          {
+            "accession": "MS:1000615",
+            "name": "ProteoWizard software",
+            "unit": null,
+            "value": null
+          }
+        ],
+        "version": "3.0.23307"
+      },
+      {
+        "id": "mzpeak_prototyping_convert1",
+        "parameters": [
+          {
+            "accession": "MS:1000799",
+            "name": "custom unreleased software tool",
+            "unit": null,
+            "value": "mzpeak_prototyping_convert"
+          }
+        ],
+        "version": "0.1.0"
+      }
+    ],
+    "scan_settings_list": [],
+    "run": {
+      "default_data_processing_id": "pwiz_Reader_Thermo_conversion",
+      "default_instrument_id": 0,
+      "default_source_file_id": "RAW1",
+      "id": "small",
+      "start_time": "2005-07-20T19:44:22Z"
+    },
+    "cv_list": [
+      {
+        "full_name": "Proteomics Standards Initiative Mass Spectrometry Ontology",
+        "id": "MS",
+        "uri": "http://purl.obolibrary.org/obo/ms/4.1.249/psi-ms.obo",
+        "version": "4.1.249"
+      },
+      {
+        "full_name": "Units of measurement ontology",
+        "id": "UO",
+        "uri": "http://purl.obolibrary.org/obo/uo/releases/2026-01-16/uo.obo",
+        "version": "2026-01-16"
+      }
+    ],
+    "version": "0.9.0",
+    "data_processing_method_list": [
+      {
+        "id": "pwiz_Reader_Thermo_conversion",
+        "methods": [
+          {
+            "order": 0,
+            "parameters": [
+              {
+                "accession": "MS:1000544",
+                "name": "Conversion to mzML",
+                "unit": null,
+                "value": null
+              }
+            ],
+            "software_reference": "pwiz"
+          }
+        ]
+      },
+      {
+        "id": "mzpeak_conversion1",
+        "methods": [
+          {
             "order": 1,
             "parameters": [
               {
-                "accession": "MS:1000073",
-                "name": "electrospray ionization",
+                "accession": null,
+                "name": "conversion options",
                 "unit": null,
-                "value": null
-              },
-              {
-                "accession": "MS:1000057",
-                "name": "electrospray inlet",
-                "unit": null,
-                "value": null
+                "value": "-y -z -u small.mzML -o small.mzpeak"
               }
-            ]
-          },
-          {
-            "component_type": "analyzer",
-            "order": 2,
-            "parameters": [
-              {
-                "accession": "MS:1000083",
-                "name": "radial ejection linear ion trap",
-                "unit": null,
-                "value": null
-              }
-            ]
-          },
-          {
-            "component_type": "detector",
-            "order": 3,
-            "parameters": [
-              {
-                "accession": "MS:1000253",
-                "name": "electron multiplier",
-                "unit": null,
-                "value": null
-              }
-            ]
+            ],
+            "software_reference": "mzpeak_prototyping_convert1"
           }
-        ],
-        "id": 1,
+        ]
+      }
+    ],
+    "sample_list": [
+      {
+        "id": "_x0031_",
+        "name": "",
         "parameters": [
           {
-            "accession": "MS:1000448",
-            "name": "LTQ FT",
+            "accession": "MS:1000002",
+            "name": "sample name",
             "unit": null,
-            "value": null
-          },
-          {
-            "accession": "MS:1000529",
-            "name": "instrument serial number",
-            "unit": null,
-            "value": "SN06061F"
+            "value": 1
           }
-        ],
-        "software_reference": "Xcalibur"
-      },
+        ]
+      }
+    ],
+    "instrument_configuration_list": [
       {
         "components": [
           {
@@ -433,160 +530,69 @@
           }
         ],
         "software_reference": "Xcalibur"
-      }
-    ],
-    "data_processing_method_list": [
-      {
-        "id": "pwiz_Reader_Thermo_conversion",
-        "methods": [
-          {
-            "order": 0,
-            "parameters": [
-              {
-                "accession": "MS:1000544",
-                "name": "Conversion to mzML",
-                "unit": null,
-                "value": null
-              }
-            ],
-            "software_reference": "pwiz"
-          }
-        ]
       },
       {
-        "id": "mzpeak_conversion1",
-        "methods": [
+        "components": [
           {
+            "component_type": "ionsource",
             "order": 1,
             "parameters": [
               {
-                "accession": null,
-                "name": "conversion options",
+                "accession": "MS:1000073",
+                "name": "electrospray ionization",
                 "unit": null,
-                "value": "-y -z -u small.mzML -o small.mzpeak"
+                "value": null
+              },
+              {
+                "accession": "MS:1000057",
+                "name": "electrospray inlet",
+                "unit": null,
+                "value": null
               }
-            ],
-            "software_reference": "mzpeak_prototyping_convert1"
+            ]
+          },
+          {
+            "component_type": "analyzer",
+            "order": 2,
+            "parameters": [
+              {
+                "accession": "MS:1000083",
+                "name": "radial ejection linear ion trap",
+                "unit": null,
+                "value": null
+              }
+            ]
+          },
+          {
+            "component_type": "detector",
+            "order": 3,
+            "parameters": [
+              {
+                "accession": "MS:1000253",
+                "name": "electron multiplier",
+                "unit": null,
+                "value": null
+              }
+            ]
           }
-        ]
-      }
-    ],
-    "sample_list": [
-      {
-        "id": "_x0031_",
-        "name": "",
+        ],
+        "id": 1,
         "parameters": [
           {
-            "accession": "MS:1000002",
-            "name": "sample name",
-            "unit": null,
-            "value": 1
-          }
-        ]
-      }
-    ],
-    "run": {
-      "default_data_processing_id": "pwiz_Reader_Thermo_conversion",
-      "default_instrument_id": 0,
-      "default_source_file_id": "RAW1",
-      "id": "small",
-      "start_time": "2005-07-20T19:44:22Z"
-    },
-    "cv_list": [
-      {
-        "full_name": "Proteomics Standards Initiative Mass Spectrometry Ontology",
-        "id": "MS",
-        "uri": "http://purl.obolibrary.org/obo/ms/4.1.249/psi-ms.obo",
-        "version": "4.1.249"
-      },
-      {
-        "full_name": "Units of measurement ontology",
-        "id": "UO",
-        "uri": "http://purl.obolibrary.org/obo/uo/releases/2026-01-16/uo.obo",
-        "version": "2026-01-16"
-      }
-    ],
-    "software_list": [
-      {
-        "id": "Xcalibur",
-        "parameters": [
-          {
-            "accession": "MS:1000532",
-            "name": "Xcalibur",
+            "accession": "MS:1000448",
+            "name": "LTQ FT",
             "unit": null,
             "value": null
-          }
-        ],
-        "version": "1.1 Beta 7"
-      },
-      {
-        "id": "pwiz",
-        "parameters": [
+          },
           {
-            "accession": "MS:1000615",
-            "name": "ProteoWizard software",
+            "accession": "MS:1000529",
+            "name": "instrument serial number",
             "unit": null,
-            "value": null
+            "value": "SN06061F"
           }
         ],
-        "version": "3.0.23307"
-      },
-      {
-        "id": "mzpeak_prototyping_convert1",
-        "parameters": [
-          {
-            "accession": "MS:1000799",
-            "name": "custom unreleased software tool",
-            "unit": null,
-            "value": "mzpeak_prototyping_convert"
-          }
-        ],
-        "version": "0.1.0"
+        "software_reference": "Xcalibur"
       }
-    ],
-    "file_description": {
-      "contents": [
-        {
-          "accession": "MS:1000579",
-          "name": "MS1 spectrum",
-          "unit": null,
-          "value": null
-        },
-        {
-          "accession": "MS:1000580",
-          "name": "MSn spectrum",
-          "unit": null,
-          "value": null
-        }
-      ],
-      "source_files": [
-        {
-          "id": "RAW1",
-          "location": "file:///C:\\Users\\Joshua\\Dev\\learn-rust\\ffirawfilereader\\tests\\data",
-          "name": "small.RAW",
-          "parameters": [
-            {
-              "accession": "MS:1000569",
-              "name": "SHA-1",
-              "unit": null,
-              "value": "b43e9286b40e8b5dbc0dfa2e428495769ca96a96"
-            },
-            {
-              "accession": "MS:1000563",
-              "name": "Thermo RAW format",
-              "unit": null,
-              "value": null
-            },
-            {
-              "accession": "MS:1000768",
-              "name": "Thermo nativeID format",
-              "unit": null,
-              "value": null
-            }
-          ]
-        }
-      ]
-    },
-    "scan_settings_list": []
+    ]
   }
 }
