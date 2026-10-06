@@ -792,7 +792,10 @@ class MzPeakSpectrumMetadataReader(_PrecursorReadMixin, _DataPointCountMixin):
             if entry is not None:  # noqa: SIM102 cannot merge conditional and conditional assignment?
                 if col := entry.mapping(accession="MS:1003820"):
                     key = '.'.join(col.path)
-                    return self.spectra[key].to_numpy()
+                    if key in self.spectra.columns:
+                        return self.spectra[key].to_numpy()
+                    elif col.name in self.spectra.columns:
+                        return self.spectra[col.name].to_numpy()
         return None
 
 
