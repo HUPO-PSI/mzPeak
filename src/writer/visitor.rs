@@ -1378,10 +1378,18 @@ impl StructVisitor<mzdata::spectrum::IsolationWindow> for IsolationWindowBuilder
             mzdata::spectrum::IsolationWindowState::Complete
             | mzdata::spectrum::IsolationWindowState::Explicit => {
                 self.target.append_value(item.target);
-                self.lower_bound
-                    .append_value(item.target - item.lower_bound);
-                self.upper_bound
-                    .append_value(item.upper_bound - item.target);
+                if item.lower_bound != 0.0 {
+                    self.lower_bound
+                        .append_value(item.target - item.lower_bound);
+                } else {
+                    self.lower_bound.append_value(0.0);
+                }
+                if item.upper_bound != 0.0 {
+                    self.upper_bound
+                        .append_value(item.upper_bound - item.target);
+                } else {
+                    self.upper_bound.append_value(0.0);
+                }
             }
         }
         self.parameters.append_empty();

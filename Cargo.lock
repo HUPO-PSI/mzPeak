@@ -2489,9 +2489,9 @@ dependencies = [
 
 [[package]]
 name = "mzdata"
-version = "0.67.2"
+version = "0.67.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61d9a7eae7d502d6c957d4aac288e9ceda3299251a301c2f71320e6022fe3f07"
+checksum = "da3fcbc26224f0d36115a025e6086c8dc8a12ec36cb48e9c518db8ef03d5f169"
 dependencies = [
  "base64-simd",
  "bitflags 2.13.1",
@@ -2504,7 +2504,6 @@ dependencies = [
  "identity-hash",
  "indexmap 2.14.0",
  "log",
- "memchr",
  "mzcv",
  "mzdata-bindata",
  "mzdata-meta",
@@ -2533,9 +2532,9 @@ dependencies = [
 
 [[package]]
 name = "mzdata-bindata"
-version = "0.67.2"
+version = "0.67.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84dfca42849efd06776f7f15980813d5b8ae6ed4b51b796873ff7a7aa5a3e1bb"
+checksum = "8a3d97e0bb0a6b9769627856bcc3408d41da2f6a0957e6f024842dc838804b56"
 dependencies = [
  "base64-simd",
  "bytemuck",
@@ -2556,9 +2555,9 @@ dependencies = [
 
 [[package]]
 name = "mzdata-meta"
-version = "0.67.2"
+version = "0.67.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c52c9d545b3f1a3e773989dcb3ee26773e8cbec846ff74053ea21aba2bc969b2"
+checksum = "f2188a19b9ed17ed3e088f8d3cf19f980f2e7ee1e31d194657728c8e53f3bdaa"
 dependencies = [
  "bitflags 2.13.1",
  "chrono",
@@ -2575,9 +2574,9 @@ dependencies = [
 
 [[package]]
 name = "mzdata-param"
-version = "0.67.2"
+version = "0.67.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5c379224625b3ca3d7759d9b4687d42d2dfda24aee64593bcaecc7bdba456a1"
+checksum = "7bef4e24fd09ecf3b802e0fd09f2db98d584b010b7c931bef3f5505c5bbf9980"
 dependencies = [
  "bincode",
  "context_error",
@@ -2593,9 +2592,9 @@ dependencies = [
 
 [[package]]
 name = "mzdata-spectrum"
-version = "0.67.2"
+version = "0.67.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca685c2d0ea9f195d40e92f37fea03ec19be32a793335dd237c8edf86d07a010"
+checksum = "595958b3717b58f5b0ff6f3c47e108c89e220dd1a2df8236dfef77c644a550e7"
 dependencies = [
  "identity-hash",
  "log",
@@ -2647,6 +2646,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "test-log",
+ "thiserror 2.0.20",
  "timsrust",
  "tokio",
  "tokio-stream",
@@ -3283,7 +3283,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
 dependencies = [
  "memchr",
- "serde",
  "tokio",
 ]
 
