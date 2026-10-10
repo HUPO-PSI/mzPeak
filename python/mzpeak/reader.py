@@ -1430,28 +1430,12 @@ class MzPeakFile(_MzPeakFileBase, _EntityCollectionMixin):
         A facet for accessing wavelength spectra if it is available.
     """
 
-    _archive: zipfile.ZipFile | Path | UPath
-    """The actual storage backend that routes file opening and I/O operations"""
-    _archive_storage: ArchiveStorage
-    """The kind of storage being used that differentiates between local and remote and zip archive vs. unpacked directory"""
-    _source: Any
-    """The object provided to open the file"""
-
-    _spectrum_namespace_aggregator: MzPeakNamespaceAggregation
-    """The collection of files that compose spectrum metadata. :attr:`spectrum_metadata` is an in-memory view of it."""
-
     spectrum_metadata: MzPeakSpectrumMetadataReader | None = None
     spectrum_data: MzPeakArrayDataReader | None = None
     spectrum_peak_data: MzPeakArrayDataReader | None = None
 
-    _chromatogram_namespace_aggregator: MzPeakNamespaceAggregation
-    """The collection of files that compose chromatogram metadata. :attr:`chromatogram_metadata` is an in-memory view of it."""
-
     chromatogram_metadata: MzPeakChromatogramMetadataReader | None = None
     chromatogram_data: MzPeakArrayDataReader | None = None
-
-    _wavelength_spectrum_namespace_aggregator: MzPeakNamespaceAggregation
-    """The collection of files that compose wavelength spectrum metadata. :attr:`_wavelength_spectrum_metadata` is an in-memory view of it."""
 
     _wavelength_spectrum_metadata: MzPeakSpectrumMetadataReader | None = None
     _wavelength_spectrum_data: MzPeakArrayDataReader | None = None
