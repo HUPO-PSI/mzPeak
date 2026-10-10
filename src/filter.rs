@@ -115,7 +115,7 @@ pub fn fit_delta_model<
     dx_data: &[T],
     chol_weights: Option<&[T]>,
     rank: usize,
-) -> Result<Vec<T>, &'static str>
+) -> Result<Vec<T>, DeltaModelError>
 where
     T::RealField: Float + One + Zero,
 {
@@ -144,7 +144,7 @@ where
 
         let sol = r
             .solve_upper_triangular(&v)
-            .ok_or("Failed to solve linear system: matrix may be singular or unsolvable")?;
+            .ok_or(DeltaModelError::FailedToSolve)?;
         Ok(sol.data.into())
     } else {
         let qr = xmat.qr();
@@ -153,7 +153,7 @@ where
         let r = qr.r();
         let sol = r
             .solve_upper_triangular(&v)
-            .ok_or("Failed to solve linear system: matrix may be singular or unsolvable")?;
+            .ok_or(DeltaModelError::FailedToSolve)?;
         Ok(sol.data.into())
     }
 }
@@ -199,7 +199,12 @@ where
     ) {
         Ok(reg_model) => reg_model,
         Err(e) => {
-            log::warn!("Failed to fit regression model: {e}");
+            match e {
+                DeltaModelError::InsufficientDataAfterFiltering => {
+
+                },
+                DeltaModelError::FailedToSolve => log::warn!("Failed to fit regression model: {e}"),
+            }
             return constant_model.to_float64_array().values().to_vec();
         }
     };
@@ -228,7 +233,7 @@ pub trait MZDeltaModel<T: Float + AddAssign>: Sized {
         deltas: &[T],
         threshold: T,
         weights: Option<&[T]>,
-    ) -> Result<Self, &'static str>;
+    ) -> Result<Self, DeltaModelError>;
 
     /// Compute the average error of the model from the data
     fn mean_squared_error<U: Float + AddAssign + NumCast>(&self, mzs: &[U], deltas: &[U]) -> U {
@@ -275,7 +280,7 @@ impl<T: Float + AddAssign + NumCast> MZDeltaModel<T> for ConstantDeltaModel<T> {
         deltas: &[T],
         _threshold: T,
         _weights: Option<&[T]>,
-    ) -> Result<Self, &'static str> {
+    ) -> Result<Self, DeltaModelError> {
         let (delta, _) = estimate_median_delta(deltas.iter().copied());
         if deltas.is_empty() {
             log::warn!("Empty deltas array in ConstantDeltaModel::fit");
@@ -309,6 +314,15 @@ impl<T: Float + AddAssign> From<Vec<T>> for RegressionDeltaModel<T> {
     }
 }
 
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum DeltaModelError {
+    #[error("Insufficient data to fit regression delta model, fewer than 3 data points available after filtering")]
+    InsufficientDataAfterFiltering,
+    #[error("Failed to solve linear system: matrix may be singular or unsolvable")]
+    FailedToSolve,
+
+}
+
 impl<T: Float + AddAssign + nalgebra::ComplexField> MZDeltaModel<T> for RegressionDeltaModel<T>
 where
     T::RealField: Float,
@@ -332,7 +346,7 @@ where
         deltas: &[T],
         threshold: T,
         weights: Option<&[T]>,
-    ) -> Result<Self, &'static str> {
+    ) -> Result<Self, DeltaModelError> {
         if let Some(weights) = weights {
             let mut sel_deltas = Vec::with_capacity(deltas.len());
             let mut sel_mzs = Vec::with_capacity(mz_array.len());
@@ -347,7 +361,7 @@ where
             }
             if sel_mzs.len() < 3 {
                 return Err(
-                    "Insufficient data to fit regression delta model, fewer than 3 data points available after filtering",
+                    DeltaModelError::InsufficientDataAfterFiltering
                 );
             }
             let x = fit_delta_model(&sel_mzs, &sel_deltas, Some(&sel_weights), 2)?;
@@ -361,7 +375,7 @@ where
                 .collect();
             if sel_mzs.len() < 3 {
                 return Err(
-                    "Insufficient data to fit regression delta model, fewer than 3 data points available after filtering",
+                    DeltaModelError::InsufficientDataAfterFiltering
                 );
             }
             let x = fit_delta_model(&sel_mzs, &sel_deltas, None, 2)?;
@@ -651,6 +665,31 @@ where
     acc
 }
 
+
+pub(crate) fn skip_zero_runs(intensity_array: &ArrayRef) -> (Vec<u64>, usize) {
+    match intensity_array.data_type() {
+        DataType::Float32 => {
+            let intensity_array = intensity_array.as_primitive::<Float32Type>();
+            (_skip_zero_runs_gen(&intensity_array), intensity_array.len())
+        }
+        DataType::Float64 => {
+            let intensity_array = intensity_array.as_primitive::<Float64Type>();
+            (_skip_zero_runs_gen(&intensity_array), intensity_array.len())
+        }
+        DataType::Int32 => {
+            let intensity_array = intensity_array.as_primitive::<Int32Type>();
+            (_skip_zero_runs_gen(&intensity_array), intensity_array.len())
+        }
+        DataType::Int64 => {
+            let intensity_array = intensity_array.as_primitive::<Int64Type>();
+            (_skip_zero_runs_gen(&intensity_array), intensity_array.len())
+        }
+        _ => {
+            unimplemented!("{:?}", intensity_array.data_type())
+        }
+    }
+}
+
 /// Find indices where `array` is not a consecutive run of zeros.
 ///
 /// This kernel is only implemented for 32-bit and 64-bit numeric types.
@@ -701,7 +740,7 @@ pub fn drop_where_column_is_zero_run(
 }
 
 /// Construct a boolean mask marking all positions where two consecutive values were zero
-pub fn is_zero_pair_mask<T: ArrowPrimitiveType>(array: &PrimitiveArray<T>) -> BooleanArray
+pub(crate) fn is_zero_pair_mask_gen<T: ArrowPrimitiveType>(array: &PrimitiveArray<T>) -> BooleanArray
 where
     T::Native: Zero + PartialEq,
 {
@@ -732,6 +771,30 @@ where
     acc.into()
 }
 
+pub fn is_zero_pair_mask(intensity_array: &ArrayRef) -> BooleanArray {
+    match intensity_array.data_type() {
+        DataType::Float32 => {
+            let intensity_array = intensity_array.as_primitive::<Float32Type>();
+            is_zero_pair_mask_gen(&intensity_array)
+        }
+        DataType::Float64 => {
+            let intensity_array = intensity_array.as_primitive::<Float64Type>();
+            is_zero_pair_mask_gen(&intensity_array)
+        }
+        DataType::Int32 => {
+            let intensity_array = intensity_array.as_primitive::<Int32Type>();
+            is_zero_pair_mask_gen(&intensity_array)
+        }
+        DataType::Int64 => {
+            let intensity_array = intensity_array.as_primitive::<Int64Type>();
+            is_zero_pair_mask_gen(&intensity_array)
+        }
+        _ => {
+            unimplemented!("{:?}", intensity_array.data_type())
+        }
+    }
+}
+
 pub fn nullify_at_zero_pair_arrays(
     mut batch: Vec<ArrayRef>,
     column_index: usize,
@@ -739,12 +802,12 @@ pub fn nullify_at_zero_pair_arrays(
 ) -> Result<Vec<ArrayRef>, arrow::error::ArrowError> {
     let target_array = &batch[column_index];
     let mask = match target_array.data_type() {
-        DataType::Float32 => is_zero_pair_mask(target_array.as_primitive::<Float32Type>()),
-        DataType::Float64 => is_zero_pair_mask(target_array.as_primitive::<Float64Type>()),
-        DataType::Int32 => is_zero_pair_mask(target_array.as_primitive::<Int32Type>()),
-        DataType::Int64 => is_zero_pair_mask(target_array.as_primitive::<Int64Type>()),
-        DataType::UInt32 => is_zero_pair_mask(target_array.as_primitive::<UInt32Type>()),
-        DataType::UInt64 => is_zero_pair_mask(target_array.as_primitive::<UInt64Type>()),
+        DataType::Float32 => is_zero_pair_mask_gen(target_array.as_primitive::<Float32Type>()),
+        DataType::Float64 => is_zero_pair_mask_gen(target_array.as_primitive::<Float64Type>()),
+        DataType::Int32 => is_zero_pair_mask_gen(target_array.as_primitive::<Int32Type>()),
+        DataType::Int64 => is_zero_pair_mask_gen(target_array.as_primitive::<Int64Type>()),
+        DataType::UInt32 => is_zero_pair_mask_gen(target_array.as_primitive::<UInt32Type>()),
+        DataType::UInt64 => is_zero_pair_mask_gen(target_array.as_primitive::<UInt64Type>()),
         _ => panic!("Unsupported data type {:?}", target_array.data_type()),
     };
 

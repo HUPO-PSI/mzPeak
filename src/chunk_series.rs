@@ -11,7 +11,7 @@ use arrow::array::{
 };
 use arrow::compute::kernels::nullif;
 use arrow::datatypes::{
-    DataType, Field, Fields, Float32Type, Float64Type, Int32Type, Int64Type, Schema, UInt8Type,
+    DataType, Field, Fields, Float32Type, Float64Type, Schema, UInt8Type,
     UInt16Type, UInt32Type,
 };
 use itertools::Itertools;
@@ -26,13 +26,13 @@ use bytemuck::Pod;
 use num_traits::{Float, NumCast, ToPrimitive};
 
 use crate::buffer_descriptors::{BufferOverrideTable, BufferPriority};
-use crate::filter::{delta_decode_integer, delta_encode_integer};
-use crate::grid::{GridEncoding, GridModelLike, GridPolicy, GridPolicyTable};
+use crate::filter::{delta_decode_integer, delta_encode_integer, skip_zero_runs};
+use crate::grid::{GridEncoding, GridModelLike, GridPolicy, GridPolicyTable, GridPolicyTableMethods};
 use crate::writer::StructVisitor;
 use crate::{
     buffer_descriptors::BufferTransform,
     filter::{
-        _skip_zero_runs_gen, RegressionDeltaModel, fill_nulls_for, is_zero_pair_mask,
+        RegressionDeltaModel, fill_nulls_for, is_zero_pair_mask,
         null_chunk_every_k, null_delta_decode, null_delta_encode,
     },
     peak_series::{
@@ -1412,6 +1412,33 @@ impl ArrowArrayChunk {
         Schema::new(fields_of)
     }
 
+    fn main_axis_encode<T: ArrowPrimitiveType>(chunk_encoding: &ChunkingStrategy, main_axis_grid: &Option<GridEncoding>, slice: &ArrayRef) -> ((f64, f64, Arc<dyn Array>), ChunkingStrategy)
+        where T::Native: Float, PrimitiveArray<T>: From<Vec<std::option::Option<<T as ArrowPrimitiveType>::Native>>> {
+        if chunk_encoding.is_grid() {
+            let grid = chunk_encoding.grid().or(main_axis_grid.as_ref()).cloned();
+            if grid.is_some() {
+                let chunk_encoding = chunk_encoding.with_grid(grid);
+                (
+                    chunk_encoding
+                        .encode_arrow(slice.as_primitive::<T>()),
+                    chunk_encoding,
+                )
+            } else {
+                let chunk_encoding = chunk_encoding.as_delta();
+                (
+                    chunk_encoding
+                        .encode_arrow(slice.as_primitive::<T>()),
+                    chunk_encoding,
+                )
+            }
+        } else {
+            (
+                chunk_encoding.encode_arrow(slice.as_primitive::<T>()),
+                chunk_encoding.clone(),
+            )
+        }
+    }
+
     /// Construct a series of [`ArrowArrayChunk`]s from a [`BinaryArrayMap`], using a specific array indicated by
     /// [`BufferName`] as the main axis, split and encoded using `chunk_encoding`. This may include a set of
     /// transforms according to `drop_zero_intensity`, `nullify_zero_intensity`.
@@ -1476,9 +1503,7 @@ impl ArrowArrayChunk {
         let main_axis_grid = chunk_encoding
             .is_grid()
             .then(|| {
-                grid_policies
-                    .as_ref()
-                    .and_then(|v| v.get(&main_axis.array_type)?.current_grid.clone())
+                grid_policies.get_grid(&main_axis.array_type).cloned()
             })
             .flatten();
 
@@ -1520,29 +1545,9 @@ impl ArrowArrayChunk {
         }
 
         if let Some(intensity_idx) = intensity_idx {
-            let (intensity_name, intensity_array) = arrow_arrays.get(intensity_idx).unwrap();
+            let (_intensity_name, intensity_array) = arrow_arrays.get(intensity_idx).unwrap();
             if drop_zero_intensity {
-                let (kept_indices, n) = match array_to_arrow_type(intensity_name.dtype) {
-                    DataType::Float32 => {
-                        let intensity_array = intensity_array.as_primitive::<Float32Type>();
-                        (_skip_zero_runs_gen(&intensity_array), intensity_array.len())
-                    }
-                    DataType::Float64 => {
-                        let intensity_array = intensity_array.as_primitive::<Float64Type>();
-                        (_skip_zero_runs_gen(&intensity_array), intensity_array.len())
-                    }
-                    DataType::Int32 => {
-                        let intensity_array = intensity_array.as_primitive::<Int32Type>();
-                        (_skip_zero_runs_gen(&intensity_array), intensity_array.len())
-                    }
-                    DataType::Int64 => {
-                        let intensity_array = intensity_array.as_primitive::<Int64Type>();
-                        (_skip_zero_runs_gen(&intensity_array), intensity_array.len())
-                    }
-                    _ => {
-                        unimplemented!("{}", intensity_name)
-                    }
-                };
+                let (kept_indices, n) = skip_zero_runs(intensity_array);
                 let kept_indices: UInt64Array = kept_indices.into();
                 for (_, v) in arrow_arrays.iter_mut() {
                     if v.len() != n {
@@ -1554,36 +1559,17 @@ impl ArrowArrayChunk {
 
             if let Some(mz_idx) = mz_idx {
                 if nullify_zero_intensity {
-                    let (intensity_name, intensity_array) =
+                    let (_intensity_name, intensity_array) =
                         arrow_arrays.get(intensity_idx).unwrap();
-                    let (masked, _) = match array_to_arrow_type(intensity_name.dtype) {
-                        DataType::Float32 => {
-                            let intensity_array = intensity_array.as_primitive::<Float32Type>();
-                            (is_zero_pair_mask(&intensity_array), intensity_array.len())
-                        }
-                        DataType::Float64 => {
-                            let intensity_array = intensity_array.as_primitive::<Float64Type>();
-                            (is_zero_pair_mask(&intensity_array), intensity_array.len())
-                        }
-                        DataType::Int32 => {
-                            let intensity_array = intensity_array.as_primitive::<Int32Type>();
-                            (is_zero_pair_mask(&intensity_array), intensity_array.len())
-                        }
-                        DataType::Int64 => {
-                            let intensity_array = intensity_array.as_primitive::<Int64Type>();
-                            (is_zero_pair_mask(&intensity_array), intensity_array.len())
-                        }
-                        _ => {
-                            unimplemented!("{}", intensity_name)
-                        }
-                    };
-
+                    let masked = is_zero_pair_mask(intensity_array);
                     let (_, intensities) = arrow_arrays.get_mut(intensity_idx).unwrap();
                     *intensities = nullif::nullif(&intensities.clone(), &masked).unwrap();
+                    log::trace!("Nullifying zeros set {} intensity points for index {series_index}", intensities.null_count());
 
                     let (_, mzs) = arrow_arrays.get_mut(mz_idx).unwrap();
-                    if grid_policies.as_ref().and_then(|v|v.get(&ArrayType::MZArray)?.current_grid()).is_none() {
-                        *mzs = nullif::nullif(&mzs.clone(), &masked).unwrap();
+                    if !grid_policies.as_ref().is_some_and(|v| v.has_grid_for(&ArrayType::MZArray)) {
+                        *mzs = nullif::nullif(&*mzs, &masked).unwrap();
+                        log::trace!("Nullifying zeros set {} m/z points for index {series_index}", mzs.null_count());
                     }
                 }
             }
@@ -1620,54 +1606,10 @@ impl ArrowArrayChunk {
             let ((chunk_start, chunk_end, chunk_values), chunk_encoding) =
                 match array_to_arrow_type(main_axis.dtype) {
                     DataType::Float32 => {
-                        if chunk_encoding.is_grid() {
-                            let grid = chunk_encoding.grid().or(main_axis_grid.as_ref()).cloned();
-                            if grid.is_some() {
-                                let chunk_encoding = chunk_encoding.with_grid(grid);
-                                (
-                                    chunk_encoding
-                                        .encode_arrow(slice.as_primitive::<Float32Type>()),
-                                    chunk_encoding,
-                                )
-                            } else {
-                                let chunk_encoding = chunk_encoding.basic();
-                                (
-                                    chunk_encoding
-                                        .encode_arrow(slice.as_primitive::<Float32Type>()),
-                                    chunk_encoding,
-                                )
-                            }
-                        } else {
-                            (
-                                chunk_encoding.encode_arrow(slice.as_primitive::<Float32Type>()),
-                                chunk_encoding.clone(),
-                            )
-                        }
+                        Self::main_axis_encode::<Float32Type>(chunk_encoding, &main_axis_grid, &slice)
                     }
                     DataType::Float64 => {
-                        if chunk_encoding.is_grid() {
-                            let grid = chunk_encoding.grid().or(main_axis_grid.as_ref()).cloned();
-                            if grid.is_some() {
-                                let chunk_encoding = chunk_encoding.with_grid(grid);
-                                (
-                                    chunk_encoding
-                                        .encode_arrow(slice.as_primitive::<Float64Type>()),
-                                    chunk_encoding,
-                                )
-                            } else {
-                                let chunk_encoding = chunk_encoding.basic();
-                                (
-                                    chunk_encoding
-                                        .encode_arrow(slice.as_primitive::<Float64Type>()),
-                                    chunk_encoding,
-                                )
-                            }
-                        } else {
-                            (
-                                chunk_encoding.encode_arrow(slice.as_primitive::<Float64Type>()),
-                                chunk_encoding.clone(),
-                            )
-                        }
+                        Self::main_axis_encode::<Float64Type>(chunk_encoding, &main_axis_grid, &slice)
                     }
                     _ => unimplemented!("{}", main_axis),
                 };
@@ -1681,17 +1623,9 @@ impl ArrowArrayChunk {
                 let v = v.slice(step.start, step.end - step.start);
                 if let Ok(transform) = BufferTransformEncoder::try_from(k.transform) {
                     let vi = if matches!(transform.method(), BufferTransform::GridEncoding) {
-
-                        let grid = grid_policies
-                            .and_then(|v| {
-                                v.get(&k.array_type).and_then(|v| v.current_grid().cloned())
-                            })
-                            .or_else(|| {
-                                arrays
-                                    .get(&k.array_type)
-                                    .and_then(|a| GridPolicy::find_grid_model_param(a))
-                            })
-                            .unwrap();
+                        let grid = grid_policies.get_grid(&k.array_type).cloned()
+                            .or_else(|| { GridPolicy::find_grid_model_param(arrays.get(&k.array_type)?) })
+                            .unwrap_or_else(|| panic!("Column {k} expected to have a grid encoding but none were found"));
                         let transform = BufferTransformEncoder::from(grid);
                         transform.encode_arrow(&v)
                     } else {
