@@ -432,7 +432,7 @@ impl GridModelLike for SquareRootLinearGrid {
     }
 
     fn parameters(&self) -> Vec<f64> {
-        vec![self.intercept, self.slope]
+        vec![self.intercept, self.slope, self.scale]
     }
 
     fn from_param(parameters: &Param) -> Option<Self>
@@ -914,17 +914,11 @@ impl GridPolicy {
         }
     }
 
-    pub fn model_from(
-        &self,
-        array: &[f64],
-        low: f64,
-        high: f64,
-        scale: Option<f64>,
-    ) -> Option<GridEncoding> {
+    fn fit_model(&self, array: &[f64], low: f64, high: f64, scale: Option<f64>, fallback_square_root_linear: bool) -> Option<GridEncoding> {
         if array.is_empty() {
             return None;
         }
-        let model: GridEncoding = if self.fallback_square_root_linear {
+        let model: GridEncoding = if fallback_square_root_linear {
             SquareRootLinearGrid::fit(array, low, high, scale.unwrap_or(1.0))?.into()
         } else {
             LinearGrid::fit(array, low, high, scale.unwrap_or(1.0))?.into()
@@ -946,12 +940,39 @@ impl GridPolicy {
             if passes {
                 Some(model)
             } else {
-                log::warn!("Failed to construct satisfactory model, error was {max_err}");
-                None
+                log::trace!(
+                    "Failed to construct satisfactory {} model from {low} to {high} over {} points with scale {scale:?}, error was {max_err}",
+                    if fallback_square_root_linear { "square root linear" } else { "linear" },
+                    array.len()
+                );
+                if fallback_square_root_linear {
+                    if let Some(scale) = scale {
+                        if scale * 1.5 > 1.0 {
+                            self.fit_model(array, low, high, None, false)
+                        }
+                        else {
+                            self.fit_model(array, low, high, Some((scale * 1.5).min(1.0)), true)
+                        }
+                    } else {
+                        self.fit_model(array, low, high, scale, false)
+                    }
+                } else {
+                    None
+                }
             }
         } else {
             Some(model)
         }
+    }
+
+    pub fn model_from(
+        &self,
+        array: &[f64],
+        low: f64,
+        high: f64,
+        scale: Option<f64>,
+    ) -> Option<GridEncoding> {
+        self.fit_model(array, low, high, scale, self.fallback_square_root_linear)
     }
 
     pub fn current_grid(&self) -> Option<&GridEncoding> {
@@ -964,6 +985,35 @@ impl GridPolicy {
 }
 
 pub type GridPolicyTable = HashMap<ArrayType, GridPolicy>;
+
+pub(crate) trait GridPolicyTableMethods {
+    fn has_grid_for(&self, array_type: &ArrayType) -> bool;
+    fn get(&self, array_type: &ArrayType) -> Option<&GridPolicy>;
+    fn get_grid(&self, array_type: &ArrayType) -> Option<&GridEncoding> {
+        self.get(array_type)?.current_grid()
+    }
+}
+
+
+impl GridPolicyTableMethods for GridPolicyTable {
+    fn has_grid_for(&self, array_type: &ArrayType) -> bool {
+        self.get(&array_type).is_some_and(|a| a.current_grid.is_some())
+    }
+
+    fn get(&self, array_type: &ArrayType) -> Option<&GridPolicy> {
+        self.get(array_type)
+    }
+}
+
+impl<'a> GridPolicyTableMethods for Option<&'a GridPolicyTable> {
+    fn has_grid_for(&self, array_type: &ArrayType) -> bool {
+        self.as_ref().is_some_and(|v| v.has_grid_for(array_type))
+    }
+
+    fn get(&self, array_type: &ArrayType) -> Option<&GridPolicy> {
+        self.as_ref()?.get(array_type)
+    }
+}
 
 #[cfg(test)]
 mod test {
