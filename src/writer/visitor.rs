@@ -1914,7 +1914,7 @@ pub struct AuxiliaryArrayBuilder {
     compression: CURIEBuilder,
     unit: CURIEBuilder,
     parameters: ParamListBuilder,
-    data_processing_ref: LargeStringBuilder,
+    data_processing_id: LargeStringBuilder,
 }
 
 impl Default for AuxiliaryArrayBuilder {
@@ -1930,7 +1930,7 @@ impl Default for AuxiliaryArrayBuilder {
             compression: Default::default(),
             unit: Default::default(),
             parameters: Default::default(),
-            data_processing_ref: Default::default(),
+            data_processing_id: Default::default(),
         }
     }
 }
@@ -1964,7 +1964,7 @@ impl VisitorBase for AuxiliaryArrayBuilder {
         self.compression.append_null();
         self.unit.append_null();
         self.parameters.append_null();
-        self.data_processing_ref.append_null();
+        self.data_processing_id.append_null();
     }
 
     fn map_metadata_columns(&self) -> Vec<MetadataColumn> {
@@ -1981,8 +1981,8 @@ impl StructVisitor<AuxiliaryArray> for AuxiliaryArrayBuilder {
         self.compression.append_value(&item.compression);
         self.unit.append_option(item.unit.as_ref());
         self.parameters.append_value(&item.parameters.as_slice());
-        self.data_processing_ref
-            .append_option(item.data_processing_ref.as_ref());
+        self.data_processing_id
+            .append_option(item.data_processing_id.as_ref());
         true
     }
 }
@@ -2004,7 +2004,7 @@ impl ArrayBuilder for AuxiliaryArrayBuilder {
             self.compression.finish(),
             self.unit.finish(),
             finish_it!(self.parameters),
-            finish_it!(self.data_processing_ref),
+            finish_it!(self.data_processing_id),
         ];
 
         Arc::new(StructArray::new(fields.into(), arrays, None))
@@ -2020,7 +2020,7 @@ impl ArrayBuilder for AuxiliaryArrayBuilder {
             self.compression.finish_cloned(),
             self.unit.finish_cloned(),
             finish_cloned!(self.parameters),
-            finish_cloned!(self.data_processing_ref),
+            finish_cloned!(self.data_processing_id),
         ];
 
         Arc::new(StructArray::new(fields.into(), arrays, None))
