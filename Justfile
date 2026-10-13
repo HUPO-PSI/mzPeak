@@ -46,10 +46,10 @@ test:
     # cargo t --tests -- --no-capture
     cargo nextest run --tests
 
-pytest:
+pytest *args:
     py.test -n auto -l -s -v python/test/ \
         --cov=mzpeak --cov-report term \
-        --log-level=DEBUG --cov-report html
+        --log-level=DEBUG --cov-report html {{args}}
 
 alias t := test
 
