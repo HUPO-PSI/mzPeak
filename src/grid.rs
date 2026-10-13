@@ -132,6 +132,14 @@ impl LinearGrid {
         Some(Self::new(intercept, slope, scale))
     }
 
+    pub fn fit_uniform(values: &[f64], scale: Option<f64>) -> Option<Self> {
+        if values.is_empty() {
+            return None
+        }
+        let (v, _) = crate::filter::estimate_median_delta(values.iter().copied());
+        Some(Self::new(values[0], v * scale.unwrap_or(1e-3), 1.0))
+    }
+
     pub fn fit(values: &[f64], low: f64, high: f64, scale: f64) -> Option<Self> {
         let slots = u32::MAX;
         let low = low * scale;
@@ -965,6 +973,29 @@ impl GridPolicy {
         }
     }
 
+    fn fit_model_uniform(&self, array: &[f64], scale: Option<f64>) -> Option<GridEncoding> {
+        let model = LinearGrid::fit_uniform(array, scale)?;
+
+        if let Some(thresh) = self.maximum_error_tolerance {
+            let (passes, max_err) = match thresh {
+                Tolerance::PPM(t) => {
+                    let err = model.error(array, true);
+                    let max_err = err.iter().copied().reduce(|a, b| a.max(b)).unwrap();
+                    (t >= max_err, max_err)
+                }
+                Tolerance::Da(t) => {
+                    let err = model.error(array, false);
+                    let max_err = err.iter().copied().reduce(|a, b| a.max(b)).unwrap();
+                    (t >= max_err, max_err)
+                }
+            };
+            log::trace!("Uniform grid model had error {max_err} with spacing {} and offset {}", model.slope, model.intercept);
+            passes.then(|| model.into())
+        } else {
+            Some(model.into())
+        }
+    }
+
     pub fn model_from(
         &self,
         array: &[f64],
@@ -972,6 +1003,11 @@ impl GridPolicy {
         high: f64,
         scale: Option<f64>,
     ) -> Option<GridEncoding> {
+        if self.maximum_error_tolerance.is_some() {
+            if let Some(model) = self.fit_model_uniform(array, scale) {
+                return Some(model)
+            }
+        }
         self.fit_model(array, low, high, scale, self.fallback_square_root_linear)
     }
 
