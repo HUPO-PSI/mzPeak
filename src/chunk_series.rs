@@ -1587,7 +1587,7 @@ impl ArrowArrayChunk {
 
         let n_pts = main_axis_array.len();
 
-        let steps = match array_to_arrow_type(main_axis.dtype) {
+        let steps = match main_axis.arrow_dtyp() {
             DataType::Float32 => null_chunk_every_k(
                 main_axis_array.as_primitive::<Float32Type>(),
                 NumCast::from(chunk_encoding.chunk_size()).unwrap(),

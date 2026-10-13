@@ -46,7 +46,7 @@ pub fn data_array_to_arrow_array(
 }
 
 /// Convert `mzdata`'s [`BinaryDataArrayType`] to `arrow`'s [`DataType`]
-pub fn array_to_arrow_type(dtype: BinaryDataArrayType) -> DataType {
+pub const fn array_to_arrow_type(dtype: BinaryDataArrayType) -> DataType {
     match dtype {
         BinaryDataArrayType::Unknown => DataType::UInt8,
         BinaryDataArrayType::Float64 => DataType::Float64,

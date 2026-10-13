@@ -10,11 +10,9 @@ use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 
 use crate::{
-    constants::{CHROMATOGRAM, SPECTRUM},
-    param::{
+    constants::{CHROMATOGRAM, SPECTRUM}, param::{
         CURIE, curie_deserialize, curie_serialize, opt_curie_deserialize, opt_curie_serialize,
-    },
-    peak_series::{MZ_ARRAY, TIME_ARRAY, WAVELENGTH_ARRAY},
+    }, peak_series::{MZ_ARRAY, TIME_ARRAY, WAVELENGTH_ARRAY},
 };
 use crate::{
     constants::{
@@ -877,6 +875,10 @@ impl BufferName {
     pub fn update_field(&self, field: FieldRef) -> FieldRef {
         let metadata = self.as_field_metadata();
         Arc::new(field.as_ref().clone().with_metadata(metadata))
+    }
+
+    pub const fn arrow_dtyp(&self) -> DataType {
+        array_to_arrow_type(self.dtype)
     }
 }
 
