@@ -310,6 +310,10 @@ class _MzPeakDataIter(Iterator[tuple[int, _SpectrumArrays, DataKind]]):
         self.index = index
         self.prefer_peaks = prefer_peaks
 
+    @property
+    def current_index(self) -> int:
+        return self.index
+
     def read_data(self, i: int):
         if (
             not pd.isna(self.metadata.data_point_count(i))
@@ -340,6 +344,24 @@ class _MzPeakDataIter(Iterator[tuple[int, _SpectrumArrays, DataKind]]):
             return self.data_iter.empty_arrays()
         elif self.peak_iter:
             return self.peak_iter.empty_arrays()
+
+    def seek(self, index: int):
+        if (
+            self.data_iter
+            and self.data_iter.current_index is not None
+            and self.data_iter.current_index < index
+        ):
+            self.data_iter.seek(index)
+        if (
+            self.peak_iter
+            and self.peak_iter.current_index is not None
+            and self.peak_iter.current_index < index
+        ):
+            self.peak_iter.seek(index)
+        self.index = index
+
+    def _seek_hook(self, index: int):
+        self.seek(index)
 
     def __next__(self):
         i = self.index
@@ -893,6 +915,10 @@ class MzPeakFileIter(Iterator["_SpectrumType"]):
         self.metadata = metadata
         self.index = index
         self.size = len(metadata)
+
+    @property
+    def current_index(self) -> int:
+        return self.index
 
     def __next__(self) -> "_SpectrumType":
         i = self.index

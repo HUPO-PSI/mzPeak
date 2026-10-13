@@ -330,6 +330,18 @@ class _BatchIterator(Iterator[tuple[int, pa.RecordBatch]]):
         if len(arr) > 0:
             return arr[0].as_py()
 
+    def _skip_before(self, index: int):
+        if self.batch is None:
+            return
+        index_col = pc.struct_field(self.batch, self.index_column)
+        mask = pc.greater_equal(index_col, index)
+        self.batch = self.batch.filter(mask)
+        min_idx = self._infer_starting_index()
+        if min_idx is not None:
+            self.current_index = min_idx
+        else:
+            self.current_index = pc.max(index_col).as_py() + 1
+
     def __next__(self):
         batch = self._extract_for_index()
         i = self.current_index
@@ -379,6 +391,19 @@ class _BatchIterator(Iterator[tuple[int, pa.RecordBatch]]):
         mask = pc.less(index_col, self.current_index)
         return np.all(mask)
 
+    def _batch_index_range(self) -> tuple[int, int] | None:
+        if self.batch is None:
+            return None
+        index_col = pc.struct_field(self.batch, self.index_column)
+        if len(index_col) == 0:
+            return None
+        return (index_col[0].as_py(), index_col[-1].as_py())
+
+    def _batch_has_index_query(self, index: int) -> bool:
+        val = self._batch_index_range()
+        if not val: return False
+        return val[0] <= index <= val[1]
+
     def _extract_for_index(self) -> pa.RecordBatch | None:
         if self.batch is None:
             raise StopIteration()
@@ -410,6 +435,11 @@ class _BatchIterator(Iterator[tuple[int, pa.RecordBatch]]):
             self.batch = self.batch.slice(n)
         return chunk
 
+    def _seek_hook(self, index: int):
+        if index > self.current_index:
+            self.seek(index)
+        return True
+
     def seek(self, index: int):
         """
         Advance the iterator until it reaches the requested index.
@@ -426,8 +456,9 @@ class _BatchIterator(Iterator[tuple[int, pa.RecordBatch]]):
         if index == self.current_index:
             return self
         else:
-            while self.current_index != index:
-                next(self)
+            while not self._batch_has_index_query(index):
+                self._read_next_chunk(True)
+            self._skip_before(index)
             return self
 
 
@@ -1450,6 +1481,10 @@ class _DataBatchIter(
         if self.inner._peek is not None:
             self._coerce_peeked()
 
+    @property
+    def current_index(self) -> int:
+        return self.inner.current_index
+
     def empty_arrays(self) -> _SpectrumArrays | None:
         return self._empty_arrays.copy() if self._empty_arrays is not None else None
 
@@ -1479,3 +1514,7 @@ class _DataBatchIter(
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.buffer_format}, {self.inner})"
+
+    def _skip_ahead(self, index):
+        if index >= self.inner.current_index:
+            self.inner.seek(index)

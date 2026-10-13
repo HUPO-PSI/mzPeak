@@ -273,6 +273,9 @@ class _PeekableIter(Iterator[tuple[int, T]], Generic[T]):
 
 
 class _SeekableMixin(Generic[T]):
+    def _skip_ahead(self, index: int) -> bool:
+        raise NotImplementedError()
+
     def seek(self, index: int) -> bool:
         n = self.peek()
         if n is None:
@@ -282,6 +285,7 @@ class _SeekableMixin(Generic[T]):
         if index == n[0]:
             return True
         else:
+            self._skip_ahead(index - 1)
             next(self)
             while True:
                 n = self.peek()
@@ -309,6 +313,16 @@ class _SeekableMixin(Generic[T]):
 
 
 class _SeekableIter(_PeekableIter[T], _SeekableMixin[T]):
+    def _skip_ahead(self, index: int) -> bool:
+        if hasattr(self.inner, '_seek_hook'):
+            return self.inner._seek_hook(index)
+        else:
+            return False
+
+    @property
+    def current_index(self) -> int:
+        return self.inner.current_index
+
     def __repr__(self):
         return f"{self.__class__.__name__}({self.inner}, {self._peek[0] if self._peek else '<done>'})"
 
