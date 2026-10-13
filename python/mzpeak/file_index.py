@@ -1,4 +1,5 @@
 import hashlib
+from collections import defaultdict
 from collections.abc import MutableSequence, Sequence
 from dataclasses import asdict, dataclass, field
 from dataclasses import fields as dataclasses_fields
@@ -6,10 +7,12 @@ from enum import StrEnum
 from typing import IO, TYPE_CHECKING, ClassVar
 
 import numpy as np
+import pandas as pd
 
 if TYPE_CHECKING:
     import pyarrow
     import pyarrow.parquet
+    import pyarrow.parquet as pq
 
 
 OTHER = "other"
@@ -475,6 +478,33 @@ def column_chunk_checksums_from_table(
             raise ValueError(f"Column {name!r} contains nulls")
         columns[name] = col.to_pylist()
     return [ColumnChunkChecksum(*row) for row in zip(*(columns[n] for n in names))]
+
+
+def column_sizes(meta: "pq.FileMetaData"):
+    columns: defaultdict[str, list[pq.ColumnChunkMetaData]] = defaultdict(list)
+    n_cols = meta.num_columns
+    n_rgs = meta.num_row_groups
+
+    for i in range(n_rgs):
+        rg: pq.RowGroupMetaData = meta.row_group(i)
+        for j in range(n_cols):
+            col: pq.ColumnChunkMetaData = rg.column(j)
+            columns[col.path_in_schema].append(col)
+
+    cols = []
+    for k, vs in columns.items():
+        sz = 0
+        raw_sz = 0
+        for v in vs:
+            sz += v.total_compressed_size
+            raw_sz += v.total_uncompressed_size
+        rec = {
+            "path": k,
+            "compressed_size": sz,
+            "raw_size": raw_sz,
+        }
+        cols.append(rec)
+    return pd.DataFrame(cols)
 
 
 __all__ = [
