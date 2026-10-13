@@ -72,6 +72,14 @@ class LinearGrid(GridLike):
         par = np.linalg.lstsq(X, values)[0]
         return cls(par[0], par[1], scale)
 
+    @classmethod
+    def fit_uniform(cls, values: npt.NDArray[np.float64]):
+        from .filters import estimate_median_delta
+        median, _ = estimate_median_delta(values)
+        slope = median / 100
+        low = values[0]
+        return cls(low, slope, 1.0)
+
     def parameters(self):
         return np.array([self.intercept, self.slope, self.scale])
 
