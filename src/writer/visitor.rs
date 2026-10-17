@@ -1747,6 +1747,7 @@ impl VisitorBase for PrecursorBuilder {
 pub struct SelectedIonBuilder {
     source_index: UInt64Builder,
     precursor_index: UInt64Builder,
+    selected_ion_index: UInt64Builder,
     selected_ion_mz: Float64Builder,
     charge_state: Int32Builder,
     intensity: Float32Builder,
@@ -1777,6 +1778,7 @@ impl ArrayBuilder for SelectedIonBuilder {
         let mut arrays = vec![
             finish_it!(self.source_index),
             finish_it!(self.precursor_index),
+            finish_it!(self.selected_ion_index),
             finish_it!(self.selected_ion_mz),
             finish_it!(self.charge_state),
             finish_it!(self.intensity),
@@ -1796,6 +1798,7 @@ impl ArrayBuilder for SelectedIonBuilder {
         let mut arrays = vec![
             finish_cloned!(self.source_index),
             finish_cloned!(self.precursor_index),
+            finish_cloned!(self.selected_ion_index),
             finish_cloned!(self.selected_ion_mz),
             finish_cloned!(self.charge_state),
             finish_cloned!(self.intensity),
@@ -1812,11 +1815,12 @@ impl ArrayBuilder for SelectedIonBuilder {
     anyways!();
 }
 
-impl StructVisitor<(u64, Option<u64>, &mzdata::spectrum::SelectedIon)> for SelectedIonBuilder {
-    fn append_value(&mut self, item: &(u64, Option<u64>, &mzdata::spectrum::SelectedIon)) -> bool {
-        let (i, j, item) = item;
+impl StructVisitor<(u64, Option<u64>, Option<u64>, &mzdata::spectrum::SelectedIon)> for SelectedIonBuilder {
+    fn append_value(&mut self, item: &(u64, Option<u64>, Option<u64>, &mzdata::spectrum::SelectedIon)) -> bool {
+        let (i, j, k, item) = item;
         self.source_index.append_value(*i);
         self.precursor_index.append_option(*j);
+        self.selected_ion_index.append_option(*k);
         self.selected_ion_mz.append_value(item.mz);
         self.charge_state.append_option(item.charge());
         self.intensity.append_value(item.intensity);
@@ -1854,6 +1858,7 @@ impl VisitorBase for SelectedIonBuilder {
         let mut fields = vec![
             field!("source_index", DataType::UInt64),
             field!("precursor_index", DataType::UInt64),
+            field!("selected_ion_index", DataType::UInt64),
             field!("selected_ion_mz", DataType::Float64),
             field!("charge_state", DataType::Int32),
             field!("peak_intensity", DataType::Float32),
@@ -1870,6 +1875,7 @@ impl VisitorBase for SelectedIonBuilder {
     fn append_null(&mut self) {
         self.source_index.append_null();
         self.precursor_index.append_null();
+        self.selected_ion_index.append_null();
         self.selected_ion_mz.append_null();
         self.charge_state.append_null();
         self.intensity.append_null();
@@ -1887,14 +1893,14 @@ impl VisitorBase for SelectedIonBuilder {
         cols.extend([
             metacol!(
                 "selected ion m/z",
-                [fields[2].name()],
+                [fields[3].name()],
                 curie!(MS:1000744),
                 Unit::MZ
             ),
-            metacol!("charge state", [fields[3].name()], curie!(MS:1000041)),
+            metacol!("charge state", [fields[4].name()], curie!(MS:1000041)),
             metacol!(
                 "intensity",
-                [fields[4].name()],
+                [fields[5].name()],
                 curie!(MS:1000042),
                 Unit::DetectorCounts
             ),
@@ -2531,6 +2537,7 @@ pub struct SpectrumBuilder {
     spectrum_index_counter: u64,
     precursor_index_counter: u64,
     scan_index_counter: u64,
+    selected_ion_index_counter: u64,
     pub(crate) spectrum: SpectrumDetailsBuilder,
     pub(crate) scan: ScanBuilder,
     pub(crate) precursor: PrecursorBuilder,
@@ -2632,16 +2639,19 @@ impl SpectrumBuilder {
                 .as_ref()
                 .and_then(|s| self.id_to_index.get(s))
                 .copied();
+
             self.precursor
                 .append_value(&(self.spectrum_index_counter, precursor_index, precursor));
             for ion in precursor.iter() {
                 self.selected_ion.append_value(&(
                     self.spectrum_index_counter,
                     precursor_index,
+                    Some(self.selected_ion_index_counter),
                     ion,
                 ));
             }
             self.precursor_index_counter += 1;
+            self.selected_ion_index_counter += 1;
         }
         self.spectrum_index_counter += 1;
         out
@@ -3018,6 +3028,7 @@ impl ArrayBuilder for ChromatogramDetailsBuilder {
 pub struct ChromatogramBuilder {
     chromatogram_index_counter: u64,
     precursor_index_counter: u64,
+    selected_ion_index_counter: u64,
     chromatogram: ChromatogramDetailsBuilder,
     precursor: PrecursorBuilder,
     selected_ion: SelectedIonBuilder,
@@ -3105,10 +3116,12 @@ impl ChromatogramBuilder {
                 self.selected_ion.append_value(&(
                     self.chromatogram_index_counter,
                     precursor_index,
+                    Some(self.selected_ion_index_counter),
                     ion,
                 ));
             }
             self.precursor_index_counter += 1;
+            self.selected_ion_index_counter += 1;
         }
         self.chromatogram_index_counter += 1;
         out

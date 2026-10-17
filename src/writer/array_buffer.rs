@@ -775,12 +775,8 @@ impl ArrayBufferWriter for ArrayBufferWriterVariants {
 
     fn drain(&mut self) -> impl Iterator<Item = RecordBatch> {
         let chunks: Vec<_> = match self {
-            ArrayBufferWriterVariants::ChunkBuffers(chunk_buffers) => {
-                chunk_buffers.drain().collect()
-            }
-            ArrayBufferWriterVariants::PointBuffers(array_buffers) => {
-                array_buffers.drain().collect()
-            }
+            ArrayBufferWriterVariants::ChunkBuffers(chunk_buffers) => chunk_buffers.drain().collect(),
+            ArrayBufferWriterVariants::PointBuffers(array_buffers) => array_buffers.drain().collect(),
         };
         log::trace!("Draining {} chunks", chunks.len());
         chunks.into_iter()

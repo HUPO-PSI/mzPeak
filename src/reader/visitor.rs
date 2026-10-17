@@ -2339,6 +2339,7 @@ impl<'a> MzSelectedIonVisitor<'a> {
                     "selected_ion_mz" => self.visit_selected_ion_mz(spec_arr, index),
                     "charge_state" => self.visit_charge(spec_arr, index),
                     "intensity" => self.visit_peak_intensity(spec_arr, index),
+                    "selected_ion_index" => {}
                     _ => {
                         log::trace!("Visited unspecified column {colname}");
                         self.visit_as_param(spec_arr, index, None, Some(colname));

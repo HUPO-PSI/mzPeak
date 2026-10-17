@@ -1,7 +1,7 @@
 use std::{collections::HashMap, ops::Deref, str::FromStr};
 
 use mzdata::{
-    meta::{FileMetadataConfig, MSDataFileMetadata, MassSpectrometryRun},
+    meta::{FileMetadataConfig, MSDataFileMetadata},
     params::CURIE,
 };
 use serde::{Deserialize, Serialize};
@@ -411,8 +411,8 @@ impl FileIndex {
                     }
                 }
                 MS_RUN_KEY => {
-                    let run: MassSpectrometryRun = serde_json::from_value(val.clone())?;
-                    *mz_metadata.run_description_mut().unwrap() = run;
+                    let run: crate::param::MassSpectrometryRun = serde_json::from_value(val.clone())?;
+                    *mz_metadata.run_description_mut().unwrap() = run.into();
                 }
                 _ => {}
             }

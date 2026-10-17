@@ -9,9 +9,13 @@ use arrow::array::{
     ArrayBuilder, ArrayRef, BinaryBuilder, BooleanBuilder, Float32Builder, Float64Builder,
     Int32Builder, Int64Builder,
 };
+use chrono::{DateTime, FixedOffset};
 use mzdata::params::{ParamDescribed, ParamLike, Unit};
-use parquet::{arrow::{ProjectionMask, arrow_reader::ArrowReaderBuilder}, file::metadata::ParquetMetaData};
-use serde::{Deserialize, Serialize, ser::SerializeSeq};
+use parquet::{
+    arrow::{arrow_reader::ArrowReaderBuilder, ProjectionMask},
+    file::metadata::ParquetMetaData,
+};
+use serde::{ser::SerializeSeq, Deserialize, Serialize};
 
 /// A list of ion mobility point measures for scans
 pub const ION_MOBILITY_SCAN_TERMS: [mzdata::params::CURIE; 4] = [
@@ -189,7 +193,7 @@ where
 /// This type is used to represent parameters stored
 /// in the metadata structures that are JSON-serialized in the
 /// Parquet metadata footer.
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, std::hash::Hash)]
 pub struct MetaParam {
     pub name: Option<String>,
     #[serde(
@@ -750,6 +754,72 @@ impl From<&mzdata::meta::Sample> for Sample {
     }
 }
 
+/// Metadata describing the experiment that does not belong in any other section
+/// that covers some default options.
+#[derive(Debug, Default, PartialEq, Hash, Eq, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MassSpectrometryRun {
+    /// A unique identifier for the entire MS run.
+    pub id: Option<String>,
+    /// The default [`DataProcessing`](crate::DataProcessing) identifier to use, if any, for entities that do not
+    /// list their own method.
+    pub default_data_processing_id: Option<String>,
+    /// The default [`InstrumentConfiguration`](crate::InstrumentConfiguration) identifier to use, if any, for entities that do
+    /// not list their own configuration.
+    #[serde(alias = "default_instrument_id")]
+    pub default_instrument_configuration_id: Option<u32>,
+    /// The default [`SourceFile`](crate::SourceFile) identifier that entries come from, for entities that do not list their own
+    /// source.
+    pub default_source_file_id: Option<String>,
+    /// The date and time acquisition began.
+    pub start_time: Option<DateTime<FixedOffset>>,
+    pub parameters: Vec<MetaParam>,
+}
+
+impl MassSpectrometryRun {
+    pub fn new(
+        id: Option<String>,
+        default_data_processing_id: Option<String>,
+        default_instrument_configuration_id: Option<u32>,
+        default_source_file_id: Option<String>,
+        start_time: Option<DateTime<FixedOffset>>,
+        parameters: Vec<MetaParam>,
+    ) -> Self {
+        Self {
+            id,
+            default_data_processing_id,
+            default_instrument_configuration_id,
+            default_source_file_id,
+            start_time,
+            parameters,
+        }
+    }
+}
+
+impl From<MassSpectrometryRun> for mzdata::meta::MassSpectrometryRun {
+    fn from(value: MassSpectrometryRun) -> Self {
+        Self::new(
+            value.id,
+            value.default_data_processing_id,
+            value.default_instrument_configuration_id,
+            value.default_source_file_id,
+            value.start_time,
+        )
+    }
+}
+
+impl From<&mzdata::meta::MassSpectrometryRun> for MassSpectrometryRun {
+    fn from(value: &mzdata::meta::MassSpectrometryRun) -> Self {
+        Self::new(
+            value.id.clone(),
+            value.default_data_processing_id.clone(),
+            value.default_instrument_id.clone(),
+            value.default_source_file_id.clone(),
+            value.start_time.clone(),
+            Default::default(),
+        )
+    }
+}
+
 /// A variadic data type meant to store a value that is either a path to a Parquet column
 /// which holds the value for this entity that varies over rows, a constant [`CURIE`] or
 /// no value stored, the equivalent of [`Option::None`].
@@ -835,7 +905,10 @@ where
     }
 }
 
-pub(crate) fn translate_parquet_statistics(column_index: usize, meta: &ParquetMetaData) -> (Option<ArrayRef>, Option<ArrayRef>) {
+pub(crate) fn translate_parquet_statistics(
+    column_index: usize,
+    meta: &ParquetMetaData,
+) -> (Option<ArrayRef>, Option<ArrayRef>) {
     let mut min_builder: Option<Box<dyn ArrayBuilder>> = None;
     let mut max_builder: Option<Box<dyn ArrayBuilder>> = None;
     for rg in meta.row_groups() {
@@ -963,9 +1036,7 @@ pub(crate) fn translate_parquet_statistics(column_index: usize, meta: &ParquetMe
                         .unwrap()
                         .append_option(value_statistics.max_opt());
                 }
-                parquet::file::statistics::Statistics::FixedLenByteArray(
-                    value_statistics,
-                ) => {
+                parquet::file::statistics::Statistics::FixedLenByteArray(value_statistics) => {
                     if min_builder.is_none() {
                         min_builder = Some(Box::new(BinaryBuilder::new()));
                         max_builder = Some(Box::new(BinaryBuilder::new()));
@@ -1015,10 +1086,9 @@ pub struct MetadataColumn {
     )]
     pub unit: PathOrCURIE,
 
-    #[serde(default, skip_serializing_if="core::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
     pub term_marker: bool,
 }
-
 
 impl MetadataColumn {
     pub fn new(name: String, path: Vec<String>, accession: Option<CURIE>) -> Self {
@@ -1089,16 +1159,14 @@ impl MetadataColumn {
             .columns()
             .iter()
             .enumerate()
-            .find(|(_, v)| {
-                v.path().parts() == self.path.as_slice()
-            })
+            .find(|(_, v)| v.path().parts() == self.path.as_slice())
         {
-            return translate_parquet_statistics(i, meta)
-        }
-        else if let Some((i, _col)) = schema.columns().iter().enumerate().find(|(_, v)| {
+            return translate_parquet_statistics(i, meta);
+        } else if let Some((i, _col)) = schema.columns().iter().enumerate().find(|(_, v)| {
             let path = v.path();
             let tokens = path.parts();
-            tokens.starts_with(&self.path[..self.path.len() - 1]) && tokens.last().map(|s| s.as_str()) == self.leaf()
+            tokens.starts_with(&self.path[..self.path.len() - 1])
+                && tokens.last().map(|s| s.as_str()) == self.leaf()
         }) {
             return translate_parquet_statistics(i, meta);
         } else {
@@ -1488,11 +1556,11 @@ mod test {
 
         let mut k = 0;
         for batch in reader.flatten() {
-            assert_eq!(batch.num_columns(), 3);
+            assert_eq!(batch.num_columns(), 4);
             k += batch.num_rows();
             assert_eq!(batch.column(0).data_type().clone(), DataType::UInt64);
             assert_eq!(batch.column(1).data_type().clone(), DataType::UInt64);
-            assert_eq!(batch.column(2).data_type().clone(), DataType::Float64);
+            assert_eq!(batch.column(3).data_type().clone(), DataType::Float64);
         }
         assert_eq!(k, 34);
         Ok(())
@@ -1527,9 +1595,9 @@ mod test {
             .max_by(|a, b| a.unwrap().total_cmp(&b.unwrap()))
             .unwrap()
             .unwrap();
-        let e = min_val - 558.749389648438 ;
+        let e = min_val - 558.749389648438;
         assert!(e.abs() < 1e-6, "{min_val} error {e} > 1e-6");
-        let e = max_val - 882.535034179688 ;
+        let e = max_val - 882.535034179688;
         assert!(e.abs() < 1e-6, "{max_val} error {e} > 1e-6");
         Ok(())
     }
@@ -1559,12 +1627,13 @@ mod test {
 
         let mut k = 0;
         for batch in reader.flatten() {
-            assert_eq!(batch.num_columns(), 4);
+            assert_eq!(batch.num_columns(), 5);
             k += batch.num_rows();
             assert_eq!(batch.column(0).data_type().clone(), DataType::UInt64);
             assert_eq!(batch.column(1).data_type().clone(), DataType::UInt64);
-            assert_eq!(batch.column(2).data_type().clone(), DataType::Float64);
-            assert_eq!(batch.column(3).data_type().clone(), DataType::Float32);
+            assert_eq!(batch.column(2).data_type().clone(), DataType::UInt64);
+            assert_eq!(batch.column(3).data_type().clone(), DataType::Float64);
+            assert_eq!(batch.column(4).data_type().clone(), DataType::Float32);
         }
         assert_eq!(k, 34);
         Ok(())

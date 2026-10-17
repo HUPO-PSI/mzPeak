@@ -97,7 +97,7 @@
         }
       ],
       "parameters": [],
-      "checksum": "8e612215ae45697b416db05a4ac400aa9434bbd2b4cbeb31bb5cb809aeff5ec1cd886bceb1e828d4703fa04d26cd6c8f2de45345b68203086f7b4848ba8ef619"
+      "checksum": "4849f3967a2f292f7458eec80849cbc080e379ec6028c144f067ecfea609265272e805856ea5b245d113d2870250a1bdb3be43ec9884bf0d0d5a97fcd82d874f"
     },
     {
       "name": "spectra_metadata_scans.parquet",
@@ -142,7 +142,7 @@
         }
       ],
       "parameters": [],
-      "checksum": "0f7efca171830dbd92744680652b4f637f7aa56d4fdaee6fb83e5d6b98e605b1f0fc62e869dc75ce594f58efa509fd5438bf249eecf6da11af32ef1b488eb560"
+      "checksum": "f4686ab40dc940b38cc9210fa66c73c59527ef716b479890be52b957b2763b1d580432bb5c483c981d7745ddc874c7f61a5f70eefe62184040dd7183376985f7"
     },
     {
       "name": "spectra_metadata_precursors.parquet",
@@ -181,7 +181,7 @@
         }
       ],
       "parameters": [],
-      "checksum": "48efc6708f837ecfc8d54083bcb821234ac4ed369fe8367581bfc59756c4fad267c71e5b838725333eaba7c1d576b46a3496571c956aa4646c3eb1733fd31668"
+      "checksum": "5cfb4b3cba1a6719229874d659c76575a828eb89f6986c5eec68cf97bee75ff1f5e1e085cf9f49ea60681b2325424cb42c2d3be7f552394672f9c698880821fa"
     },
     {
       "name": "spectra_metadata_selected_ions.parquet",
@@ -208,7 +208,7 @@
         }
       ],
       "parameters": [],
-      "checksum": "2c4a5f1b1cba51f2097e298c5f8efd941f3ce74d44cc18a78be26a1da07726ca7c25ac424cb33e3cf46b2a44f5d9128f651e9e228084e82767ebe0156ab7e97c"
+      "checksum": "6b421a5b862f40aaf0ae84cc42102afee7d2247be0d2911d711bc3b4a7cfad508d6b24adc23aaf285251156a889c69af13575698826a4128d0e12806dbb371d7"
     },
     {
       "name": "chromatograms_metadata.parquet",
@@ -302,7 +302,7 @@
         }
       ],
       "parameters": [],
-      "checksum": "842ddd756e3e5c12a324622e47b7adb5cff2afc2a59fb1d28584d7d6f79d37a60e2b2e739c2d9a3a3f917d65cddb9b91e212d98242b45d0f403ad94530219c1c"
+      "checksum": "e1167e9da3e6b59037a983e96180748308007a0454b58b7d94ca1a9f9e448a88f6e60d25c4899e60bea61888438841f7cd3ae769c461fccc7e4afb298f969b2a"
     },
     {
       "name": "chromatograms_data.parquet",
@@ -310,10 +310,75 @@
       "data_kind": "data_arrays",
       "column_mapping": [],
       "parameters": [],
-      "checksum": "e6f0279a3128de358c98ec0e26950daa556a3540ab5d2b894a924111f8dc50057c1bfee88d309fcf9ae1e756977e3030b286a86803a3a6137ed9d892a1986301"
+      "checksum": "cf513c60d09994a974132e3c6bdebc5b3f7a9ad7112e19e9686dae076a910f74330d1b9f9137147dd9d7303bc5559fa83e408f290c788d2381458835d2e38aa8"
     }
   ],
   "metadata": {
+    "sample_list": [
+      {
+        "id": "_x0031_",
+        "name": "",
+        "parameters": [
+          {
+            "accession": "MS:1000002",
+            "name": "sample name",
+            "unit": null,
+            "value": 1
+          }
+        ]
+      }
+    ],
+    "scan_settings_list": [],
+    "data_processing_method_list": [
+      {
+        "id": "pwiz_Reader_Thermo_conversion",
+        "methods": [
+          {
+            "order": 0,
+            "parameters": [
+              {
+                "accession": "MS:1000544",
+                "name": "Conversion to mzML",
+                "unit": null,
+                "value": null
+              }
+            ],
+            "software_reference": "pwiz"
+          }
+        ]
+      },
+      {
+        "id": "mzpeak_conversion1",
+        "methods": [
+          {
+            "order": 1,
+            "parameters": [
+              {
+                "accession": null,
+                "name": "conversion options",
+                "unit": null,
+                "value": "-y -z -u small.mzML -o small.mzpeak"
+              }
+            ],
+            "software_reference": "mzpeak_prototyping_convert1"
+          }
+        ]
+      }
+    ],
+    "cv_list": [
+      {
+        "full_name": "Proteomics Standards Initiative Mass Spectrometry Ontology",
+        "id": "MS",
+        "uri": "http://purl.obolibrary.org/obo/ms/4.1.249/psi-ms.obo",
+        "version": "4.1.249"
+      },
+      {
+        "full_name": "Units of measurement ontology",
+        "id": "UO",
+        "uri": "http://purl.obolibrary.org/obo/uo/releases/2026-01-16/uo.obo",
+        "version": "2026-01-16"
+      }
+    ],
     "file_description": {
       "contents": [
         {
@@ -357,117 +422,6 @@
         }
       ]
     },
-    "software_list": [
-      {
-        "id": "Xcalibur",
-        "parameters": [
-          {
-            "accession": "MS:1000532",
-            "name": "Xcalibur",
-            "unit": null,
-            "value": null
-          }
-        ],
-        "version": "1.1 Beta 7"
-      },
-      {
-        "id": "pwiz",
-        "parameters": [
-          {
-            "accession": "MS:1000615",
-            "name": "ProteoWizard software",
-            "unit": null,
-            "value": null
-          }
-        ],
-        "version": "3.0.23307"
-      },
-      {
-        "id": "mzpeak_prototyping_convert1",
-        "parameters": [
-          {
-            "accession": "MS:1000799",
-            "name": "custom unreleased software tool",
-            "unit": null,
-            "value": "mzpeak_prototyping_convert"
-          }
-        ],
-        "version": "0.1.0"
-      }
-    ],
-    "scan_settings_list": [],
-    "run": {
-      "default_data_processing_id": "pwiz_Reader_Thermo_conversion",
-      "default_instrument_id": 0,
-      "default_source_file_id": "RAW1",
-      "id": "small",
-      "start_time": "2005-07-20T19:44:22Z"
-    },
-    "cv_list": [
-      {
-        "full_name": "Proteomics Standards Initiative Mass Spectrometry Ontology",
-        "id": "MS",
-        "uri": "http://purl.obolibrary.org/obo/ms/4.1.249/psi-ms.obo",
-        "version": "4.1.249"
-      },
-      {
-        "full_name": "Units of measurement ontology",
-        "id": "UO",
-        "uri": "http://purl.obolibrary.org/obo/uo/releases/2026-01-16/uo.obo",
-        "version": "2026-01-16"
-      }
-    ],
-    "version": "0.9.0",
-    "data_processing_method_list": [
-      {
-        "id": "pwiz_Reader_Thermo_conversion",
-        "methods": [
-          {
-            "order": 0,
-            "parameters": [
-              {
-                "accession": "MS:1000544",
-                "name": "Conversion to mzML",
-                "unit": null,
-                "value": null
-              }
-            ],
-            "software_reference": "pwiz"
-          }
-        ]
-      },
-      {
-        "id": "mzpeak_conversion1",
-        "methods": [
-          {
-            "order": 1,
-            "parameters": [
-              {
-                "accession": null,
-                "name": "conversion options",
-                "unit": null,
-                "value": "-y -z -u small.mzML -o small.mzpeak"
-              }
-            ],
-            "software_reference": "mzpeak_prototyping_convert1"
-          }
-        ]
-      }
-    ],
-    "sample_list": [
-      {
-        "id": "_x0031_",
-        "name": "",
-        "parameters": [
-          {
-            "accession": "MS:1000002",
-            "name": "sample name",
-            "unit": null,
-            "value": 1
-          }
-        ]
-      }
-    ],
     "instrument_configuration_list": [
       {
         "components": [
@@ -592,6 +546,52 @@
           }
         ],
         "software_reference": "Xcalibur"
+      }
+    ],
+    "run": {
+      "default_data_processing_id": "pwiz_Reader_Thermo_conversion",
+      "default_instrument_id": 0,
+      "default_source_file_id": "RAW1",
+      "id": "small",
+      "start_time": "2005-07-20T19:44:22Z"
+    },
+    "version": "0.9.0",
+    "software_list": [
+      {
+        "id": "Xcalibur",
+        "parameters": [
+          {
+            "accession": "MS:1000532",
+            "name": "Xcalibur",
+            "unit": null,
+            "value": null
+          }
+        ],
+        "version": "1.1 Beta 7"
+      },
+      {
+        "id": "pwiz",
+        "parameters": [
+          {
+            "accession": "MS:1000615",
+            "name": "ProteoWizard software",
+            "unit": null,
+            "value": null
+          }
+        ],
+        "version": "3.0.23307"
+      },
+      {
+        "id": "mzpeak_prototyping_convert1",
+        "parameters": [
+          {
+            "accession": "MS:1000799",
+            "name": "custom unreleased software tool",
+            "unit": null,
+            "value": "mzpeak_prototyping_convert"
+          }
+        ],
+        "version": "0.1.0"
       }
     ]
   }

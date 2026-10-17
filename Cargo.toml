@@ -98,6 +98,7 @@ object_store_opendal = { version = "0.57.0", optional = true }
 sha2 = "0.11.0"
 hex = "0.4.3"
 thiserror = "2.0.20"
+chrono = { version = "0.4.45", features = ["serde"] }
 
 [dev-dependencies]
 clap = { version = "4.5.38", features = ["derive"] }

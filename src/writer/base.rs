@@ -117,7 +117,7 @@ macro_rules! implement_mz_metadata {
             self.append_key_value_metadata(
                 "run".to_string(),
                 Some(
-                    serde_json::to_string_pretty(self.mz_metadata.run_description().unwrap())
+                    serde_json::to_string_pretty(&$crate::param::MassSpectrometryRun::from(self.mz_metadata.run_description().unwrap()))
                         .unwrap(),
                 ),
             );

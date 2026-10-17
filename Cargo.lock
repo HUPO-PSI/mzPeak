@@ -2619,6 +2619,7 @@ dependencies = [
  "base64-simd",
  "bytemuck",
  "bytes",
+ "chrono",
  "clap",
  "csv",
  "env_logger",
