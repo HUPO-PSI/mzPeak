@@ -556,7 +556,7 @@ impl<'a> MzSpectrumVisitor<'a> {
                         curie!(MS:1000285) => {
                             self.visit_total_ion_current(spec_arr, index, colspec)
                         }
-                        curie!(MS:1003820) => {} // coordinate spacing model
+                        curie!(MS:1003821) | curie!(MS:1003820) => {} // coordinate spacing model
                         curie!(MS:1003060) | curie!(MS:1003059) => {} // number of data points | number of peak
                         _ => self.visit_as_param(spec_arr, index, Some(colspec), None),
                     }

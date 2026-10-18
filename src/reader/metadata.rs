@@ -1786,28 +1786,22 @@ impl<'a> PeakInfoDecoder<'a> {
 
         let number_of_peaks_col = self.metadata_mapping.find(curie!(MS:1003059));
         let number_of_dp_col = self.metadata_mapping.find(curie!(MS:1003060));
-        let spacing_model_col = self.metadata_mapping.find(curie!(MS:1003820));
+        let mut spacing_model_col = self.metadata_mapping.find(curie!(MS:1003821));
+        if spacing_model_col.is_none() {
+            spacing_model_col = self.metadata_mapping.find(curie!(MS:1003820));
+        }
 
         for (i, c) in schema.columns().iter().enumerate() {
             let parts = c.path().parts();
             if parts == [INDEX] {
                 index_i = Some(i);
             }
-            if parts
-                .iter()
-                .zip(["median_delta"])
-                .all(|(a, b)| a == b)
-                || parts
-                    .iter()
-                    .zip(["mz_delta_model"])
-                    .all(|(a, b)| a == b)
-                || spacing_model_col.is_some_and(|c| parts.starts_with(&c.path))
+            if spacing_model_col.is_some_and(|c| parts.starts_with(&c.path))
             {
                 median_i = Some(i);
                 self.has_models = true;
                 self.model_column_name = parts[0].to_string();
             }
-
             if number_of_dp_col.is_some_and(|c| c.path == parts) {
                 dp_i = Some(i);
                 self.has_data_point_counts = true;

@@ -12,10 +12,7 @@ use arrow::{
 };
 use mzpeaks::{CentroidPeak, DeconvolutedPeak};
 use parquet::{
-    arrow::{ArrowWriter, arrow_writer::ArrowWriterOptions},
-    basic::Compression,
-    encryption::encrypt::FileEncryptionProperties,
-    file::metadata::KeyValue,
+    arrow::{ArrowWriter, arrow_writer::ArrowWriterOptions}, basic::Compression, encryption::encrypt::FileEncryptionProperties, file::{metadata::KeyValue, properties::DEFAULT_MAX_ROW_GROUP_SIZE},
 };
 
 use mzdata::{
@@ -851,8 +848,16 @@ impl<
 
     fn flush_data_arrays(&mut self) -> io::Result<()> {
         let use_chunks = self.use_chunked_encoding().is_some();
+        let nb_rows = self.write_batch_config.row_group_size.unwrap_or(DEFAULT_MAX_ROW_GROUP_SIZE);
         for batch in self.spectrum_data_buffers.drain() {
             if let Some(writer) = self.archive_writer.as_mut() {
+                if writer.in_progress_rows() + batch.num_rows() > nb_rows {
+                    log::debug!(
+                        "Flushing row group buffer with approximately {} bytes, row group would have split entry",
+                        writer.in_progress_size()
+                    );
+                    writer.flush()?;
+                }
                 writer.write(&batch)?;
                 if writer.in_progress_size() > 512_000_000 && use_chunks {
                     log::debug!(
@@ -880,16 +885,17 @@ impl<
     }
 
     fn flush_chromatogram_data_records(&mut self) -> io::Result<()> {
+        let nb_rows = self.write_batch_config.row_group_size.unwrap_or(DEFAULT_MAX_ROW_GROUP_SIZE);
         for batch in self.chromatogram_data_buffers.drain() {
             if let Some(writer) = self.archive_writer.as_mut() {
+                if writer.in_progress_rows() + batch.num_rows() > nb_rows {
+                    log::debug!(
+                        "Flushing row group buffer with approximately {} bytes, row group would have split entry",
+                        writer.in_progress_size()
+                    );
+                    writer.flush()?;
+                }
                 writer.write(&batch)?;
-                // if writer.in_progress_size() > 512_000_000 && use_chunks {
-                //     log::debug!(
-                //         "Flushing row group buffer with approximately {} bytes",
-                //         writer.in_progress_size()
-                //     );
-                //     writer.flush()?;
-                // }
             } else {
                 panic!("Attempted to write spectrum data but writer does not exist");
             }

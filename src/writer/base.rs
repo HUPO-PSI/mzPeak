@@ -13,13 +13,9 @@ use mzdata::{
     },
 };
 use parquet::{
-    arrow::{ArrowSchemaConverter, ArrowWriter, arrow_writer::ArrowWriterOptions},
-    basic::{Compression, Encoding, ZstdLevel},
-    encryption::encrypt::FileEncryptionProperties,
-    file::{
-        metadata::SortingColumn,
-        properties::{
-            DEFAULT_DICTIONARY_PAGE_SIZE_LIMIT, EnabledStatistics, WriterProperties, WriterVersion,
+    arrow::{ArrowSchemaConverter, ArrowWriter, arrow_writer::ArrowWriterOptions}, basic::{Compression, Encoding, ZstdLevel}, encryption::encrypt::FileEncryptionProperties, file::{
+        metadata::SortingColumn, properties::{
+            DEFAULT_DICTIONARY_PAGE_SIZE_LIMIT, DEFAULT_MAX_ROW_GROUP_SIZE, EnabledStatistics, WriterProperties, WriterVersion,
         },
     },
 };
@@ -163,11 +159,12 @@ impl EntryMetadataDerivedFromData {
 
 pub struct GenericDataArrayWriter {
     data_buffers: ArrayBufferWriterVariants,
+    config: WriteBatchConfig,
 }
 
 impl GenericDataArrayWriter {
-    pub fn new(data_buffers: ArrayBufferWriterVariants) -> Self {
-        Self { data_buffers }
+    pub fn new(data_buffers: ArrayBufferWriterVariants, config: WriteBatchConfig) -> Self {
+        Self { data_buffers, config }
     }
 
     /// Fit an [`MZDeltaModel`] instance on the provided (sparse) spectrum signal, and return the parameter
@@ -357,7 +354,15 @@ impl GenericDataArrayWriter {
         writer: &mut ArrowWriter<W>,
     ) -> io::Result<()> {
         let use_chunks = self.use_chunked_encoding().is_some();
+        let nb_rows = self.config.row_group_size.unwrap_or(DEFAULT_MAX_ROW_GROUP_SIZE);
         for batch in self.data_buffers.drain() {
+            if writer.in_progress_rows() + batch.num_rows() > nb_rows {
+                log::debug!(
+                    "Flushing row group buffer with approximately {} bytes, row group would have split entry",
+                    writer.in_progress_size()
+                );
+                writer.flush()?;
+            }
             writer.write(&batch)?;
             if writer.in_progress_size() > 512_000_000 && use_chunks {
                 log::debug!(
@@ -385,6 +390,8 @@ pub(crate) fn is_data_array_sorted(array: &DataArray) -> Result<bool, ArrayRetri
 pub trait AbstractMzPeakWriter {
     fn controlled_vocabularies(&self) -> &[ControlledVocabularyEntry];
     fn controlled_vocabularies_mut(&mut self) -> &mut Vec<ControlledVocabularyEntry>;
+
+    fn write_batch_config(&self) -> WriteBatchConfig;
 
     /// Append an arbitrary key bytestring with an optional value to the (current) Parquet file
     fn append_key_value_metadata(&mut self, key: String, value: Option<String>);
@@ -512,7 +519,7 @@ pub trait AbstractMzPeakWriter {
                 false,
             )
             .into();
-        GenericDataArrayWriter::new(buffers)
+        GenericDataArrayWriter::new(buffers, self.write_batch_config())
     }
 
     /// Check if the data buffers are full, and flush them if so
@@ -862,8 +869,6 @@ pub trait AbstractMzPeakWriter {
         }
     }
 
-    fn write_batch_config(&self) -> WriteBatchConfig;
-
     fn compression(&self) -> Compression;
 
     fn shuffle_mz(&self) -> bool;
@@ -1122,6 +1127,7 @@ pub trait AbstractMzPeakWriter {
             peak_writer,
             peak_buffer,
             buffer_size,
+            write_batch_config
         ))
     }
 

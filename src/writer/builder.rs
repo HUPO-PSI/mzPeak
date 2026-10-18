@@ -26,9 +26,13 @@ use crate::{
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WriteBatchConfig {
+    /// When writing record batches, data for each column is written in batches of this size.
     pub write_batch_size: Option<usize>,
+    /// Best effort maximum size of a data page in bytes
     pub page_size: Option<usize>,
+    /// Maximum number of rows in a row group
     pub row_group_size: Option<usize>,
+
     pub dictionary_page_size: Option<usize>,
 }
 

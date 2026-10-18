@@ -811,7 +811,8 @@ impl StructVisitor<mzdata::params::Value> for ParamValueBuilder {
                 true
             }
             mzdata::params::Value::List(_values) => {
-                self.string.append_null();
+                let val = serde_json::to_string(_values);
+                self.string.append_option(val.ok());
                 self.integer.append_null();
                 self.float.append_null();
                 self.boolean.append_null();
@@ -2167,7 +2168,7 @@ impl VisitorBase for SpectrumDetailsBuilder {
             ),
             field!("number_of_auxiliary_arrays", DataType::UInt32),
             field!(
-                "coordinate_spacing_model",
+                "polynomial_delta_coordinate_interpolation",
                 DataType::LargeList(field!("item", DataType::Float64))
             ),
         ];
@@ -2254,9 +2255,9 @@ impl VisitorBase for SpectrumDetailsBuilder {
                 Unit::DetectorCounts
             ),
             metacol!(
-                "coordinate spacing model",
+                "polynomial delta coordinate interpolation",
                 [fields[18].name()],
-                curie!(MS:1003820)
+                curie!(MS:1003821)
             )
         ]);
         for e in self.extra.iter() {

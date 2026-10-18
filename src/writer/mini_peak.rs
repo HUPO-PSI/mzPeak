@@ -3,10 +3,10 @@ use std::io::{self, prelude::*};
 use arrow::array::Array;
 use mzdata::spectrum::RefPeakDataLevel;
 use mzpeaks::{CentroidLike, DeconvolutedCentroidLike};
-use parquet::{arrow::ArrowWriter, file::metadata::KeyValue};
+use parquet::{arrow::ArrowWriter, file::{metadata::KeyValue, properties::DEFAULT_MAX_ROW_GROUP_SIZE}};
 
 use crate::{
-    ToMzPeakDataSeries, chunk_series::{ArrowArrayChunk, ChunkingStrategy}, peak_series::{ArrayIndex, array_map_to_schema_arrays_and_excess}, writer::{ArrayBufferWriter, ArrayBufferWriterVariants, base::EntryMetadataDerivedFromData},
+    ToMzPeakDataSeries, chunk_series::{ArrowArrayChunk, ChunkingStrategy}, peak_series::{ArrayIndex, array_map_to_schema_arrays_and_excess}, writer::{ArrayBufferWriter, ArrayBufferWriterVariants, WriteBatchConfig, base::EntryMetadataDerivedFromData},
 };
 
 /// A small helper for writing peak list data to another stream with very narrow options.
@@ -16,6 +16,7 @@ pub struct MiniPeakWriterType<W: Write + Send + Seek> {
     buffer_size: usize,
     n_points: u64,
     n_entries: u64,
+    config: WriteBatchConfig
 }
 
 impl<W: Write + Send + Seek> MiniPeakWriterType<W> {
@@ -23,6 +24,7 @@ impl<W: Write + Send + Seek> MiniPeakWriterType<W> {
         writer: ArrowWriter<W>,
         buffers: ArrayBufferWriterVariants,
         buffer_size: usize,
+        config: WriteBatchConfig
     ) -> Self {
         let mut this = Self {
             writer,
@@ -30,6 +32,7 @@ impl<W: Write + Send + Seek> MiniPeakWriterType<W> {
             buffer_size,
             n_points: 0,
             n_entries: 0,
+            config,
         };
         let spectrum_array_index: ArrayIndex = this.buffers.as_array_index();
         this.append_key_value_metadata(
@@ -148,7 +151,11 @@ impl<W: Write + Send + Seek> MiniPeakWriterType<W> {
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
+        let nb_rows = self.config.row_group_size.unwrap_or(DEFAULT_MAX_ROW_GROUP_SIZE);
         for batch in self.buffers.drain() {
+            if self.writer.in_progress_rows() + batch.num_rows() > nb_rows {
+                self.writer.flush()?;
+            }
             self.writer.write(&batch)?;
         }
         Ok(())
