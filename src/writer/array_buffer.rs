@@ -8,18 +8,12 @@ use arrow::{
     array::{Array, ArrayRef, AsArray, RecordBatch, StructArray, new_null_array},
     datatypes::{DataType, Field, FieldRef, Fields, Schema, SchemaRef, UInt64Type},
 };
-use mzdata::{prelude::BuildArrayMapFrom, spectrum::ArrayType};
+use mzdata::{params::Unit, prelude::BuildArrayMapFrom, spectrum::ArrayType};
 
 use crate::{
-    BufferContext, BufferName, ToMzPeakDataSeries,
-    buffer_descriptors::{BufferOverrideTable, BufferPriority, BufferTransform},
-    chunk_series::{ArrowArrayChunk, ChunkingStrategy},
-    filter::{drop_where_column_is_zero_run_arrays, nullify_at_zero_pair_arrays},
-    grid::{GridEncoding, GridPolicy, GridPolicyTable},
-    peak_series::{
-        ArrayIndex, ArrayIndexEntry, INTENSITY_ARRAY, MZ_ARRAY, TIME_ARRAY, WAVELENGTH_ARRAY,
-    },
-    spectrum::AuxiliaryArray,
+    BufferContext, BufferName, ToMzPeakDataSeries, buffer_descriptors::{BufferOverrideTable, BufferPriority, BufferTransform}, chunk_series::{ArrowArrayChunk, ChunkingStrategy}, filter::{drop_where_column_is_zero_run_arrays, nullify_at_zero_pair_arrays}, grid::{GridEncoding, GridPolicy, GridPolicyTable}, peak_series::{
+        ArrayIndex, ArrayIndexEntry, BufferFormat, INTENSITY_ARRAY, MZ_ARRAY, TIME_ARRAY, WAVELENGTH_ARRAY,
+    }, spectrum::AuxiliaryArray,
 };
 
 pub trait ArrayBufferWriter {
@@ -147,20 +141,49 @@ pub trait ArrayBufferWriter {
     /// Get the override table to control how array data types should be mapped to [`BufferName`]
     fn overrides(&self) -> &BufferOverrideTable;
 
+    fn series_index_array_entry(&self) -> ArrayIndexEntry {
+        ArrayIndexEntry::new(
+            self.buffer_context(),
+            self.index_path().to_string(),
+            self.buffer_context().index_name().to_string(),
+            DataType::Int64,
+            ArrayType::IndexArray,
+            Unit::Unknown,
+            BufferFormat::Index,
+            None,
+            None,
+            Some(BufferPriority::Primary),
+            Some(0))
+    }
+
+    fn series_time_array_entry(&self) -> ArrayIndexEntry {
+        ArrayIndexEntry::new(
+            self.buffer_context(),
+            format!("{}.{}", self.prefix(), self.buffer_context().time_name()),
+            self.buffer_context().time_name().to_string(),
+            DataType::Float64,
+            ArrayType::TimeArray,
+            Unit::Minute,
+            BufferFormat::Index,
+            None,
+            None,
+            Some(BufferPriority::Primary),
+            None)
+    }
+
     /// Convert the registered set of [`BufferName`] embedded in the Arrow schema.
     ///
     /// If the column doesn't have any Arrow metadata, it will not be tracked.
     fn as_array_index(&self) -> ArrayIndex {
         let mut array_index: ArrayIndex =
             ArrayIndex::new(self.prefix().to_string(), HashMap::new());
+        array_index.push(self.series_index_array_entry());
+        if self.include_time() {
+            array_index.push(self.series_time_array_entry());
+        }
         if let Ok(sub) = self.schema().field_with_name(self.prefix()).cloned() {
             if let DataType::Struct(fields) = sub.data_type() {
                 for f in fields.iter() {
-                    if f.name() == BufferContext::Spectrum.index_field().name()
-                        || f.name() == BufferContext::Chromatogram.index_field().name()
-                    {
-                        continue;
-                    }
                     if let Some(buffer_name) =
                         BufferName::from_field(self.buffer_context(), f.clone())
                     {

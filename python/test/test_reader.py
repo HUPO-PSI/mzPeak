@@ -7,7 +7,16 @@ import pandas as pd
 import pytest
 from mzpeak import MzPeakFile
 from mzpeak import grid as gridlib
-from mzpeak.file_index import DataKind, EntityType, FileIndex
+from mzpeak.file_index import (
+    DataKind,
+    EntityType,
+    FileEntry,
+    FileIndex,
+    checksum_parquet_segments,
+    column_chunk_checksums_from_table,
+    column_chunk_checksums_to_table,
+    column_sizes,
+)
 from mzpeak.filters import find_where_not_zero_run
 from mzpeak.mz_reader import BufferFormat
 from pyteomics import mzml
@@ -221,13 +230,17 @@ def small() -> MzPeakFile:
 
 
 def test_file_index_entry(small: MzPeakFile):
-    for entry in small.file_index:
-        if entry.data_kind == DataKind.Metadata and entry.entity_type == EntityType.Spectrum:
-            col = entry.mapping('ms level')
-            assert col is not None
-            mins, maxes = col.statistics()
-            assert mins.min() == 1
-            assert maxes.max() == 2
+    with small:
+        for entry in small.file_index:
+            if entry.data_kind == DataKind.Metadata and entry.entity_type == EntityType.Spectrum:
+                col = entry.mapping('ms level')
+                assert col is not None
+                mins, maxes = col.statistics()
+                assert mins.min() == 1
+                assert maxes.max() == 2
+            state = entry.to_json()
+            dup = FileEntry.from_json(state)
+            assert dup == entry
 
 
 def test_diapasef_grid():
@@ -257,3 +270,50 @@ def test_linear_bruker_grid():
 
     assert np.allclose(val, ref)
     assert np.all(model.to_index(val).astype(int) == ii)
+
+
+def test_column_sizes(small: MzPeakFile):
+    sizes = column_sizes(small.spectrum_data.meta)
+    for i, row in sizes.iterrows():
+        if i == 0:
+            assert row.path == 'point.spectrum_index'
+            assert row.compressed_size == 153
+            assert row.raw_size == 214
+        elif i == 1:
+            assert row.path == 'point.mz'
+            assert row.compressed_size == 431795
+            assert row.raw_size == 1465497
+
+
+def test_checksum_segments(small: MzPeakFile):
+    cols = checksum_parquet_segments(
+        small.open_stream(small.file_index[0]), small.file_index[0].name
+    )
+
+    for col in cols:
+        assert col.filename == small.file_index[0].name
+        assert col.row_group == 0
+        if col.path == 'point.spectrum_index':
+            assert col.digest == "04126172f9ade5d62b1e582d0f70419a7ca4d1ed53dd7cad744f4d39158a9e2e3baf55b6c58cee1f399b0fa61ba407d4c0cf70c272289e7ef670c4d226d775c5"
+        elif col.path == 'point.mz':
+            assert (
+                col.digest
+                == "72ec021de3b510f505b51351e94419f22c0afd5965b8f0f0f08550b220db3bae4a61c05f9bd6c29963dcc7baa6d2a60ee9def1e9e4c0122bf387898e5a326ec3"
+            )
+
+    table = column_chunk_checksums_to_table(cols)
+    dup = column_chunk_checksums_from_table(table)
+    assert cols == dup
+
+
+def test_linear_grid(small: MzPeakFile):
+    spectrum = small[1]
+
+    fit = gridlib.LinearGrid.fit_uniform(spectrum['m/z array'])
+    assert fit.intercept == spectrum["m/z array"][0]
+    assert fit.error(spectrum['m/z array'])[1] < 1e-12
+
+    fit = gridlib.LinearGrid.fit(
+        spectrum["m/z array"], spectrum["m/z array"][0] - 5, spectrum["m/z array"][-1] + 5
+    )
+    assert fit.error(spectrum['m/z array'])[1] < 1e-6

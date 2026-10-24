@@ -46,6 +46,7 @@ class BufferFormat(Enum):
     ChunkTransform = 7
     SecondaryChunk = ChunkSecondary
     Chunk = ChunkValues
+    Index = 8
 
     @classmethod
     def from_str(cls, name: str):
@@ -81,6 +82,9 @@ class ArrayIndexEntry:
     transform: str | None = None
     buffer_priority: BufferPriority | None = None
     sorting_rank: int | None = None
+
+    def is_index(self) -> bool:
+        return self.buffer_format == BufferFormat.Point
 
     @classmethod
     def from_index(cls, key, fields):
@@ -490,14 +494,10 @@ psims_dtypes = {
 _SpectrumArrays = dict[str, np.ndarray]
 
 
-def find_transform_for(name: str, array_index: dict[str, dict]):
-    array_name = array_index[name]["array_name"]
+def find_transform_for(name: str, array_index: dict[str, ArrayIndexEntry]):
+    array_name = array_index[name].array_name
     for colname, entry in array_index.items():
-        if (
-            entry["array_name"] == array_name
-            and BufferFormat.from_str(entry["buffer_format"])
-            == BufferFormat.ChunkTransform
-        ):
+        if entry.array_name == array_name and entry.buffer_format == BufferFormat.ChunkTransform:
             return colname
     raise KeyError(name)
 
@@ -514,7 +514,7 @@ class _PointBatchCleaner(_BatchCleanerBase):
     """
 
     namespace: str
-    array_index: dict[str, dict]
+    array_index: dict[str, ArrayIndexEntry]
     drop_index: bool
     delta_model: float | np.ndarray | dict[int, np.ndarray] | None = None
     has_mulitple_indices: bool
@@ -524,7 +524,7 @@ class _PointBatchCleaner(_BatchCleanerBase):
     def __init__(
         self,
         namespace: str,
-        array_index: dict[str, dict],
+        array_index: dict[str, ArrayIndexEntry],
         drop_index: bool = True,
         delta_model=None,
         has_multiple_indices: bool = False,
@@ -571,7 +571,7 @@ class _PointBatchCleaner(_BatchCleanerBase):
             data.pop(fields[i])
 
         for k, v in {
-            k: v["array_name"] for k, v in self.array_index.items() if k in data
+            k: v.array_name for k, v in self.array_index.items() if k in data
         }.items():
             data[v] = data.pop(k)
 
@@ -662,7 +662,7 @@ class _PointBatchCleaner(_BatchCleanerBase):
 
 class _ChunkBatchCleaner(_BatchCleanerBase):
     namespace: str
-    array_index: dict[str, dict]
+    array_index: dict[str, ArrayIndexEntry]
     drop_index: bool
     delta_model: float | np.ndarray | dict[int, np.ndarray] | None = None
     has_mulitple_indices: bool
@@ -674,7 +674,7 @@ class _ChunkBatchCleaner(_BatchCleanerBase):
     def __init__(
         self,
         namespace: str,
-        array_index: dict[str, dict],
+        array_index: dict[str, ArrayIndexEntry],
         drop_index: bool = True,
         delta_model=None,
     ):
@@ -695,9 +695,9 @@ class _ChunkBatchCleaner(_BatchCleanerBase):
 
     def arrays_has_transforms(self):
         has_transforms = {
-            k: v.get("transform")
+            k: v.transform
             for k, v in self.array_index.items()
-            if v.get("transform")
+            if v.transform
         }
         return has_transforms
 
@@ -707,7 +707,7 @@ class _ChunkBatchCleaner(_BatchCleanerBase):
     def find_axis_prefix(self):
         axis_prefix = None
         for k, v in self.array_index.items():
-            name = ArrayIndexEntry.from_index(k, v)
+            name = v
             if name.buffer_format == BufferFormat.ChunkValues:
                 axis_prefix = k.removesuffix("_chunk_values")
         if axis_prefix is None:
@@ -776,7 +776,7 @@ class _ChunkBatchCleaner(_BatchCleanerBase):
                 continue
             else:
                 arrays_of[k] = np.zeros(
-                    n, dtype=psims_dtypes[self.array_index[k]["data_type"]]
+                    n, dtype=psims_dtypes[self.array_index[k].data_type]
                 )
         return arrays_of
 
@@ -991,16 +991,16 @@ class _ChunkBatchCleaner(_BatchCleanerBase):
         )
 
         rename_map = {
-            k: v["array_name"] for k, v in self.array_index.items() if k in arrays_of
+            k: v.array_name for k, v in self.array_index.items() if k in arrays_of
         }
 
         if f"{axis_prefix}_chunk_values" in self.array_index:
             rename_map[rename_map.pop(axis_prefix, axis_prefix)] = self.array_index[
                 f"{axis_prefix}_chunk_values"
-            ]["array_name"]
+            ].array_name
 
         elif axis_prefix in self.array_index:
-            rename_map[axis_prefix] = self.array_index[axis_prefix]["array_name"]
+            rename_map[axis_prefix] = self.array_index[axis_prefix].array_name
 
         for k, v in rename_map.items():
             arrays_of[v] = arrays_of.pop(k)
@@ -1028,7 +1028,7 @@ class MzPeakArrayDataReader(Sequence[_SpectrumArrays]):
         The underlying Parquet file reader
     meta : :class:`pyarrow.parquet.FileMetaData`
         The metadata segment of the underlying Parquet file
-    array_index : dict[str, dict]
+    array_index : dict[str, ArrayIndexEntry]
         Descriptions of the different arrays stored in the data file
     """
 
@@ -1036,7 +1036,7 @@ class MzPeakArrayDataReader(Sequence[_SpectrumArrays]):
     meta: pq.FileMetaData
     _point_index: _DataIndex
     _chunk_index: _DataIndex
-    array_index: dict[str, dict]
+    array_index: dict[str, ArrayIndexEntry]
     n_entries: int
     _delta_model_series: np.ndarray | None
     _do_null_filling: bool = True
@@ -1076,7 +1076,7 @@ class MzPeakArrayDataReader(Sequence[_SpectrumArrays]):
             self.meta.metadata[f"{self._namespace}_array_index".encode("utf8")]  # noqa: UP012
         )
         self.array_index = {
-            entry["path"].rsplit(".")[-1]: entry for entry in index["entries"]
+            entry["path"].rsplit(".")[-1]: ArrayIndexEntry.from_index(entry["path"].rsplit(".")[-1], entry) for entry in index["entries"]
         }
         self.n_entries = max(self._point_index.n_entries, self._chunk_index.n_entries)
 
@@ -1391,8 +1391,8 @@ class MzPeakArrayDataReader(Sequence[_SpectrumArrays]):
             return BufferFormat.ChunkValues
         else:
             if self.array_index:
-                array_spec: dict = next(iter(self.array_index.values()))
-                prefix = array_spec['path'].split('.')[0]
+                array_spec = next(iter(self.array_index.values()))
+                prefix = array_spec.path.split('.')[0]
                 if prefix == 'point':
                     return BufferFormat.Point
                 elif prefix == 'chunk':
@@ -1451,7 +1451,7 @@ class MzPeakArrayDataReader(Sequence[_SpectrumArrays]):
     def _empty_array_map(self) -> _SpectrumArrays:
         arrays = {}
         for arr in self.array_index.values():
-            arrays[arr['array_name']] = np.array([], dtype=DTYPES[arr['data_type']])
+            arrays[arr.array_name] = np.array([], dtype=DTYPES[arr.data_type])
         return arrays
 
 

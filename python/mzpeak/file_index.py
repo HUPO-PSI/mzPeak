@@ -1,7 +1,7 @@
 import hashlib
 from collections import defaultdict
 from collections.abc import MutableSequence, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from dataclasses import fields as dataclasses_fields
 from enum import StrEnum
 from typing import IO, TYPE_CHECKING, ClassVar
@@ -159,29 +159,29 @@ class DataKind:
 class MetadataColumn:
     name: str
     path: list[str]
-    index: int | None = None
+    index: int | None = field(default=None, compare=False, hash=False)
     accession: str | None = None
     unit: str | None = None
     term_marker: bool | None = None
-    _namespace_file_handle: "pyarrow.parquet.ParquetFile | None" = field(default=None, repr=False)
+    _namespace_file_handle: "pyarrow.parquet.ParquetFile | None" = field(default=None, repr=False, compare=False, hash=False)
 
     def __post_init__(self):
         if isinstance(self.path, str):
             self.path = self.path.split(".")
 
     def to_json(self):
-        state = asdict(self)
-        for k in list(state):
-            if k.startswith('_'):
-                state.pop(k)
+        state = {
+            'name': self.name,
+            'path': self.path,
+            'accession': self.accession,
+            'unit': self.unit,
+            'term_marker': self.term_marker
+        }
         state['path'] = '.'.join(state['path'])
-        state.pop("index", None)
         if self.unit is None:
             del state['unit']
         if not self.term_marker:
             del state['term_marker']
-        if self.index is None:
-            del state['index']
         if self.accession is None:
             del state['accession']
         return state

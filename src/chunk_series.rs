@@ -1468,7 +1468,7 @@ impl ArrowArrayChunk {
             .map(&main_axis)
             .with_format(BufferFormat::Chunk)
             .with_priority(Some(BufferPriority::Primary))
-            .with_sorting_rank(Some(0));
+            .with_sorting_rank(Some(1));
 
         // Ensure that non-hashing properties of [`BufferName`] propagate from the
         // schema down to physical arrays constructed. Also propagate any transformations

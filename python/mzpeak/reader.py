@@ -1131,6 +1131,15 @@ class _MzPeakFileBase:
         if hasattr(self._archive, "close"):
             self._archive.close()
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+
+    def __del__(self):
+        self.close()
+
     def _upath_opener(self, f: UPath) -> pq.ParquetFile:
         """Open a UPath-based file using the :class:`Path`-like API"""
         return pq.ParquetFile(pa.PythonFile(f.open("rb")))
@@ -1475,39 +1484,7 @@ class MzPeakFile(_MzPeakFileBase, _EntityCollectionMixin):
 
 
     def __init__(self, path: str | Path | UPath | zipfile.ZipFile | IO[bytes], flatten_columns: bool = False):
-        self.file_index = FileIndex()
-        self._spectrum_namespace_aggregator = MzPeakNamespaceAggregation(
-            EntityType.Spectrum,
-            flatten_columns=flatten_columns
-        )
-        self._chromatogram_namespace_aggregator = MzPeakNamespaceAggregation(
-            EntityType.Chromatogram,
-            flatten_columns=flatten_columns
-        )
-        self._wavelength_spectrum_namespace_aggregator = MzPeakNamespaceAggregation(
-            EntityType.WavelengthSpectrum,
-            flatten_columns=flatten_columns
-        )
-
-        if isinstance(path, zipfile.ZipFile):
-            self._source = path
-            self._from_zip_archive(path)
-        elif isinstance(path, (str, Path, UPath)):
-            if isinstance(path, str):
-                if has_upath and "://" in path:
-                    path = UPath(path)
-                else:
-                    if "://" in path:
-                        logger.warning("%r resembles a URI but `universal_pathlib` is not installed", path)
-                    path = Path(path)
-            self._source = path
-            self._from_path(path)
-        else:
-            self._source = path
-            self._from_zip_archive(zipfile.ZipFile(path))
-
-        self._unpack_namespaces()
-        self._init_metadata()
+        _MzPeakFileBase.__init__(self, path, flatten_columns=flatten_columns)
 
     def _unpack_namespaces(self):
         super()._unpack_namespaces()

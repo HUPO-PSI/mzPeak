@@ -210,7 +210,7 @@ pub(crate) trait PointDataArrayReader {
 pub struct PointDataCacheBlock {
     pub(crate) row_group: RecordBatch,
     pub(crate) row_group_index: usize,
-    pub(crate) spectrum_array_indices: Arc<ArrayIndex>,
+    pub(crate) array_indices: Arc<ArrayIndex>,
     pub(crate) last_query_index: Option<u64>,
     pub(crate) last_query_span: Option<(usize, usize)>,
     pub(crate) buffer_context: BufferContext,
@@ -221,7 +221,7 @@ impl PointDataArrayReader for PointDataCacheBlock {}
 impl PointDataCacheBlock {
     pub(crate) fn new(
         row_group: RecordBatch,
-        spectrum_array_indices: Arc<ArrayIndex>,
+        array_indices: Arc<ArrayIndex>,
         row_group_index: usize,
         last_query_index: Option<u64>,
         last_query_span: Option<(usize, usize)>,
@@ -229,7 +229,7 @@ impl PointDataCacheBlock {
     ) -> Self {
         Self {
             row_group,
-            spectrum_array_indices,
+            array_indices,
             row_group_index,
             last_query_index,
             last_query_span,
@@ -290,7 +290,7 @@ impl PointDataCacheBlock {
         mz_delta_model: Option<&RegressionDeltaModel<f64>>,
     ) -> io::Result<Option<BinaryArrayMap>> {
         let mut bin_map = HashMap::new();
-        for v in self.spectrum_array_indices.iter() {
+        for v in self.array_indices.iter_non_index_arrays() {
             bin_map.insert(&v.name, v.as_buffer_name().as_data_array(0));
         }
 
@@ -608,7 +608,7 @@ mod async_impl {
                 .build()?;
 
             let mut bin_map = HashMap::new();
-            for v in array_indices.iter() {
+            for v in array_indices.iter_non_index_arrays() {
                 bin_map.insert(&v.name, v.as_buffer_name().as_data_array(1024));
             }
 
@@ -1024,7 +1024,7 @@ mod sync_impl {
                 .build()?;
 
             let mut bin_map = HashMap::new();
-            for v in array_indices.iter() {
+            for v in array_indices.iter_non_index_arrays() {
                 bin_map.insert(&v.name, v.as_buffer_name().as_data_array(1024));
             }
 

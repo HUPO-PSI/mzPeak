@@ -85,7 +85,7 @@ pub fn array_map_to_schema_arrays_and_excess(
 
     for (_, v) in array_map.iter() {
         let buffer_name = BufferName::from_data_array(context, v)
-            .with_sorting_rank((*v.name() == context.default_sorted_array()).then(|| 0));
+            .with_sorting_rank((*v.name() == context.default_sorted_array()).then(|| 1));
         let buffer_name = overrides.map(&buffer_name);
 
         let fieldref = buffer_name.to_field();
@@ -170,7 +170,7 @@ pub const MZ_ARRAY: BufferName = BufferName::new(
     BinaryDataArrayType::Float64,
 )
 .with_unit(Unit::MZ)
-.with_sorting_rank(Some(0));
+.with_sorting_rank(Some(1));
 
 pub const WAVELENGTH_ARRAY: BufferName = BufferName::new(
     BufferContext::WavelengthSpectrum,
@@ -178,7 +178,7 @@ pub const WAVELENGTH_ARRAY: BufferName = BufferName::new(
     BinaryDataArrayType::Float32,
 )
 .with_unit(Unit::Nanometer)
-.with_sorting_rank(Some(0));
+.with_sorting_rank(Some(1));
 
 pub const TIME_ARRAY: BufferName = BufferName::new(
     BufferContext::Chromatogram,
@@ -186,7 +186,7 @@ pub const TIME_ARRAY: BufferName = BufferName::new(
     BinaryDataArrayType::Float64,
 )
 .with_unit(Unit::Minute)
-.with_sorting_rank(Some(0));
+.with_sorting_rank(Some(1));
 
 pub const INTENSITY_ARRAY: BufferName = BufferName::new(
     BufferContext::Spectrum,

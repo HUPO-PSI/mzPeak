@@ -145,7 +145,7 @@ impl ChunkDataCacheBlock {
             }
             _ => {
                 let mut bin_map = HashMap::new();
-                for v in self.array_indices.iter() {
+                for v in self.array_indices.iter_non_index_arrays() {
                     bin_map.insert(&v.name, v.as_buffer_name().as_data_array(0));
                 }
                 let mut out = BinaryArrayMap::new();
@@ -238,6 +238,7 @@ trait ChunkQuerySource {
                         additional_entries.push(entry);
                     }
                 }
+                BufferFormat::Index => {},
             }
         }
 
@@ -522,6 +523,7 @@ impl<'a> BufferNameCache<'a> {
             .array_indices
             .iter()
             .find(|col| col.path.split(".").last().unwrap() == field_name)
+            .and_then(|v| (v.buffer_format != BufferFormat::Index).then_some(v))
             .map(|v| v.as_buffer_name())
             .map(Arc::new);
         self.buffer_name_cache
@@ -834,6 +836,7 @@ impl<'a> ChunkDecoder<'a> {
                                     self.buffers.entry(name).or_default().push(arr.clone());
                                 }
                             }
+                            BufferFormat::Index => {},
                         }
                     } else {
                         log::warn!("{f:?} failed to map to a chunk buffer");
@@ -1068,6 +1071,7 @@ impl<'a> ChunkScanDecoder<'a> {
                                     self.buffers.entry(name).or_default().push(arr.clone());
                                 }
                             }
+                            BufferFormat::Index => {},
                         }
                     } else {
                         log::warn!("{f:?} failed to map to a chunk buffer");
@@ -1456,7 +1460,7 @@ impl<T: ChunkReader + 'static> ChunkDataReader<T> {
             Self::decode_chunks(reader.flatten(), array_indices, delta_model)
         } else {
             let mut bin_map = BinaryArrayMap::new();
-            for k in array_indices.iter() {
+            for k in array_indices.iter_non_index_arrays() {
                 bin_map.add(k.as_buffer_name().as_data_array(0));
             }
             Ok(bin_map)
@@ -1548,7 +1552,7 @@ mod async_impl {
                 // Self::decode_chunks(reader.flatten(), spectrum_array_indices, delta_model)
             } else {
                 let mut bin_map = BinaryArrayMap::new();
-                for k in array_indices.iter() {
+                for k in array_indices.iter_non_index_arrays() {
                     bin_map.add(k.as_buffer_name().as_data_array(0));
                 }
                 Ok(bin_map)

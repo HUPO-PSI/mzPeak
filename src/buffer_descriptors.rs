@@ -2,9 +2,7 @@ use std::{borrow::Cow, collections::HashMap, fmt::Display, str::FromStr, sync::A
 
 use arrow::datatypes::{DataType, Field, FieldRef};
 use mzdata::{
-    params::{ParamLike, Unit},
-    prelude::ByteArrayView,
-    spectrum::{ArrayType, BinaryDataArrayType, DataArray, bindata::BinaryCompressionType},
+    params::{ParamLike, Unit}, prelude::ByteArrayView, spectrum::{ArrayType, BinaryDataArrayType, DataArray, bindata::BinaryCompressionType},
 };
 use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
@@ -268,6 +266,9 @@ pub enum BufferFormat {
     /// A contiguous list of values in a chunk contiguous with a [`BufferFormat::Chunked`] array
     ChunkSecondary,
     ChunkTransform,
+    /// A parallel index value that identifies the source entry, or an associated secondary measure
+    /// that is common for each source entry like the acquisition start time.
+    Index,
 }
 
 impl BufferFormat {
@@ -281,6 +282,7 @@ impl BufferFormat {
             | Self::ChunkBoundsEnd
             | Self::ChunkEncoding
             | Self::ChunkTransform => "chunk",
+            Self::Index => "index",
         }
     }
 }
@@ -297,6 +299,7 @@ impl FromStr for BufferFormat {
             "chunk_end" => Ok(Self::ChunkBoundsEnd),
             "chunk_encoding" => Ok(Self::ChunkEncoding),
             "chunk_transform" => Ok(Self::ChunkTransform),
+            "index" => Ok(Self::Index),
             _ => Err(format!("{s} not recognized as a buffer format")),
         }
     }
@@ -312,6 +315,7 @@ impl Display for BufferFormat {
             BufferFormat::ChunkBoundsEnd => f.write_str("chunk_end"),
             BufferFormat::ChunkEncoding => f.write_str("chunk_encoding"),
             BufferFormat::ChunkTransform => f.write_str("chunk_transform"),
+            BufferFormat::Index => f.write_str("index"),
         }
     }
 }
@@ -926,6 +930,7 @@ impl Display for BufferName {
                 BufferFormat::Point | BufferFormat::ChunkSecondary => {
                     write!(f, "{tp_name}")
                 }
+                BufferFormat::Index => write!(f, "{}_{tp_name}", self.context),
                 BufferFormat::Chunk => write!(f, "{tp_name}_chunk_values"),
                 BufferFormat::ChunkBoundsStart => write!(f, "{tp_name}_chunk_start"),
                 BufferFormat::ChunkBoundsEnd => write!(f, "{tp_name}_chunk_end"),
@@ -1268,6 +1273,16 @@ impl ArrayIndexEntry {
     pub const fn is_ion_mobility(&self) -> bool {
         self.array_type.is_ion_mobility()
     }
+
+    /// Whether [`Self::buffer_format`] is [`BufferFormat::Index`]
+    pub const fn is_index_buffer(&self) -> bool {
+        matches!(self.buffer_format, BufferFormat::Index)
+    }
+
+    /// Whether [`Self::is_index_buffer`] holds and [`Self::array_type`] is [`ArrayType::IndexArray`]
+    pub const fn is_series_index(&self) -> bool {
+        self.is_index_buffer() && matches!(self.array_type, ArrayType::IndexArray)
+    }
 }
 
 /// A collection of [`ArrayIndexEntry`] under a specific prefix.
@@ -1289,6 +1304,7 @@ impl ArrayIndex {
         }
     }
 
+    /// Get the *first* [`ArrayIndexEntry`] where [`ArrayIndexEntry::array_type`] matches `key`
     pub fn get(&self, key: &ArrayType) -> Option<&ArrayIndexEntry> {
         self.entries
             .iter()
@@ -1296,6 +1312,7 @@ impl ArrayIndex {
             .find(|v| v.array_type == *key)
     }
 
+    /// Get an iterator over *all* [`ArrayIndexEntry`] where [`ArrayIndexEntry::array_type`] matches `key`
     pub fn get_all(&self, key: &ArrayType) -> impl Iterator<Item = &ArrayIndexEntry> {
         self.entries
             .iter()
@@ -1327,6 +1344,7 @@ impl ArrayIndex {
         self.entries.push(v);
     }
 
+    /// If any [`ArrayIndexEntry::is_ion_mobility`]
     pub fn has_ion_mobility(&self) -> bool {
         self.entries.iter().any(|v| v.is_ion_mobility())
     }
@@ -1341,6 +1359,26 @@ impl ArrayIndex {
     pub fn from_json(text: &str) -> Self {
         let serialized: SerializedArrayIndex = serde_json::from_str(text).unwrap();
         serialized.into()
+    }
+
+    /// Get the sorted dimensions in ascending rank (descending priority)
+    pub fn sorted_dimensions(&self) -> Vec<&ArrayIndexEntry> {
+        let mut tmp: Vec<&ArrayIndexEntry> = self.iter().filter(|e| e.sorting_rank.is_some()).collect();
+        tmp.sort_by(|a, b| a.sorting_rank.cmp(&b.sorting_rank));
+        tmp
+    }
+
+    /// Get the highest sorting rank currently used
+    pub fn maximum_sorting_rank(&self) -> Option<u32> {
+        self.iter().map(|v| v.sorting_rank).max().flatten()
+    }
+
+    /// Get an iterator over all the [`ArrayIndexEntry`] in the index that are not
+    /// [`ArrayIndexEntry::is_index_buffer`].
+    ///
+    /// Equivalent to `self.iter().filter(|e| !e.is_index_buffer())`
+    pub fn iter_non_index_arrays(&self) -> impl Iterator<Item = &ArrayIndexEntry> {
+        self.iter().filter(|e| !e.is_index_buffer())
     }
 }
 

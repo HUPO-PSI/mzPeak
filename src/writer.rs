@@ -1658,7 +1658,7 @@ mod test {
 
         for s in new_reader.metadata.spectrum_array_indices().iter() {
             if matches!(s.array_type, ArrayType::MZArray) {
-                assert_eq!(s.sorting_rank, Some(0))
+                assert_eq!(s.sorting_rank, Some(1))
             }
         }
 
@@ -1738,7 +1738,7 @@ mod test {
             .array_indices
             .get(&ArrayType::WavelengthArray)
             .unwrap();
-        assert_eq!(entry.sorting_rank, Some(0));
+        assert_eq!(entry.sorting_rank, Some(1));
 
         let n = new_reader.len_wavelength_spectra();
         assert_eq!(n, 520);
@@ -1801,7 +1801,7 @@ mod test {
         assert!(new_reader.metadata.peak_array_indices().is_some());
         for s in new_reader.metadata.spectrum_array_indices().iter() {
             if matches!(s.array_type, ArrayType::MZArray) {
-                assert_eq!(s.sorting_rank, Some(0))
+                assert_eq!(s.sorting_rank, Some(1))
             }
         }
         reader.reset();
@@ -1888,7 +1888,7 @@ mod test {
                 assert!(matches!(arr.buffer_format, BufferFormat::ChunkTransform));
             } else if arr.path.ends_with("mz_chunk_values") {
                 assert!(matches!(arr.buffer_format, BufferFormat::Chunk));
-                assert_eq!(arr.sorting_rank, Some(0))
+                assert_eq!(arr.sorting_rank, Some(1))
             }
         }
         assert_eq!(reader.len(), new_reader.len());

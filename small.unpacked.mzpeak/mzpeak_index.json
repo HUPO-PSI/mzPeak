@@ -6,7 +6,7 @@
       "data_kind": "data_arrays",
       "column_mapping": [],
       "parameters": [],
-      "checksum": "d68b9da6dbcf3b0105ec7d0fbe4d674aa3f697781b566d39e61e16524114d7e59d2d186bd4caeba01a52484fcf52786f551b8f74cd013f6684f68a128a76a02b"
+      "checksum": "c5703446ded482bb5f054d2c4cb5ec80337fd41dee874e13e5a9b584fded189bd2cec26ce89412b025cd93953b4a65d0cfe5b26dbe747cf05c7c09736941b00e"
     },
     {
       "name": "spectra_peaks.parquet",
@@ -14,7 +14,7 @@
       "data_kind": "peaks",
       "column_mapping": [],
       "parameters": [],
-      "checksum": "e11a29734c4ef8d0e28ef7d0ca87549cd069fe05330c4c75e1ac128d3db31db1a4183849b5d8ecead2b6509a169971092aa7889f1df6b63388783b09627d2c79"
+      "checksum": "6116713afd9f771e57c39c058f5dd827fe9e584bd2e16fed83afc75d9d2cb4c30527f4bd85a5a3d9ee75cce30c34344b44678c7628fe3dcce4c574a7705e8de6"
     },
     {
       "name": "spectra_metadata.parquet",
@@ -310,60 +310,10 @@
       "data_kind": "data_arrays",
       "column_mapping": [],
       "parameters": [],
-      "checksum": "cf513c60d09994a974132e3c6bdebc5b3f7a9ad7112e19e9686dae076a910f74330d1b9f9137147dd9d7303bc5559fa83e408f290c788d2381458835d2e38aa8"
+      "checksum": "553b522098f05e1f37f2529ec3f00dc64beb4a72f63e374fcfdb16ffecf1d3dd61f1f2794092161506330c86aa20f4c1ed411b9f52d3606bcf2f3012c62eecd7"
     }
   ],
   "metadata": {
-    "file_description": {
-      "contents": [
-        {
-          "accession": "MS:1000579",
-          "name": "MS1 spectrum",
-          "unit": null,
-          "value": null
-        },
-        {
-          "accession": "MS:1000580",
-          "name": "MSn spectrum",
-          "unit": null,
-          "value": null
-        }
-      ],
-      "source_files": [
-        {
-          "id": "RAW1",
-          "location": "file:///C:\\Users\\Joshua\\Dev\\learn-rust\\ffirawfilereader\\tests\\data",
-          "name": "small.RAW",
-          "parameters": [
-            {
-              "accession": "MS:1000569",
-              "name": "SHA-1",
-              "unit": null,
-              "value": "b43e9286b40e8b5dbc0dfa2e428495769ca96a96"
-            },
-            {
-              "accession": "MS:1000563",
-              "name": "Thermo RAW format",
-              "unit": null,
-              "value": null
-            },
-            {
-              "accession": "MS:1000768",
-              "name": "Thermo nativeID format",
-              "unit": null,
-              "value": null
-            }
-          ]
-        }
-      ]
-    },
-    "run": {
-      "default_data_processing_id": "pwiz_Reader_Thermo_conversion",
-      "default_instrument_id": 0,
-      "default_source_file_id": "RAW1",
-      "id": "small",
-      "start_time": "2005-07-20T19:44:22Z"
-    },
     "data_processing_method_list": [
       {
         "id": "pwiz_Reader_Thermo_conversion",
@@ -398,46 +348,6 @@
             "software_reference": "mzpeak_prototyping_convert1"
           }
         ]
-      }
-    ],
-    "version": "0.9.0",
-    "scan_settings_list": [],
-    "software_list": [
-      {
-        "id": "Xcalibur",
-        "parameters": [
-          {
-            "accession": "MS:1000532",
-            "name": "Xcalibur",
-            "unit": null,
-            "value": null
-          }
-        ],
-        "version": "1.1 Beta 7"
-      },
-      {
-        "id": "pwiz",
-        "parameters": [
-          {
-            "accession": "MS:1000615",
-            "name": "ProteoWizard software",
-            "unit": null,
-            "value": null
-          }
-        ],
-        "version": "3.0.23307"
-      },
-      {
-        "id": "mzpeak_prototyping_convert1",
-        "parameters": [
-          {
-            "accession": "MS:1000799",
-            "name": "custom unreleased software tool",
-            "unit": null,
-            "value": "mzpeak_prototyping_convert"
-          }
-        ],
-        "version": "0.1.0"
       }
     ],
     "instrument_configuration_list": [
@@ -592,6 +502,96 @@
         "id": "UO",
         "uri": "http://purl.obolibrary.org/obo/uo/releases/2026-01-16/uo.obo",
         "version": "2026-01-16"
+      }
+    ],
+    "file_description": {
+      "contents": [
+        {
+          "accession": "MS:1000579",
+          "name": "MS1 spectrum",
+          "unit": null,
+          "value": null
+        },
+        {
+          "accession": "MS:1000580",
+          "name": "MSn spectrum",
+          "unit": null,
+          "value": null
+        }
+      ],
+      "source_files": [
+        {
+          "id": "RAW1",
+          "location": "file:///C:\\Users\\Joshua\\Dev\\learn-rust\\ffirawfilereader\\tests\\data",
+          "name": "small.RAW",
+          "parameters": [
+            {
+              "accession": "MS:1000569",
+              "name": "SHA-1",
+              "unit": null,
+              "value": "b43e9286b40e8b5dbc0dfa2e428495769ca96a96"
+            },
+            {
+              "accession": "MS:1000563",
+              "name": "Thermo RAW format",
+              "unit": null,
+              "value": null
+            },
+            {
+              "accession": "MS:1000768",
+              "name": "Thermo nativeID format",
+              "unit": null,
+              "value": null
+            }
+          ]
+        }
+      ]
+    },
+    "version": "0.9.0",
+    "run": {
+      "default_data_processing_id": "pwiz_Reader_Thermo_conversion",
+      "default_instrument_id": 0,
+      "default_source_file_id": "RAW1",
+      "id": "small",
+      "start_time": "2005-07-20T19:44:22Z"
+    },
+    "scan_settings_list": [],
+    "software_list": [
+      {
+        "id": "Xcalibur",
+        "parameters": [
+          {
+            "accession": "MS:1000532",
+            "name": "Xcalibur",
+            "unit": null,
+            "value": null
+          }
+        ],
+        "version": "1.1 Beta 7"
+      },
+      {
+        "id": "pwiz",
+        "parameters": [
+          {
+            "accession": "MS:1000615",
+            "name": "ProteoWizard software",
+            "unit": null,
+            "value": null
+          }
+        ],
+        "version": "3.0.23307"
+      },
+      {
+        "id": "mzpeak_prototyping_convert1",
+        "parameters": [
+          {
+            "accession": "MS:1000799",
+            "name": "custom unreleased software tool",
+            "unit": null,
+            "value": "mzpeak_prototyping_convert"
+          }
+        ],
+        "version": "0.1.0"
       }
     ]
   }
