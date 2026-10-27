@@ -1,9 +1,6 @@
 use mzdata::{
-    curie,
-    params::{CURIE, Param, Unit},
-    spectrum::{
-        ArrayType, BinaryDataArrayType, DataArray,
-        bindata::{ArrayRetrievalError, BinaryCompressionType},
+    curie, params::{CURIE, Param, Unit}, spectrum::{
+        ArrayType, BinaryDataArrayType, DataArray, bindata::{ArrayRetrievalError, BinaryCompressionType, ByteArrayView},
     },
 };
 use serde::{Deserialize, Serialize};
@@ -29,6 +26,7 @@ pub struct AuxiliaryArray {
     pub name: Param,
     pub data_type: CURIE,
     pub compression: CURIE,
+    pub items: usize,
     pub unit: Option<CURIE>,
     pub parameters: Vec<Param>,
     pub data_processing_id: Option<Box<str>>,
@@ -101,6 +99,7 @@ impl AuxiliaryArray {
     ) -> Result<Self, mzdata::spectrum::bindata::ArrayRetrievalError> {
         let mut source = source.clone();
         source.decode_and_store()?;
+        let items = source.data_len()?;
         let data = source.data;
 
         let compression = BinaryCompressionType::NoCompression
@@ -124,6 +123,7 @@ impl AuxiliaryArray {
             data,
             data_type,
             compression,
+            items,
             unit,
             parameters: Default::default(),
             data_processing_id: None,

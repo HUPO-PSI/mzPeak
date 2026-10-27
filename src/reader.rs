@@ -2795,6 +2795,8 @@ mod test {
         if descr.ms_level() > 1 {
             assert_eq!(descr.precursor_iter().count(), 1);
             assert_eq!(descr.precursor().unwrap().ions.len(), 1);
+            assert!(descr.precursor().unwrap().activation.energy > 0.0);
+            assert!(descr.precursor().unwrap().activation.method().is_some());
         }
         let descr = reader.get_spectrum(25).unwrap();
         assert_eq!(descr.index(), 25);

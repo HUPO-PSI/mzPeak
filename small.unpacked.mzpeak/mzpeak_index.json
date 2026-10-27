@@ -97,7 +97,7 @@
         }
       ],
       "parameters": [],
-      "checksum": "ce1c7378baec66ee63f9fce707ebab77997d1230f2d8ad48b05c9fbf904f8986189f62791d1954cfdd5944289ea49648aacfce91a9cdc4f8bd023a3ea0becd25"
+      "checksum": "1b0a2e0f1f02e0c20510383a9473d40ca3c243d791763e8592d17f76591ce0a30813d30bab469f7950b1076d9a51fc1ca31e4f65655fdab30a87e41884a69a1e"
     },
     {
       "name": "spectra_metadata_scans.parquet",
@@ -171,7 +171,8 @@
           "name": "dissociation method",
           "path": "activation.dissociation_method",
           "accession": "MS:1000044",
-          "unit": null
+          "unit": null,
+          "term_marker": true
         },
         {
           "name": "collision energy",
@@ -181,7 +182,7 @@
         }
       ],
       "parameters": [],
-      "checksum": "5cfb4b3cba1a6719229874d659c76575a828eb89f6986c5eec68cf97bee75ff1f5e1e085cf9f49ea60681b2325424cb42c2d3be7f552394672f9c698880821fa"
+      "checksum": "9ad3c4a0b7d73b2e557d2c95b671a362a2a0c85b43012dc99ee4092577cfc893cb80b32d856a717c5b478f39e5f3cb597a1642df2a3234402e91a125a02f470b"
     },
     {
       "name": "spectra_metadata_selected_ions.parquet",
@@ -236,7 +237,7 @@
         }
       ],
       "parameters": [],
-      "checksum": "5d3c8e84834596cf0506aa5712594f7afd726c8653a791fa443254e5f9351badc3188bfc532a6524a0af77e4f33ab60248897f69c7f2227b3074567549548f2e"
+      "checksum": "7836b05d9e272423c310fe0e31d5cd5ac724693b76865c39e988cb2ea6ef62996d2c831b8631c790804448e6ec525c82af6acf8c6809c4aa51d4c8c2bbcac8a2"
     },
     {
       "name": "chromatograms_metadata_precursors.parquet",
@@ -265,7 +266,8 @@
           "name": "dissociation method",
           "path": "activation.dissociation_method",
           "accession": "MS:1000044",
-          "unit": null
+          "unit": null,
+          "term_marker": true
         },
         {
           "name": "collision energy",
@@ -314,42 +316,63 @@
     }
   ],
   "metadata": {
-    "data_processing_method_list": [
+    "sample_list": [
       {
-        "id": "pwiz_Reader_Thermo_conversion",
-        "methods": [
+        "id": "_x0031_",
+        "name": "",
+        "parameters": [
           {
-            "order": 0,
-            "parameters": [
-              {
-                "accession": "MS:1000544",
-                "name": "Conversion to mzML",
-                "unit": null,
-                "value": null
-              }
-            ],
-            "software_reference": "pwiz"
-          }
-        ]
-      },
-      {
-        "id": "mzpeak_conversion1",
-        "methods": [
-          {
-            "order": 1,
-            "parameters": [
-              {
-                "accession": null,
-                "name": "conversion options",
-                "unit": null,
-                "value": "-y -z -u small.mzML -o small.mzpeak"
-              }
-            ],
-            "software_reference": "mzpeak_prototyping_convert1"
+            "accession": "MS:1000002",
+            "name": "sample name",
+            "unit": null,
+            "value": 1
           }
         ]
       }
     ],
+    "file_description": {
+      "contents": [
+        {
+          "accession": "MS:1000579",
+          "name": "MS1 spectrum",
+          "unit": null,
+          "value": null
+        },
+        {
+          "accession": "MS:1000580",
+          "name": "MSn spectrum",
+          "unit": null,
+          "value": null
+        }
+      ],
+      "source_files": [
+        {
+          "id": "RAW1",
+          "location": "file:///C:\\Users\\Joshua\\Dev\\learn-rust\\ffirawfilereader\\tests\\data",
+          "name": "small.RAW",
+          "parameters": [
+            {
+              "accession": "MS:1000569",
+              "name": "SHA-1",
+              "unit": null,
+              "value": "b43e9286b40e8b5dbc0dfa2e428495769ca96a96"
+            },
+            {
+              "accession": "MS:1000563",
+              "name": "Thermo RAW format",
+              "unit": null,
+              "value": null
+            },
+            {
+              "accession": "MS:1000768",
+              "name": "Thermo nativeID format",
+              "unit": null,
+              "value": null
+            }
+          ]
+        }
+      ]
+    },
     "instrument_configuration_list": [
       {
         "components": [
@@ -476,20 +499,51 @@
         "software_reference": "Xcalibur"
       }
     ],
-    "sample_list": [
+    "data_processing_method_list": [
       {
-        "id": "_x0031_",
-        "name": "",
-        "parameters": [
+        "id": "pwiz_Reader_Thermo_conversion",
+        "methods": [
           {
-            "accession": "MS:1000002",
-            "name": "sample name",
-            "unit": null,
-            "value": 1
+            "order": 0,
+            "parameters": [
+              {
+                "accession": "MS:1000544",
+                "name": "Conversion to mzML",
+                "unit": null,
+                "value": null
+              }
+            ],
+            "software_reference": "pwiz"
+          }
+        ]
+      },
+      {
+        "id": "mzpeak_conversion1",
+        "methods": [
+          {
+            "order": 1,
+            "parameters": [
+              {
+                "accession": null,
+                "name": "conversion options",
+                "unit": null,
+                "value": "-y -z -u small.mzML -o small.mzpeak"
+              }
+            ],
+            "software_reference": "mzpeak_prototyping_convert1"
           }
         ]
       }
     ],
+    "run": {
+      "default_data_processing_id": "pwiz_Reader_Thermo_conversion",
+      "default_instrument_id": 0,
+      "default_source_file_id": "RAW1",
+      "id": "small",
+      "params": [],
+      "start_time": "2005-07-20T19:44:22Z"
+    },
+    "scan_settings_list": [],
     "cv_list": [
       {
         "full_name": "Proteomics Standards Initiative Mass Spectrometry Ontology",
@@ -504,58 +558,7 @@
         "version": "2026-01-16"
       }
     ],
-    "file_description": {
-      "contents": [
-        {
-          "accession": "MS:1000579",
-          "name": "MS1 spectrum",
-          "unit": null,
-          "value": null
-        },
-        {
-          "accession": "MS:1000580",
-          "name": "MSn spectrum",
-          "unit": null,
-          "value": null
-        }
-      ],
-      "source_files": [
-        {
-          "id": "RAW1",
-          "location": "file:///C:\\Users\\Joshua\\Dev\\learn-rust\\ffirawfilereader\\tests\\data",
-          "name": "small.RAW",
-          "parameters": [
-            {
-              "accession": "MS:1000569",
-              "name": "SHA-1",
-              "unit": null,
-              "value": "b43e9286b40e8b5dbc0dfa2e428495769ca96a96"
-            },
-            {
-              "accession": "MS:1000563",
-              "name": "Thermo RAW format",
-              "unit": null,
-              "value": null
-            },
-            {
-              "accession": "MS:1000768",
-              "name": "Thermo nativeID format",
-              "unit": null,
-              "value": null
-            }
-          ]
-        }
-      ]
-    },
     "version": "0.9.0",
-    "run": {
-      "default_data_processing_id": "pwiz_Reader_Thermo_conversion",
-      "default_instrument_id": 0,
-      "default_source_file_id": "RAW1",
-      "id": "small",
-      "start_time": "2005-07-20T19:44:22Z"
-    },
-    "scan_settings_list": [],
     "software_list": [
       {
         "id": "Xcalibur",

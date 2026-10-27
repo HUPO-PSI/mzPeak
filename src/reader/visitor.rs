@@ -1,9 +1,5 @@
 use arrow::{
-    array::{
-        Array, ArrayRef, AsArray, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array,
-        LargeStringArray, StringArray, StructArray, UInt8Array, UInt32Array, UInt64Array,
-    },
-    buffer::NullBuffer,
+    array::{Array, ArrayRef, AsArray, StructArray},
     datatypes::{
         DataType, Float32Type, Float64Type, Int8Type, Int32Type, Int64Type, UInt8Type, UInt32Type,
         UInt64Type,
@@ -12,133 +8,29 @@ use arrow::{
 
 use mzdata::{
     curie,
-    meta::SpectrumType,
-    params::{CURIE, ControlledVocabulary, Unit, ParamBuilder as MemParamBuilder},
+    meta::{DissociationMethodTerm, SpectrumType},
+    params::{CURIE, Unit},
     prelude::*,
     spectrum::{
-        ArrayType, BinaryDataArrayType, ChromatogramDescription, ChromatogramType, DataArray,
-        Precursor, ScanEvent, ScanPolarity, ScanWindow, SelectedIon, SpectrumDescription,
-        bindata::BinaryCompressionType,
+        Activation, ArrayType, BinaryDataArrayType, ChromatogramDescription, ChromatogramType,
+        DataArray, IsolationWindow, Precursor, ScanEvent, ScanPolarity, ScanWindow, SelectedIon,
+        SpectrumDescription, bindata::BinaryCompressionType,
     },
 };
 
-use crate::param::{MetadataColumn, MetadataMapping};
+use crate::{
+    param::{MetadataColumn, MetadataMapping},
+    reader::visitor::hierarchical::OffsetCollectionSubGroup,
+};
 
-pub struct ParameterVisitor<'a> {
-    root: &'a StructArray,
-    destination: Vec<mzdata::Param>,
-}
+mod curie_array_visitor;
+pub(crate) use curie_array_visitor::{AnyCURIEArray, ParameterVisitor, UnitArray, UnitCollection};
 
-impl<'a> ParameterVisitor<'a> {
-    pub fn new(root: &'a StructArray) -> Self {
-        Self {
-            root,
-            destination: Vec::new(),
-        }
-    }
+mod hierarchical;
+pub use hierarchical::{CompoundIndexVisitor, DoubleIndexed, Indexed, OffsetCollection};
 
-    pub fn build(mut self) -> Vec<mzdata::Param> {
-        let n = self.root.len();
-        self.destination.resize(n, Default::default());
-
-        if let Some(name) = self.root.column_by_name("name") {
-            if let Some(arr) = name.as_string_opt::<i64>() {
-                for (i, v) in arr.iter().enumerate() {
-                    self.destination[i].name = v.unwrap().to_string();
-                }
-            } else if let Some(arr) = name.as_string_opt::<i32>() {
-                for (i, v) in arr.iter().enumerate() {
-                    self.destination[i].name = v.unwrap().to_string();
-                }
-            } else {
-                panic!("Unsupported data type {:?}", name.data_type());
-            }
-        }
-        if let Some(curie) = self
-            .root
-            .column_by_name("curie")
-            .or_else(|| self.root.column_by_name("accession"))
-        {
-            let arr = AnyCURIEArray::try_from(curie).unwrap();
-            for i in 0..n {
-                if let Some(v) = arr.value(i) {
-                    let d = &mut self.destination[i];
-                    d.accession = Some(v.accession);
-                    d.controlled_vocabulary = Some(v.controlled_vocabulary);
-                }
-            }
-        }
-        if let Some(unit) = self.root.column_by_name("unit") {
-            let arr = UnitArray::from(unit);
-            for i in 0..n {
-                self.destination[i].unit = arr.value(i);
-            }
-        }
-        if let Some(values) = self.root.column_by_name("value") {
-            let values = values.as_struct();
-            if let Some(ints) = values.column_by_name("integer") {
-                if ints.null_count() != n {
-                    let ints = ints.as_primitive::<Int64Type>();
-                    for i in 0..n {
-                        if ints.is_valid(i) {
-                            self.destination[i].value = mzdata::params::Value::Int(ints.value(i));
-                        }
-                    }
-                }
-            }
-            if let Some(ints) = values.column_by_name("float") {
-                if ints.null_count() != n {
-                    let ints = ints.as_primitive::<Float64Type>();
-                    for i in 0..n {
-                        if ints.is_valid(i) {
-                            self.destination[i].value = mzdata::params::Value::Float(ints.value(i));
-                        }
-                    }
-                }
-            }
-            if let Some(ints) = values.column_by_name("string") {
-                if ints.null_count() != n {
-                    if let Some(ints) = ints.as_string_opt::<i64>() {
-                        for i in 0..n {
-                            if ints.is_valid(i) {
-                                self.destination[i].value =
-                                    mzdata::params::Value::String(ints.value(i).to_string());
-                            }
-                        }
-                    } else if let Some(ints) = ints.as_string_opt::<i32>() {
-                        for i in 0..n {
-                            if ints.is_valid(i) {
-                                self.destination[i].value =
-                                    mzdata::params::Value::String(ints.value(i).to_string());
-                            }
-                        }
-                    } else {
-                        panic!("Unsupported data type {:?}", ints.data_type());
-                    }
-                }
-            }
-            if let Some(ints) = values.column_by_name("boolean") {
-                if ints.null_count() != n {
-                    let ints = ints.as_boolean();
-                    for i in 0..n {
-                        if ints.is_valid(i) {
-                            self.destination[i].value =
-                                mzdata::params::Value::Boolean(ints.value(i));
-                        }
-                    }
-                }
-            }
-        }
-        self.destination
-    }
-}
-
-pub struct MzSpectrumVisitor<'a> {
-    pub(crate) descriptions: &'a mut [SpectrumDescription],
-    pub(crate) metadata_map: &'a MetadataMapping,
-    pub(crate) base_offset: usize,
-    pub(crate) offsets: Vec<usize>,
-}
+mod generic;
+pub use generic::{SubGroupVisitor, VisitorBuilder3, VisitorBuilderBase};
 
 macro_rules! extract_unit {
     ($metacol:ident, $array:ident) => {{
@@ -175,6 +67,13 @@ macro_rules! visit_source_index {
         }
         $self.offsets = offsets
     };
+}
+
+pub struct MzSpectrumVisitor<'a> {
+    pub(crate) descriptions: &'a mut [SpectrumDescription],
+    pub(crate) metadata_map: &'a MetadataMapping,
+    pub(crate) base_offset: usize,
+    pub(crate) offsets: Vec<usize>,
 }
 
 impl<'a> VisitorBuilderBase<'a, SpectrumDescription> for MzSpectrumVisitor<'a> {
@@ -581,7 +480,7 @@ impl<'a> MzSpectrumVisitor<'a> {
                     "base_peak_intensity" => self.visit_base_peak_intensity(
                         spec_arr,
                         index,
-                        &MetadataColumn::named("", Unit::DetectorCounts)
+                        &MetadataColumn::named("", Unit::DetectorCounts),
                     ),
                     "total_ion_current" => {
                         self.visit_total_ion_current(
@@ -608,689 +507,6 @@ impl<'a> MzSpectrumVisitor<'a> {
         }
 
         self.offsets.len()
-    }
-}
-
-pub struct CURIEStrArray<'a>(&'a StringArray);
-
-impl<'a> From<&'a StringArray> for CURIEStrArray<'a> {
-    fn from(value: &'a StringArray) -> Self {
-        Self(value)
-    }
-}
-
-impl<'a> CURIEStrArray<'a> {
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    #[inline(always)]
-    pub fn is_null(&self, index: usize) -> bool {
-        self.0.is_null(index)
-    }
-
-    #[inline(always)]
-    pub fn value(&self, index: usize) -> Option<CURIE> {
-        if self.is_null(index) {
-            None
-        } else {
-            Some(self.0.value(index).parse().unwrap())
-        }
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = Option<CURIE>> {
-        self.0.iter().map(|v| v.map(|v| v.parse().unwrap()))
-    }
-}
-
-pub struct LargeCURIEStrArray<'a>(&'a LargeStringArray);
-
-impl<'a> From<&'a LargeStringArray> for LargeCURIEStrArray<'a> {
-    fn from(value: &'a LargeStringArray) -> Self {
-        Self(value)
-    }
-}
-
-impl<'a> LargeCURIEStrArray<'a> {
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    #[inline(always)]
-    pub fn is_null(&self, index: usize) -> bool {
-        self.0.is_null(index)
-    }
-
-    #[inline(always)]
-    pub fn value(&self, index: usize) -> Option<CURIE> {
-        if self.is_null(index) {
-            None
-        } else {
-            Some(self.0.value(index).parse().unwrap())
-        }
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = Option<CURIE>> {
-        self.0.iter().map(|v| v.map(|v| v.parse().unwrap()))
-    }
-}
-
-/// A deprecated struct-based encoding. To be removed before
-/// first stable release.
-pub struct CURIEStructArray<'a> {
-    cv_id: &'a UInt8Array,
-    accession: &'a UInt32Array,
-    null: Option<&'a NullBuffer>,
-}
-
-impl<'a> From<&'a StructArray> for CURIEStructArray<'a> {
-    fn from(value: &'a StructArray) -> Self {
-        Self::from_struct_array(value)
-    }
-}
-
-impl<'a> CURIEStructArray<'a> {
-    fn new(
-        cv_id: &'a UInt8Array,
-        accession: &'a UInt32Array,
-        null: Option<&'a NullBuffer>,
-    ) -> Self {
-        Self {
-            cv_id,
-            accession,
-            null,
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        self.cv_id.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.cv_id.is_empty()
-    }
-
-    pub fn from_struct_array(series: &'a StructArray) -> Self {
-        Self::new(
-            series.column(0).as_primitive(),
-            series.column(1).as_primitive(),
-            series.nulls(),
-        )
-    }
-
-    #[inline(always)]
-    pub fn is_null(&self, index: usize) -> bool {
-        self.cv_id.is_null(index)
-            || self.accession.is_null(index)
-            || self.null.is_some_and(|v| v.is_null(index))
-    }
-
-    #[inline(always)]
-    pub fn value(&self, index: usize) -> Option<CURIE> {
-        if self.is_null(index) {
-            None
-        } else {
-            Some(CURIE::new(
-                match self.cv_id.value(index) {
-                    1 => ControlledVocabulary::MS,
-                    2 => ControlledVocabulary::UO,
-                    x => panic!("Bad old CV ID {x}"),
-                },
-                self.accession.value(index),
-            ))
-        }
-    }
-}
-
-pub enum AnyCURIEArray<'a> {
-    Struct(CURIEStructArray<'a>),
-    String(CURIEStrArray<'a>),
-    LargeString(LargeCURIEStrArray<'a>),
-}
-
-impl<'a> TryFrom<&'a ArrayRef> for AnyCURIEArray<'a> {
-    type Error = ();
-
-    fn try_from(value: &'a ArrayRef) -> Result<Self, Self::Error> {
-        if let Some(arr) = value.as_struct_opt() {
-            Ok(Self::from_struct_array(arr))
-        } else {
-            if let Some(arr) = value.as_string_opt::<i32>() {
-                Ok(Self::String(CURIEStrArray(arr)))
-            } else if let Some(arr) = value.as_string_opt::<i64>() {
-                Ok(Self::LargeString(LargeCURIEStrArray(arr)))
-            } else {
-                panic!("Unsupported data type: {:?}", value.data_type());
-            }
-        }
-    }
-}
-
-impl<'a> AnyCURIEArray<'a> {
-    pub fn from_struct_array(array: &'a StructArray) -> Self {
-        Self::Struct(CURIEStructArray::from_struct_array(array))
-    }
-
-    pub fn len(&self) -> usize {
-        match self {
-            AnyCURIEArray::Struct(curiearray) => curiearray.len(),
-            AnyCURIEArray::String(curiestr_array) => curiestr_array.len(),
-            AnyCURIEArray::LargeString(curiestr_array) => curiestr_array.len(),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn to_vec(&self) -> Vec<CURIE> {
-        match self {
-            AnyCURIEArray::Struct(curiearray) => {
-                let n = curiearray.len();
-                let mut acc: Vec<_> = Vec::with_capacity(n);
-                for i in 0..n {
-                    acc.push(curiearray.value(i).unwrap())
-                }
-                acc
-            }
-            AnyCURIEArray::String(curiestr_array) => {
-                let n = curiestr_array.len();
-                let mut acc: Vec<_> = Vec::with_capacity(n);
-                for i in 0..n {
-                    acc.push(curiestr_array.value(i).unwrap())
-                }
-                acc
-            }
-            AnyCURIEArray::LargeString(curiestr_array) => {
-                let n = curiestr_array.len();
-                let mut acc: Vec<_> = Vec::with_capacity(n);
-                for i in 0..n {
-                    acc.push(curiestr_array.value(i).unwrap())
-                }
-                acc
-            }
-        }
-    }
-
-    #[inline(always)]
-    pub fn is_null(&self, index: usize) -> bool {
-        match self {
-            AnyCURIEArray::Struct(curiearray) => curiearray.is_null(index),
-            AnyCURIEArray::String(curiestr_array) => curiestr_array.is_null(index),
-            AnyCURIEArray::LargeString(curiestr_array) => curiestr_array.is_null(index),
-        }
-    }
-
-    #[inline(always)]
-    pub fn value(&self, index: usize) -> Option<CURIE> {
-        match self {
-            AnyCURIEArray::Struct(curiearray) => curiearray.value(index),
-            AnyCURIEArray::String(curiestr_array) => curiestr_array.value(index),
-            AnyCURIEArray::LargeString(curiestr_array) => curiestr_array.value(index),
-        }
-    }
-}
-
-impl<'a> From<CURIEStructArray<'a>> for AnyCURIEArray<'a> {
-    fn from(value: CURIEStructArray<'a>) -> Self {
-        Self::Struct(value)
-    }
-}
-
-impl<'a> From<CURIEStrArray<'a>> for AnyCURIEArray<'a> {
-    fn from(value: CURIEStrArray<'a>) -> Self {
-        Self::String(value)
-    }
-}
-
-impl<'a> From<LargeCURIEStrArray<'a>> for AnyCURIEArray<'a> {
-    fn from(value: LargeCURIEStrArray<'a>) -> Self {
-        Self::LargeString(value)
-    }
-}
-
-pub struct UnitArray<'a>(AnyCURIEArray<'a>);
-
-impl<'a> From<&'a ArrayRef> for UnitArray<'a> {
-    fn from(value: &'a ArrayRef) -> Self {
-        Self(AnyCURIEArray::try_from(value).unwrap())
-    }
-}
-
-impl<'a> From<CURIEStructArray<'a>> for UnitArray<'a> {
-    fn from(value: CURIEStructArray<'a>) -> Self {
-        Self(value.into())
-    }
-}
-
-impl<'a> From<&'a StructArray> for UnitArray<'a> {
-    fn from(value: &'a StructArray) -> Self {
-        Self(AnyCURIEArray::from_struct_array(value))
-    }
-}
-
-impl<'a> UnitArray<'a> {
-    pub fn from_struct_array(unit_series: &'a StructArray) -> Self {
-        Self(AnyCURIEArray::from_struct_array(unit_series))
-    }
-
-    #[inline(always)]
-    pub fn value(&self, index: usize) -> Unit {
-        self.0
-            .value(index)
-            .map(|v| Unit::from_curie(&v))
-            .unwrap_or_default()
-    }
-
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.len() == 0
-    }
-
-    pub fn is_null(&self, index: usize) -> bool {
-        self.0.is_null(index)
-    }
-}
-
-/// A single unit that is used for all values in a column
-struct UnitScalar(Unit);
-
-impl UnitScalar {
-    #[inline(always)]
-    fn value(&self, _index: usize) -> Unit {
-        self.0
-    }
-}
-
-/// A generic strategy for mapping units across rows of another column
-enum UnitCollection<'a> {
-    Array(UnitArray<'a>),
-    Scalar(UnitScalar),
-}
-
-impl<'a> Default for UnitCollection<'a> {
-    fn default() -> Self {
-        Self::unknown()
-    }
-}
-
-impl<'a> UnitCollection<'a> {
-    #[inline(always)]
-    fn value(&self, index: usize) -> Unit {
-        match self {
-            UnitCollection::Array(unit_series) => unit_series.value(index),
-            UnitCollection::Scalar(unit_series_singular) => unit_series_singular.value(index),
-        }
-    }
-
-    fn series(unit_series: &'a StructArray) -> Self {
-        Self::Array(UnitArray::from_struct_array(unit_series))
-    }
-
-    fn singular(unit: Unit) -> Self {
-        Self::Scalar(UnitScalar(unit))
-    }
-
-    fn unknown() -> Self {
-        Self::Scalar(UnitScalar(Unit::Unknown))
-    }
-}
-
-/// A type alias over a tuple of (primary source id, <entity>)
-#[derive(Debug, Clone, Default)]
-pub struct Indexed<T>(pub u64, pub T);
-/// A type alias over a tuple of (primary source id, optional secondary id, <entity>)
-#[derive(Debug, Clone, Default)]
-pub struct DoubleIndexed<T>(pub u64, pub Option<u64>, pub T);
-
-/// A helper trait for handling (multi-)-relationship keyed visitors over type `T`
-pub trait CompoundIndexVisitor<T> {
-    /// The primary source entity's id key
-    fn source_index_mut(&mut self) -> &mut u64;
-
-    /// The (potentially absent) secondary id key
-    fn secondary_index_mut(&mut self) -> Option<&mut u64>;
-
-    /// Get a mutable access to the actual thing we are visiting to build
-    fn description_mut(&mut self) -> &mut T;
-
-    /// Take the entity out of the container
-    fn into_description(self) -> T;
-
-    /// The primary source entity's id key
-    fn source_index(&self) -> u64;
-
-    /// The (potentially absent) secondary id key
-    fn secondary_index(&self) -> Option<u64>;
-
-    /// Unpack the container into a tuple of id keys and the entity description
-    fn unpack(self) -> (u64, Option<u64>, T)
-    where
-        Self: Sized,
-    {
-        (
-            self.source_index(),
-            self.secondary_index(),
-            self.into_description(),
-        )
-    }
-}
-
-impl<T> CompoundIndexVisitor<T> for Indexed<T> {
-    fn description_mut(&mut self) -> &mut T {
-        &mut self.1
-    }
-
-    fn source_index_mut(&mut self) -> &mut u64 {
-        &mut self.0
-    }
-
-    fn secondary_index_mut(&mut self) -> Option<&mut u64> {
-        None
-    }
-
-    fn into_description(self) -> T {
-        self.1
-    }
-
-    fn source_index(&self) -> u64 {
-        self.0
-    }
-
-    fn secondary_index(&self) -> Option<u64> {
-        None
-    }
-}
-
-impl<T> CompoundIndexVisitor<T> for DoubleIndexed<T> {
-    fn description_mut(&mut self) -> &mut T {
-        &mut self.2
-    }
-
-    fn source_index_mut(&mut self) -> &mut u64 {
-        &mut self.0
-    }
-
-    fn secondary_index_mut(&mut self) -> Option<&mut u64> {
-        self.1.as_mut()
-    }
-
-    fn into_description(self) -> T {
-        self.2
-    }
-
-    fn source_index(&self) -> u64 {
-        self.0
-    }
-
-    fn secondary_index(&self) -> Option<u64> {
-        self.1
-    }
-}
-
-impl<T: ParamDescribed> ParamDescribed for Indexed<T> {
-    fn params(&self) -> &[mzdata::Param] {
-        self.1.params()
-    }
-
-    fn params_mut(&mut self) -> &mut mzdata::ParamList {
-        self.1.params_mut()
-    }
-}
-
-impl<T: ParamDescribed> ParamDescribed for DoubleIndexed<T> {
-    fn params(&self) -> &[mzdata::Param] {
-        self.2.params()
-    }
-
-    fn params_mut(&mut self) -> &mut mzdata::ParamList {
-        self.2.params_mut()
-    }
-}
-
-/// Enclose the parallel arrays of "descriptions" and their offsets so that the borrow
-/// checker knows that method calls on this instance aren't tied to the owning objects
-pub struct OffsetCollection<'a, T> {
-    pub(crate) descriptions: &'a mut [T],
-    pub(crate) offsets: &'a [usize],
-}
-
-impl<'a, T> IntoIterator for OffsetCollection<'a, T> {
-    type Item = (usize, &'a mut T);
-
-    type IntoIter =
-        std::iter::Zip<std::iter::Copied<std::slice::Iter<'a, usize>>, std::slice::IterMut<'a, T>>;
-
-    #[inline(always)]
-    fn into_iter(self) -> Self::IntoIter {
-        self.offsets.iter().copied().zip(&mut *self.descriptions)
-    }
-}
-
-impl<'a, T> OffsetCollection<'a, T> {
-    fn new(descriptions: &'a mut [T], offsets: &'a [usize]) -> Self {
-        Self {
-            descriptions,
-            offsets,
-        }
-    }
-}
-
-pub trait VisitorBuilderBase<'a, T> {
-    fn iter_instances(&mut self) -> OffsetCollection<'_, T>;
-
-    fn metadata_map(&self) -> &'a MetadataMapping;
-
-    fn visit_as_param(
-        &mut self,
-        spec_arr: &StructArray,
-        index: usize,
-        metacol: Option<&MetadataColumn>,
-        name: Option<&str>,
-    ) where
-        T: ParamDescribed,
-    {
-        let arr = spec_arr.column(index);
-        if arr.null_count() == arr.len() {
-            return;
-        }
-
-        let (name, unit, accession, term_marker) = if let Some(metacol) = metacol {
-            let unit = extract_unit!(metacol, spec_arr);
-            let accession: Option<CURIE> = metacol.accession;
-            (metacol.name.as_str(), unit, accession, metacol.term_marker)
-        } else if let Some(name) = name {
-            (name, Default::default(), None, false)
-        } else {
-            panic!("One of `metacol` or `name` must be defined")
-        };
-
-        macro_rules! convert {
-            ($arr:ident) => {
-                if term_marker {
-                    for (i, descr) in self.iter_instances() {
-                        if $arr.is_null(i) {
-                            continue;
-                        };
-                        let mut p = mzdata::Param::builder();
-                        p = p.name(&name);
-                        if let Some(acc) = accession {
-                            p = p.curie(acc)
-                        }
-                        descr.add_param(p.build());
-                    }
-                }
-                else {
-                    for (i, descr) in self.iter_instances() {
-                        if $arr.is_null(i) {
-                            continue;
-                        };
-                        let mut p = mzdata::Param::builder();
-                        p = p
-                            .name(&name)
-                            .value($arr.value(i))
-                            .unit(unit.value(i));
-                        if let Some(acc) = accession {
-                            p = p.curie(acc)
-                        }
-                        descr.add_param(p.build());
-                    }
-                }
-            };
-            ($arr:ident, $value_name:ident => $filter_exp:expr, $value_exp:expr) => {
-                if term_marker {
-                    for (i, descr) in self.iter_instances() {
-                        if $arr.is_null(i) {
-                            continue;
-                        };
-                        let $value_name = $arr.value(i);
-                        if !$filter_exp {
-                            continue
-                        }
-                        let mut p = mzdata::Param::builder();
-                        p = p.name(&name);
-                        if let Some(acc) = accession {
-                            p = p.curie(acc)
-                        }
-                        p = $value_exp($value_name, p);
-
-                        descr.add_param(p.build());
-                    }
-                }
-                else {
-                    for (i, descr) in self.iter_instances() {
-                        if $arr.is_null(i) {
-                            continue;
-                        };
-                        let mut p = mzdata::Param::builder();
-                        p = p
-                            .name(&name)
-                            .value($arr.value(i))
-                            .unit(unit.value(i));
-                        if let Some(acc) = accession {
-                            p = p.curie(acc)
-                        }
-                        descr.add_param(p.build());
-                    }
-                }
-            }
-        }
-
-        match arr.data_type() {
-            DataType::Int32 => {
-                let arr: &Int32Array = spec_arr.column(index).as_primitive();
-                convert!(arr);
-            }
-            DataType::Int64 => {
-                let arr: &Int64Array = spec_arr.column(index).as_primitive();
-                convert!(arr);
-            }
-            DataType::Float32 => {
-                let arr: &Float32Array = spec_arr.column(index).as_primitive();
-                convert!(arr);
-            }
-            DataType::Float64 => {
-                let arr: &Float64Array = spec_arr.column(index).as_primitive();
-                convert!(arr);
-            }
-            DataType::Boolean => {
-                let arr: &BooleanArray = arr.as_boolean();
-                convert!(arr, value => { value }, |value: bool, builder: MemParamBuilder| { builder.value(value) });
-            }
-            DataType::Utf8 => {
-                if let Some(arr) = spec_arr.column(index).as_string_opt::<i64>() {
-                    convert!(arr, value => { true }, string_to_curie_or_value);
-                } else if let Some(arr) = spec_arr.column(index).as_string_opt::<i32>() {
-                    convert!(arr, value => { true }, string_to_curie_or_value);
-                } else {
-                    panic!(
-                        "Unsupported data type: {:?} for {metacol:?}",
-                        spec_arr.column(index).data_type()
-                    );
-                }
-            }
-            DataType::UInt32 => {
-                let arr: &UInt32Array = spec_arr.column(index).as_primitive();
-                convert!(arr);
-            }
-            DataType::UInt64 => {
-                let arr: &UInt64Array = spec_arr.column(index).as_primitive();
-                convert!(arr);
-            }
-            _ => {
-                todo!("Unsupported data type {:?}", arr.data_type())
-            }
-        }
-    }
-
-    fn visit_parameters(&mut self, struct_arr: &StructArray, skip_params: &[CURIE]) where T: ParamDescribed {
-        let params_array = struct_arr.column_by_name("parameters").unwrap();
-        macro_rules! process {
-            ($params_array:expr) => {
-                for (i, descr) in self.iter_instances() {
-                    let params = $params_array.value(i);
-                    let params = ParameterVisitor::new(params.as_struct()).build();
-
-                    for p in params {
-                        if let Some(acc) = p.curie() {
-                            if !skip_params.contains(&acc) {
-                                descr.add_param(p);
-                            }
-                        } else {
-                            descr.add_param(p);
-                        }
-                    }
-                }
-            };
-        }
-        if let Some(params_array) = params_array.as_list_opt::<i64>() {
-            process!(params_array);
-        } else if let Some(params_array) = params_array.as_list_opt::<i32>() {
-            process!(params_array);
-        } else {
-            panic!("{:?} not supported", params_array.data_type());
-        }
-    }
-}
-
-// TODO: Use the parsed CURIE to also get the correct term name.
-// Figure out how to do proper context piping to let this use a
-// faster local cache.
-#[inline(always)]
-fn string_to_curie_or_value(value: &str, builder: MemParamBuilder) -> MemParamBuilder {
-    if let Ok(acc) = value.parse::<CURIE>() {
-        builder.curie(acc)
-    } else {
-        builder.value(value)
-    }
-}
-
-
-pub trait VisitorBuilder3<'a, T>: VisitorBuilderBase<'a, DoubleIndexed<T>>
-where
-    DoubleIndexed<T>: CompoundIndexVisitor<T>,
-{
-
-    fn visit_precursor_index(&mut self, spec_arr: &StructArray, index: usize) {
-        let arr = spec_arr.column(index).as_primitive::<UInt64Type>();
-        for (i, descr) in self.iter_instances() {
-            if arr.is_null(i) {
-                continue;
-            };
-            let mut v = arr.value(i);
-            let _ = descr.secondary_index_mut().insert(&mut v);
-        }
     }
 }
 
@@ -1828,6 +1044,7 @@ impl<'a> MzScanVisitor<'a> {
     }
 }
 
+
 pub struct MzPrecursorVisitor<'a> {
     pub(crate) descriptions: &'a mut [DoubleIndexed<Precursor>],
     pub(crate) metadata_map: &'a MetadataMapping,
@@ -1846,6 +1063,31 @@ impl<'a> VisitorBuilderBase<'a, DoubleIndexed<Precursor>> for MzPrecursorVisitor
 }
 
 impl<'a> VisitorBuilder3<'a, Precursor> for MzPrecursorVisitor<'a> {}
+
+impl<'a> SubGroupVisitor<'a, DoubleIndexed<Precursor>, IsolationWindow> for MzPrecursorVisitor<'a> {
+    fn iter_instances_subgroup<'b>(
+        &'b mut self,
+    ) -> OffsetCollectionSubGroup<'b, DoubleIndexed<Precursor>, IsolationWindow> {
+        let base = self.iter_instances();
+        let f = |(i, descr): (usize, &'b mut DoubleIndexed<Precursor>)| {
+            (i, descr.2.isolation_window_mut())
+        };
+        let f = Box::new(f);
+        OffsetCollectionSubGroup::new(base, f)
+    }
+}
+
+impl<'a> SubGroupVisitor<'a, DoubleIndexed<Precursor>, Activation> for MzPrecursorVisitor<'a> {
+    fn iter_instances_subgroup<'b>(
+        &'b mut self,
+    ) -> OffsetCollectionSubGroup<'b, DoubleIndexed<Precursor>, Activation> {
+        let base = self.iter_instances();
+        let f =
+            |(i, descr): (usize, &'b mut DoubleIndexed<Precursor>)| (i, descr.2.activation_mut());
+        let f = Box::new(f);
+        OffsetCollectionSubGroup::new(base, f)
+    }
+}
 
 impl<'a> MzPrecursorVisitor<'a> {
     pub fn new(
@@ -1911,6 +1153,38 @@ impl<'a> MzPrecursorVisitor<'a> {
         }
     }
 
+    fn visit_isolation_window_parameters(
+        &mut self,
+        params_array: &ArrayRef,
+        skip_params: &[CURIE],
+    ) {
+        macro_rules! process {
+            ($params_array:expr) => {
+                for (i, descr) in self.iter_instances() {
+                    let params = $params_array.value(i);
+                    let params = ParameterVisitor::new(params.as_struct()).build();
+
+                    for p in params {
+                        if let Some(acc) = p.curie() {
+                            if !skip_params.contains(&acc) {
+                                descr.description_mut().isolation_window.add_param(p);
+                            }
+                        } else {
+                            descr.description_mut().isolation_window.add_param(p);
+                        }
+                    }
+                }
+            };
+        }
+        if let Some(params_array) = params_array.as_list_opt::<i64>() {
+            process!(params_array);
+        } else if let Some(params_array) = params_array.as_list_opt::<i32>() {
+            process!(params_array);
+        } else {
+            panic!("{:?} not supported", params_array.data_type());
+        }
+    }
+
     fn visit_isolation_window_lower_offset(&mut self, arr: &ArrayRef, _col: &MetadataColumn) {
         macro_rules! process {
             ($arr:expr) => {
@@ -1959,32 +1233,66 @@ impl<'a> MzPrecursorVisitor<'a> {
 
     fn visit_isolation_window(&mut self, spec_arr: &StructArray, index: usize) {
         let root = spec_arr.column(index).as_struct();
-        if let Some(isolation_window_map) = self.metadata_map().member("isolation_window") {
-            for (field, arr) in root.fields().iter().zip(root.columns()) {
-                if let Some(col) = isolation_window_map.traverse::<&str>(&[], field.name().as_str())
-                {
-                    if let Some(accession) = col.accession {
-                        match accession {
-                            curie!(MS:1000827) => self.visit_isolation_window_target(arr, col),
-                            _ => {}
-                        }
+        let _m = MetadataMapping::default();
+        let isolation_window_map = self.metadata_map().member("isolation_window").unwrap_or(&_m);
+        // Find the isolation target column first, everything else is relative to it
+        for (field, arr) in root.fields().iter().zip(root.columns()) {
+            if let Some(col) = isolation_window_map.traverse::<&str>(&[], field.name().as_str()) {
+                if let Some(accession) = col.accession {
+                    match accession {
+                        curie!(MS:1000827) => self.visit_isolation_window_target(arr, col),
+                        _ => {}
                     }
                 }
             }
-            for (field, arr) in root.fields().iter().zip(root.columns()) {
-                if let Some(col) = isolation_window_map.traverse::<&str>(&[], field.name().as_str())
-                {
-                    if let Some(accession) = col.accession {
-                        match accession {
-                            curie!(MS:1000828) => {
-                                self.visit_isolation_window_lower_offset(arr, col)
-                            }
-                            curie!(MS:1000829) => {
-                                self.visit_isolation_window_upper_offset(arr, col)
-                            }
-                            curie!(MS:1000827) => {}
-                            _ => {}
+        }
+        for (field, arr) in root.fields().iter().zip(root.columns()) {
+            if let Some(col) = isolation_window_map.traverse::<&str>(&[], field.name().as_str()) {
+                if let Some(accession) = col.accession {
+                    match accession {
+                        curie!(MS:1000828) => self.visit_isolation_window_lower_offset(arr, col),
+                        curie!(MS:1000829) => self.visit_isolation_window_upper_offset(arr, col),
+                        curie!(MS:1000827) => {}
+                        _ => {
+                            <Self as SubGroupVisitor<
+                                'a,
+                                DoubleIndexed<Precursor>,
+                                IsolationWindow,
+                            >>::visit_as_param_subgroup(
+                                &mut *self,
+                                arr,
+                                Some(col),
+                                Some(field.name()),
+                            );
                         }
+                    }
+                } else {
+                    <Self as SubGroupVisitor<'a, DoubleIndexed<Precursor>, IsolationWindow>>::visit_as_param_subgroup(
+                                &mut *self, arr, Some(col), Some(field.name()));
+                }
+            } else {
+                match field.name().as_str() {
+                    "parameters" => {
+                        <Self as SubGroupVisitor<
+                            'a,
+                            DoubleIndexed<Precursor>,
+                            IsolationWindow,
+                        >>::visit_parameters_subgroup(
+                            self, arr, &[]
+                        );
+                        self.visit_isolation_window_parameters(arr, &[]);
+                    }
+                    _ => {
+                        <Self as SubGroupVisitor<
+                            'a,
+                            DoubleIndexed<Precursor>,
+                            IsolationWindow,
+                        >>::visit_as_param_subgroup(
+                            self,
+                            arr,
+                            None,
+                            Some(field.name().as_str()),
+                        );
                     }
                 }
             }
@@ -1993,53 +1301,93 @@ impl<'a> MzPrecursorVisitor<'a> {
 
     // Activation columns
 
-    fn visit_activation(&mut self, spec_arr: &StructArray, index: usize) {
-        let spec_arr = spec_arr.column(index).as_struct();
-        let params_array = spec_arr.column_by_name("parameters").unwrap();
-
+    fn visit_activation_energy(&mut self, arr: &ArrayRef, _col: &MetadataColumn) {
         macro_rules! process {
-            ($params_array:expr) => {
-                for (i, descr) in self.iter_instances() {
-                    let params = $params_array.value(i);
-                    let params = params.as_struct();
-
-                    let params = ParameterVisitor::new(params).build();
-                    let descr = descr.description_mut();
-                    for p in params {
-                        if let Some(acc) = p.curie() {
-                            match acc {
-                                curie!(MS:1000045) => {
-                                    let val: mzdata::params::Value = p.value;
-                                    descr.activation.energy = val.to_f32().unwrap();
-                                }
-                                _ => {
-                                    if mzdata::spectrum::Activation::is_param_activation(&p) {
-                                        descr.activation.methods_mut().push(p.into());
-                                    } else {
-                                        descr.activation.add_param(p);
-                                    }
-                                }
-                            }
-                        } else {
-                            descr.activation.add_param(p);
-                        }
+            ($arr:expr) => {
+                for (offset, descr) in <Self as SubGroupVisitor<
+                    'a,
+                    DoubleIndexed<Precursor>,
+                    Activation,
+                >>::iter_instances_subgroup(self)
+                {
+                    if $arr.is_null(offset) {
+                        continue;
                     }
+                    descr.energy = $arr.value(offset) as f32;
                 }
             };
         }
-
-        if let Some(params_array) = params_array.as_list_opt::<i64>() {
-            process!(params_array);
-        } else if let Some(params_array) = params_array.as_list_opt::<i32>() {
-            process!(params_array);
+        if let Some(arr) = arr.as_primitive_opt::<Float32Type>() {
+            process!(arr);
+        } else if let Some(arr) = arr.as_primitive_opt::<Float64Type>() {
+            process!(arr);
         } else {
-            panic!("Unsupported data type: {:?}", params_array.data_type());
+            panic!("Unsupported data type: {:?}", arr.data_type());
+        }
+    }
+
+    fn visit_activation_method(&mut self, arr: &ArrayRef, _col: &MetadataColumn) {
+        if let Ok(arr) = AnyCURIEArray::try_from(arr) {
+            for (offset, descr) in <Self as SubGroupVisitor<
+                'a,
+                DoubleIndexed<Precursor>,
+                Activation,
+            >>::iter_instances_subgroup(self)
+            {
+                if arr.is_null(offset) {
+                    continue;
+                }
+                let v = arr.value(offset).unwrap();
+                if let Some(v) = DissociationMethodTerm::from_curie(&v) {
+                    descr.methods_mut().push(v);
+                }
+            }
+        } else {
+            panic!("Unsupported data type: {:?} for {_col:?}", arr.data_type());
+        }
+    }
+
+    fn visit_activation(&mut self, spec_arr: &StructArray, index: usize) {
+        let root = spec_arr.column(index).as_struct();
+        let _m = MetadataMapping::default();
+        let activation_map = self.metadata_map().member("activation").unwrap_or(&_m);
+        for (field, arr) in root.fields().iter().zip(root.columns()) {
+            if let Some(col) = activation_map.traverse::<&str>(&[], field.name().as_str()) {
+                if let Some(accession) = col.accession {
+                    match accession {
+                        curie!(MS:1000045) => self.visit_activation_energy(arr, col),
+                        curie!(MS:1000044) => self.visit_activation_method(arr, col),
+                        _ => <Self as SubGroupVisitor<
+                            'a,
+                            DoubleIndexed<Precursor>,
+                            Activation,
+                        >>::visit_as_param_subgroup(
+                            self, arr, Some(col), Some(field.name())
+                        ),
+                    }
+                } else {
+                    <Self as SubGroupVisitor<'a, DoubleIndexed<Precursor>, Activation>>::visit_as_param_subgroup(
+                        self, arr, None, Some(field.name())
+                    );
+                }
+            } else {
+                match field.name().as_str() {
+                    "parameters" => {
+                        <Self as SubGroupVisitor<'a, DoubleIndexed<Precursor>, Activation>>::visit_parameters_subgroup(
+                            self, arr, &[]);
+                        self.visit_isolation_window_parameters(arr, &[]);
+                    }
+                    _ => <Self as SubGroupVisitor<'a, DoubleIndexed<Precursor>, Activation>>::visit_as_param_subgroup(
+                        self, arr, None, Some(field.name())),
+                }
+            }
         }
     }
 
     pub fn visit(&mut self, spec_arr: &StructArray) {
         let names = spec_arr.column_names();
         let mut visited = vec![false; spec_arr.num_columns()];
+
         // Must visit the index first, to infer null spacing
         if let Some(i) = names.iter().position(|v| *v == "source_index") {
             self.visit_source_index(spec_arr, i);
@@ -2640,6 +1988,7 @@ impl AuxiliaryArrayVisitor {
                 "data_processing_ref" | "data_processing_id" => {
                     self.visit_data_processing_id(index, arrays);
                 }
+                "items" => {}
                 _ => {}
             }
         }

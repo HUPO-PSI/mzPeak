@@ -634,7 +634,7 @@ impl VisitorBase for CustomBuilderFromParameterDerived {
             self.name.clone(),
             vec![self.field.name().to_string()],
             Some(self.accession()),
-        );
+        ).with_term_marker(true);
         vec![f]
     }
 }
@@ -1393,7 +1393,7 @@ impl StructVisitor<mzdata::spectrum::IsolationWindow> for IsolationWindowBuilder
                 }
             }
         }
-        self.parameters.append_empty();
+        self.parameters.append_value(&item.params());
         true
     }
 }
@@ -1919,6 +1919,7 @@ pub struct AuxiliaryArrayBuilder {
     name: ParamBuilder,
     data_type: CURIEBuilder,
     compression: CURIEBuilder,
+    items: UInt64Builder,
     unit: CURIEBuilder,
     parameters: ParamListBuilder,
     data_processing_id: LargeStringBuilder,
@@ -1935,6 +1936,7 @@ impl Default for AuxiliaryArrayBuilder {
             name: Default::default(),
             data_type: Default::default(),
             compression: Default::default(),
+            items: Default::default(),
             unit: Default::default(),
             parameters: Default::default(),
             data_processing_id: Default::default(),
@@ -1952,6 +1954,7 @@ impl VisitorBase for AuxiliaryArrayBuilder {
             field!("name", self.name.as_struct_type()),
             field!("data_type", self.data_type.as_struct_type()),
             field!("compression", self.compression.as_struct_type()),
+            field!("items", DataType::UInt64),
             field!("unit", self.unit.as_struct_type()),
             field!(
                 "parameters",
@@ -1969,6 +1972,7 @@ impl VisitorBase for AuxiliaryArrayBuilder {
         self.name.append_null();
         self.data_type.append_null();
         self.compression.append_null();
+        self.items.append_null();
         self.unit.append_null();
         self.parameters.append_null();
         self.data_processing_id.append_null();
@@ -1986,6 +1990,7 @@ impl StructVisitor<AuxiliaryArray> for AuxiliaryArrayBuilder {
         self.name.append_value(&item.name);
         self.data_type.append_value(&item.data_type);
         self.compression.append_value(&item.compression);
+        self.items.append_value(item.items as u64);
         self.unit.append_option(item.unit.as_ref());
         self.parameters.append_value(&item.parameters.as_slice());
         self.data_processing_id
@@ -2009,6 +2014,7 @@ impl ArrayBuilder for AuxiliaryArrayBuilder {
             self.name.finish(),
             self.data_type.finish(),
             self.compression.finish(),
+            finish_it!(self.items),
             self.unit.finish(),
             finish_it!(self.parameters),
             finish_it!(self.data_processing_id),
@@ -2025,6 +2031,7 @@ impl ArrayBuilder for AuxiliaryArrayBuilder {
             self.name.finish_cloned(),
             self.data_type.finish_cloned(),
             self.compression.finish_cloned(),
+            finish_cloned!(self.items),
             self.unit.finish_cloned(),
             finish_cloned!(self.parameters),
             finish_cloned!(self.data_processing_id),

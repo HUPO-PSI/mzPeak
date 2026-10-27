@@ -3,13 +3,9 @@ use std::sync::Arc;
 
 use parquet::{
     arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
-    basic::ZstdLevel,
-    encryption::encrypt::FileEncryptionProperties,
-    file::{properties::WriterPropertiesBuilder, reader::ChunkReader},
+    file::reader::ChunkReader,
 };
 use sha2::{self, Digest};
-
-use crate::archive::{FileEntry, FileIndex};
 
 use arrow::{
     array::{Array, ArrayRef, LargeStringArray, RecordBatch, UInt64Array},
@@ -142,8 +138,9 @@ pub struct ColumnChunkChecksum {
     pub offset: u64,
     /// The number of bytes in the chunk (total compressed size)
     pub length: u64,
-    /// The hex-encoded SHA-512 digest of the chunk's bytes
-    pub digest: String,
+    /// The hex-encoded SHA-512 digest of the chunk's bytes, or PKCS #7 signed digest
+    /// with verification metadata.
+    pub signature: String,
 }
 
 /// Compute a SHA-512 checksum of every column chunk in every row group of a Parquet file
@@ -183,7 +180,7 @@ where
                 path: col.column_path().string(),
                 offset,
                 length,
-                digest: hex::encode(sha2::Sha512::digest(&blob)),
+                signature: hex::encode(sha2::Sha512::digest(&blob)),
             });
         }
     }
@@ -199,7 +196,7 @@ pub fn column_chunk_checksum_schema() -> Arc<Schema> {
         Field::new("path", DataType::LargeUtf8, false),
         Field::new("offset", DataType::UInt64, false),
         Field::new("length", DataType::UInt64, false),
-        Field::new("digest", DataType::LargeUtf8, false),
+        Field::new("signature", DataType::LargeUtf8, false),
     ]))
 }
 
@@ -212,7 +209,7 @@ pub fn column_chunk_checksums_to_record_batch(checksums: &[ColumnChunkChecksum])
     let paths = LargeStringArray::from_iter_values(checksums.iter().map(|c| c.path.as_str()));
     let offsets = UInt64Array::from_iter_values(checksums.iter().map(|c| c.offset));
     let lengths = UInt64Array::from_iter_values(checksums.iter().map(|c| c.length));
-    let digests = LargeStringArray::from_iter_values(checksums.iter().map(|c| c.digest.as_str()));
+    let signatures = LargeStringArray::from_iter_values(checksums.iter().map(|c| c.signature.as_str()));
 
     RecordBatch::try_new(
         column_chunk_checksum_schema(),
@@ -223,7 +220,7 @@ pub fn column_chunk_checksums_to_record_batch(checksums: &[ColumnChunkChecksum])
             Arc::new(paths),
             Arc::new(offsets),
             Arc::new(lengths),
-            Arc::new(digests),
+            Arc::new(signatures),
         ],
     )
     .unwrap()
@@ -261,7 +258,7 @@ pub fn column_chunk_checksums_from_record_batch(
     let paths = column::<LargeStringArray>(batch, "path")?;
     let offsets = column::<UInt64Array>(batch, "offset")?;
     let lengths = column::<UInt64Array>(batch, "length")?;
-    let digests = column::<LargeStringArray>(batch, "digest")?;
+    let signatures = column::<LargeStringArray>(batch, "signature")?;
 
     Ok((0..batch.num_rows())
         .map(|i| ColumnChunkChecksum {
@@ -271,72 +268,11 @@ pub fn column_chunk_checksums_from_record_batch(
             path: paths.value(i).to_string(),
             offset: offsets.value(i),
             length: lengths.value(i),
-            digest: digests.value(i).to_string(),
+            signature: signatures.value(i).to_string(),
         })
         .collect())
 }
 
-pub fn join_summaries_with_index<'a>(
-    summaries: &'a [DigestSummary],
-    file_index: &'a FileIndex,
-) -> Vec<(&'a DigestSummary, &'a FileEntry)> {
-    let mut joined_entries = Vec::new();
-    for fe in file_index.iter() {
-        if let Some(c) = fe.checksum.as_ref() {
-            if let Some(s) = summaries.iter().find(|s| s.digest == *c) {
-                joined_entries.push((s, fe))
-            }
-        }
-    }
-    joined_entries
-}
-
-pub fn build_provenance_table<'a>(
-    mut entries: Vec<(&'a DigestSummary, &'a FileEntry)>,
-) -> RecordBatch {
-    let mut salts = Vec::new();
-    let mut names = Vec::new();
-    let mut digests = Vec::new();
-
-    for (d, e) in entries.iter() {
-        if d.salted_digest.is_none() {
-            continue;
-        }
-        salts.push(d.salted_digest.clone().unwrap());
-        names.push(e.name.clone());
-        digests.push(d.digest.clone());
-    }
-
-    entries.sort_by(|a, b| a.0.digest.cmp(&b.0.digest));
-
-    let salts = Arc::new(arrow::array::LargeStringArray::from_iter_values(salts));
-    let names = Arc::new(arrow::array::LargeStringArray::from_iter_values(names));
-    let digests = Arc::new(arrow::array::LargeStringArray::from_iter_values(digests));
-
-    let schema = Arc::new(Schema::new(vec![
-        Arc::new(Field::new("name", DataType::LargeUtf8, false)),
-        Arc::new(Field::new("salted_digest", DataType::LargeUtf8, false)),
-        Arc::new(Field::new("digest", DataType::LargeUtf8, false)),
-    ]));
-
-    RecordBatch::try_new(schema, vec![names as ArrayRef, salts, digests]).unwrap()
-}
-
-pub fn write_provenance_table<W: io::Write + Send>(
-    stream: &mut W,
-    provenance_table: RecordBatch,
-    encryption_props: Arc<FileEncryptionProperties>,
-) -> io::Result<()> {
-    let props = WriterPropertiesBuilder::default()
-        .set_compression(parquet::basic::Compression::ZSTD(ZstdLevel::default()))
-        .with_file_encryption_properties(encryption_props)
-        .build();
-    let mut writer =
-        parquet::arrow::ArrowWriter::try_new(stream, provenance_table.schema(), Some(props))?;
-    writer.write(&provenance_table)?;
-    writer.finish()?;
-    Ok(())
-}
 
 #[cfg(feature = "async")]
 mod async_impl {
@@ -393,7 +329,7 @@ mod async_impl {
                     path: col.column_path().string(),
                     offset,
                     length,
-                    digest: hex::encode(sha2::Sha512::digest(&blob)),
+                    signature: hex::encode(sha2::Sha512::digest(&blob)),
                 });
             }
         }
