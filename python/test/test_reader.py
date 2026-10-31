@@ -12,13 +12,15 @@ from mzpeak.file_index import (
     EntityType,
     FileEntry,
     FileIndex,
-    checksum_parquet_segments,
-    column_chunk_checksums_from_table,
-    column_chunk_checksums_to_table,
     column_sizes,
 )
 from mzpeak.filters import find_where_not_zero_run
 from mzpeak.mz_reader import BufferFormat
+from mzpeak.provenance import (
+    checksum_parquet_segments,
+    segment_signatures_from_table,
+    segment_signatures_to_table,
+)
 from pyteomics import mzml
 
 source_mzml_path = Path("small.mzML")
@@ -294,15 +296,15 @@ def test_checksum_segments(small: MzPeakFile):
         assert col.filename == small.file_index[0].name
         assert col.row_group == 0
         if col.path == 'point.spectrum_index':
-            assert col.digest == "04126172f9ade5d62b1e582d0f70419a7ca4d1ed53dd7cad744f4d39158a9e2e3baf55b6c58cee1f399b0fa61ba407d4c0cf70c272289e7ef670c4d226d775c5"
+            assert col.signature.hex() == "04126172f9ade5d62b1e582d0f70419a7ca4d1ed53dd7cad744f4d39158a9e2e3baf55b6c58cee1f399b0fa61ba407d4c0cf70c272289e7ef670c4d226d775c5"
         elif col.path == 'point.mz':
             assert (
-                col.digest
+                col.signature.hex()
                 == "72ec021de3b510f505b51351e94419f22c0afd5965b8f0f0f08550b220db3bae4a61c05f9bd6c29963dcc7baa6d2a60ee9def1e9e4c0122bf387898e5a326ec3"
             )
 
-    table = column_chunk_checksums_to_table(cols)
-    dup = column_chunk_checksums_from_table(table)
+    table = segment_signatures_to_table(cols)
+    dup = segment_signatures_from_table(table)
     assert cols == dup
 
 

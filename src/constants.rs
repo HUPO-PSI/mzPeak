@@ -61,3 +61,5 @@ pub const MS_RUN_KEY: &'static str = "run";
 
 pub const VERSION_KEY: &'static str = "version";
 pub const MZPEAK_VERSION: &'static str = "0.9.0";
+
+pub const PROVENANCE_SIGNATURE_NAME: &'static str = "provenance.parquet";

@@ -23,8 +23,8 @@ use crate::archive::{DataKind, EntityType, FileEntry, FileIndex};
 use crate::constants::{
     CHROMATOGRAM_DATA_ARRAYS_NAME, CHROMATOGRAM_METADATA_NAME,
     CHROMATOGRAM_METADATA_PRECURSORS_NAME, CHROMATOGRAM_METADATA_PRODUCTS_NAME,
-    CHROMATOGRAM_METADATA_SELECTED_IONS_NAME, SPECTRUM_DATA_ARRAYS_NAME, SPECTRUM_METADATA_NAME,
-    SPECTRUM_METADATA_PRECURSORS_NAME, SPECTRUM_METADATA_SCANS_NAME,
+    CHROMATOGRAM_METADATA_SELECTED_IONS_NAME, PROVENANCE_SIGNATURE_NAME, SPECTRUM_DATA_ARRAYS_NAME,
+    SPECTRUM_METADATA_NAME, SPECTRUM_METADATA_PRECURSORS_NAME, SPECTRUM_METADATA_SCANS_NAME,
     SPECTRUM_METADATA_SELECTED_IONS_NAME, SPECTRUM_PEAK_DATA_ARRAYS_NAME,
     WAVELENGTH_SPECTRUM_DATA_ARRAYS_NAME, WAVELENGTH_SPECTRUM_METADATA_NAME,
     WAVELENGTH_SPECTRUM_METADATA_SCANS_NAME,
@@ -345,6 +345,8 @@ pub enum MzPeakArchiveType {
     WavelengthSpectrumMetadata,
     WavelengthSpectrumMetadataScans,
 
+    ProvenanceSignature,
+
     Other,
     Proprietary,
 }
@@ -364,16 +366,11 @@ impl MzPeakArchiveType {
             MzPeakArchiveType::SpectrumMetadataScans => SPECTRUM_METADATA_SCANS_NAME,
             MzPeakArchiveType::SpectrumMetadataPrecursors => SPECTRUM_METADATA_PRECURSORS_NAME,
             MzPeakArchiveType::SpectrumMetadataSelectedIons => SPECTRUM_METADATA_SELECTED_IONS_NAME,
-            MzPeakArchiveType::ChromatogramMetadataPrecursors => {
-                CHROMATOGRAM_METADATA_PRECURSORS_NAME
-            }
-            MzPeakArchiveType::ChromatogramMetadataSelectedIons => {
-                CHROMATOGRAM_METADATA_SELECTED_IONS_NAME
-            }
+            MzPeakArchiveType::ChromatogramMetadataPrecursors => CHROMATOGRAM_METADATA_PRECURSORS_NAME,
+            MzPeakArchiveType::ChromatogramMetadataSelectedIons => CHROMATOGRAM_METADATA_SELECTED_IONS_NAME,
             MzPeakArchiveType::ChromatogramMetadataProducts => CHROMATOGRAM_METADATA_PRODUCTS_NAME,
-            MzPeakArchiveType::WavelengthSpectrumMetadataScans => {
-                WAVELENGTH_SPECTRUM_METADATA_SCANS_NAME
-            }
+            MzPeakArchiveType::WavelengthSpectrumMetadataScans => WAVELENGTH_SPECTRUM_METADATA_SCANS_NAME,
+            MzPeakArchiveType::ProvenanceSignature => PROVENANCE_SIGNATURE_NAME,
         }
     }
 
@@ -415,6 +412,8 @@ impl MzPeakArchiveType {
             .ends_with(MzPeakArchiveType::WavelengthSpectrumMetadataScans.tag_file_suffix())
         {
             MzPeakArchiveType::WavelengthSpectrumMetadataScans
+        } else if name.ends_with(MzPeakArchiveType::ProvenanceSignature.tag_file_suffix()) {
+            MzPeakArchiveType::ProvenanceSignature
         } else {
             MzPeakArchiveType::Other
         }
@@ -878,6 +877,7 @@ impl SchemaMetadataManager {
                 _ => None,
             },
             EntityType::Other(_) => None,
+            EntityType::Provenance => None,
         }
     }
 }
@@ -922,6 +922,7 @@ impl SchemaMetadataManager {
             MzPeakArchiveType::WavelengthSpectrumMetadataScans => {
                 self.wavelength_scan_metadata = Some(entry)
             }
+            MzPeakArchiveType::ProvenanceSignature => {}
         }
     }
 }
@@ -1401,7 +1402,9 @@ impl<T: ArchiveSource + 'static> ArchiveReader<T> {
     /// ## Returns
     /// - The main status flag: `Some` if all entries have a checksum recorded. `None` otherwise.
     /// - Each failed entry and its computed checksum if it was resolved, None otherwise.
-    pub fn check_archive_integrity(&self) -> io::Result<(Option<bool>, Vec<(FileEntry, Option<String>)>)> {
+    pub fn check_archive_integrity(
+        &self,
+    ) -> io::Result<(Option<bool>, Vec<(FileEntry, Option<String>)>)> {
         let mut failed = Vec::new();
         let mut valid = Some(true);
         for e in self.file_index().iter() {

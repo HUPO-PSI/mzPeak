@@ -462,7 +462,8 @@ impl ParquetIndexExtractor {
                     crate::archive::DataKind::DataArray
                     | crate::archive::DataKind::Peaks
                     | crate::archive::DataKind::Other(_)
-                    | crate::archive::DataKind::Proprietary => {}
+                    | crate::archive::DataKind::Proprietary
+                    | crate::archive::DataKind::Signature => {}
                     crate::archive::DataKind::Metadata => {
                         self.spectra.spectrum_metadata_map = Some(f.column_mapping.clone().into())
                     }
@@ -484,7 +485,8 @@ impl ParquetIndexExtractor {
                     | crate::archive::DataKind::Peaks
                     | crate::archive::DataKind::Other(_)
                     | crate::archive::DataKind::Scans
-                    | crate::archive::DataKind::Proprietary => {}
+                    | crate::archive::DataKind::Proprietary
+                    | crate::archive::DataKind::Signature => {}
                     crate::archive::DataKind::Metadata => {
                         self.chromatograms.chromatogram_metadata_map =
                             Some(f.column_mapping.clone().into())
@@ -508,7 +510,8 @@ impl ParquetIndexExtractor {
                         | crate::archive::DataKind::Products
                         | crate::archive::DataKind::Precursors
                         | crate::archive::DataKind::SelectedIons
-                        | crate::archive::DataKind::Proprietary => {}
+                        | crate::archive::DataKind::Proprietary
+                        | crate::archive::DataKind::Signature => {}
                         crate::archive::DataKind::Metadata => {
                             v.spectrum_metadata_map = Some(f.column_mapping.clone().into())
                         }
@@ -518,6 +521,7 @@ impl ParquetIndexExtractor {
                     }
                 }
                 crate::archive::EntityType::Other(_) => {},
+                crate::archive::EntityType::Provenance => {},
             }
         }
     }

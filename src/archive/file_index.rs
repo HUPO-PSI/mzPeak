@@ -24,6 +24,7 @@ pub enum DataKind {
     DataArray,
     #[serde(rename = "peaks")]
     Peaks,
+
     #[serde(rename = "metadata")]
     Metadata,
     #[serde(rename = "scans")]
@@ -34,6 +35,10 @@ pub enum DataKind {
     SelectedIons,
     #[serde(rename = "products")]
     Products,
+
+    #[serde(rename = "signature")]
+    Signature,
+
     #[serde(rename = "proprietary")]
     Proprietary,
     #[serde(rename = "other")]
@@ -53,6 +58,7 @@ impl FromStr for DataKind {
             "precursors" => Self::Precursors,
             "selected_ions" => Self::SelectedIons,
             "products" => Self::Products,
+            "signature" => Self::Signature,
             "proprietary" => Self::Proprietary,
             "other" => Self::Other("other".into()),
             _ => Self::Other(s.to_string()),
@@ -72,6 +78,10 @@ pub enum EntityType {
     #[serde(rename = "wavelength_spectrum")]
     #[serde(alias = "wavelength spectrum")]
     WavelengthSpectrum,
+
+    #[serde(rename = "provenance")]
+    Provenance,
+
     #[serde(rename = "other")]
     #[serde(untagged)]
     Other(String),
@@ -85,6 +95,7 @@ impl FromStr for EntityType {
             "spectrum" | "mass spectrum" | "mass_spectrum" => Self::Spectrum,
             "wavelength spectrum" | "wavelength_spectrum" => Self::WavelengthSpectrum,
             "chromatogram" => Self::Chromatogram,
+            "provenance" => Self::Provenance,
             "other" => Self::Other("other".into()),
             _ => {
                 log::warn!("Found entity type {s}, treating as 'other'");
@@ -235,6 +246,10 @@ pub(crate) const fn entity_data_kind_to_archive_type(entity_type: &EntityType, d
                 _ => super::MzPeakArchiveType::Other,
             },
             EntityType::Other(_) => super::MzPeakArchiveType::Other,
+            EntityType::Provenance => match data_kind {
+                DataKind::Signature => super::MzPeakArchiveType::ProvenanceSignature,
+                _ => super::MzPeakArchiveType::Other,
+            },
         }
 }
 
@@ -300,6 +315,7 @@ impl From<super::MzPeakArchiveType> for FileEntry {
             super::MzPeakArchiveType::ChromatogramMetadataSelectedIons => FileEntry::new(value.tag_file_suffix().into(), EntityType::Chromatogram, DataKind::SelectedIons),
             super::MzPeakArchiveType::ChromatogramMetadataProducts => FileEntry::new(value.tag_file_suffix().into(), EntityType::Chromatogram, DataKind::Products),
             super::MzPeakArchiveType::WavelengthSpectrumMetadataScans => FileEntry::new(value.tag_file_suffix().into(), EntityType::WavelengthSpectrum, DataKind::Scans),
+            super::MzPeakArchiveType::ProvenanceSignature => FileEntry::new(value.tag_file_suffix().into(), EntityType::Provenance, DataKind::Signature),
         }
     }
 }

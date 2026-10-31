@@ -1,10 +1,8 @@
-import hashlib
 from collections import defaultdict
-from collections.abc import MutableSequence, Sequence
+from collections.abc import MutableSequence
 from dataclasses import dataclass, field
-from dataclasses import fields as dataclasses_fields
 from enum import StrEnum
-from typing import IO, TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 import pandas as pd
@@ -20,6 +18,7 @@ OTHER = "other"
 SPECTRUM = "spectrum"
 CHROMATOGRAM = "chromatogram"
 WAVELENGTH_SPECTRUM = "wavelength_spectrum"
+PROVENANCE = "provenance"
 
 DATA_ARRAYS = "data_arrays"
 METADATA = "metadata"
@@ -28,6 +27,7 @@ SCANS = "scans"
 PRECURSORS = "precursors"
 SELECTED_IONS = "selected_ions"
 PRODUCTS = "products"
+SIGNATURE = "signature"
 PROPRIETARY = "proprietary"
 
 
@@ -35,6 +35,7 @@ class EntityTypeTag(StrEnum):
     Spectrum = SPECTRUM
     Chromatogram = CHROMATOGRAM
     WavelengthSpectrum = WAVELENGTH_SPECTRUM
+    Provenance = PROVENANCE
     Other = OTHER
 
     @classmethod
@@ -56,6 +57,7 @@ class EntityType:
     Spectrum: ClassVar[EntityTypeTag] = EntityTypeTag.Spectrum
     Chromatogram: ClassVar[EntityTypeTag] = EntityTypeTag.Chromatogram
     WavelengthSpectrum: ClassVar[EntityTypeTag] = EntityTypeTag.WavelengthSpectrum
+    Provenance: ClassVar[EntityTypeTag] = EntityTypeTag.Provenance
     Other: ClassVar[EntityTypeTag] = EntityTypeTag.Other
 
     def __eq__(self, other: 'EntityType') -> bool:
@@ -99,6 +101,7 @@ class DataKindTag(StrEnum):
     Products = PRODUCTS
     Other = OTHER
     Proprietary = PROPRIETARY
+    Signature = SIGNATURE
 
     @classmethod
     def get(cls, value: str):
@@ -124,6 +127,7 @@ class DataKind:
     Products: ClassVar[DataKindTag] = DataKindTag.Products
     Other: ClassVar[DataKindTag] = DataKindTag.Other
     Proprietary: ClassVar[DataKindTag] = DataKindTag.Proprietary
+    Signatuture: ClassVar[DataKindTag] = DataKindTag.Signature
 
     def __eq__(self, other: "DataKind") -> bool:
         if other is None:
@@ -355,131 +359,6 @@ class FileIndex(MutableSequence[FileEntry]):
         return cls(files, data.get('metadata', {}))
 
 
-@dataclass
-class ColumnChunkChecksum:
-    """
-    The SHA-512 checksum of the raw bytes of a single Parquet column chunk
-    (dictionary page, if any, plus all data pages), as laid out in the file.
-    """
-
-    #: The name of the file the column chunk was read from
-    filename: str
-    #: The index of the row group this column chunk belongs to
-    row_group: int
-    #: The index of the column within the row group
-    column: int
-    #: The dotted path of the column in the Parquet schema
-    path: str
-    #: The byte offset of the first page of the chunk in the file
-    offset: int
-    #: The number of bytes in the chunk (total compressed size)
-    length: int
-    #: The hex-encoded SHA-512 digest of the chunk's bytes
-    digest: str
-
-
-def checksum_parquet_segments(reader: "IO[bytes]", filename: str) -> list[ColumnChunkChecksum]:
-    """
-    Compute a SHA-512 checksum of every column chunk in every row group of a Parquet file.
-
-    Parameters
-    ----------
-    reader : file-like
-        A seekable, readable binary stream over the Parquet file.
-    filename : str
-        The name of the file, recorded on each :class:`ColumnChunkChecksum`.
-
-    Returns
-    -------
-    list[:class:`ColumnChunkChecksum`]
-    """
-    from pyarrow import parquet as pq
-
-    header = pq.ParquetFile(reader).metadata
-    checksums = []
-    for row_group in range(header.num_row_groups):
-        rg = header.row_group(row_group)
-        for column in range(rg.num_columns):
-            col = rg.column(column)
-            # The chunk starts at the dictionary page when there is one, else the first data page
-            if col.dictionary_page_offset:
-                offset = col.dictionary_page_offset
-            else:
-                offset = col.data_page_offset
-            length = col.total_compressed_size
-            reader.seek(offset)
-            blob = reader.read(length)
-            if len(blob) != length:
-                raise EOFError(
-                    f"Expected {length} bytes for row group {row_group} column {col.path_in_schema}, "
-                    f"read {len(blob)}"
-                )
-            checksums.append(
-                ColumnChunkChecksum(
-                    filename,
-                    row_group,
-                    column,
-                    col.path_in_schema,
-                    offset,
-                    length,
-                    hashlib.sha512(blob).hexdigest(),
-                )
-            )
-    return checksums
-
-
-def column_chunk_checksum_schema() -> "pyarrow.Schema":
-    """The Arrow schema used to store :class:`ColumnChunkChecksum` records"""
-    import pyarrow as pa
-
-    return pa.schema(
-        [
-            pa.field("filename", pa.large_string(), False),
-            pa.field("row_group", pa.uint64(), False),
-            pa.field("column", pa.uint64(), False),
-            pa.field("path", pa.large_string(), False),
-            pa.field("offset", pa.uint64(), False),
-            pa.field("length", pa.uint64(), False),
-            pa.field("digest", pa.large_string(), False),
-        ]
-    )
-
-
-def column_chunk_checksums_to_table(checksums: Sequence[ColumnChunkChecksum]) -> "pyarrow.Table":
-    """
-    Convert a sequence of :class:`ColumnChunkChecksum` into a :class:`pyarrow.Table`
-    with the schema from :func:`column_chunk_checksum_schema`, suitable for writing to Parquet.
-    """
-    import pyarrow as pa
-
-    schema = column_chunk_checksum_schema()
-    return pa.table(
-        {f.name: [getattr(c, f.name) for c in checksums] for f in schema}, schema=schema
-    )
-
-
-def column_chunk_checksums_from_table(
-    table: "pyarrow.Table | pyarrow.RecordBatch",
-) -> list[ColumnChunkChecksum]:
-    """
-    Convert a table or record batch produced by :func:`column_chunk_checksums_to_table`
-    (or read back from a Parquet file holding it) into :class:`ColumnChunkChecksum` records.
-
-    Columns are looked up by name. A :class:`KeyError` is raised if one is missing and a
-    :class:`ValueError` if one contains nulls.
-    """
-    names = [f.name for f in dataclasses_fields(ColumnChunkChecksum)]
-    columns = {}
-    for name in names:
-        if name not in table.schema.names:
-            raise KeyError(f"Missing column {name!r}")
-        col = table.column(name)
-        if col.null_count > 0:
-            raise ValueError(f"Column {name!r} contains nulls")
-        columns[name] = col.to_pylist()
-    return [ColumnChunkChecksum(*row) for row in zip(*(columns[n] for n in names))]
-
-
 def column_sizes(meta: "pq.FileMetaData"):
     columns: defaultdict[str, list[pq.ColumnChunkMetaData]] = defaultdict(list)
     n_cols = meta.num_columns
@@ -508,13 +387,9 @@ def column_sizes(meta: "pq.FileMetaData"):
 
 
 __all__ = [
-    "ColumnChunkChecksum",
     "DataKind",
     "EntityType",
     "FileEntry",
     "FileIndex",
-    "checksum_parquet_segments",
-    "column_chunk_checksum_schema",
-    "column_chunk_checksums_from_table",
-    "column_chunk_checksums_to_table",
+    "column_sizes"
 ]
