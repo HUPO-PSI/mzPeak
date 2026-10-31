@@ -236,6 +236,16 @@ class SegmentSignature:
         )
         return cert, signing_time
 
+    def read_and_digest(self, source: IO[bytes]):
+        if self.offset:
+            source.seek(self.offset)
+        if self.length:
+            buf = source.read(self.length)
+            if len(buf) != self.length:
+                raise ValueError("Length of segment does not matched expectation")
+        else:
+            buf = source.read()
+        return hashlib.sha512(buf).digest()
 
 
 def checksum_parquet_segments(

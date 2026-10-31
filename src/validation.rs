@@ -140,6 +140,8 @@ pub struct SegmentSignature {
     pub length: Option<u64>,
     /// The SHA-512 digest of the chunk, or its signed form
     pub signature: Vec<u8>,
+    /// Whether the segment has been signed yet, or just digested
+    pub signed: bool,
 }
 
 impl SegmentSignature {
@@ -151,6 +153,7 @@ impl SegmentSignature {
         offset: Option<u64>,
         length: Option<u64>,
         signature: Vec<u8>,
+        signed: bool,
     ) -> Self {
         Self {
             filename,
@@ -160,6 +163,7 @@ impl SegmentSignature {
             offset,
             length,
             signature,
+            signed,
         }
     }
 
@@ -188,6 +192,192 @@ impl SegmentSignature {
             read_length -= z as u64;
         }
         Ok(chk.finalize().to_vec())
+    }
+}
+
+#[allow(unused_imports)]
+#[cfg(feature = "verification")]
+mod verify {
+    use std::ops::Not;
+
+use super::*;
+    use cms::{
+        attr::{MessageDigest, SigningTime}, cert::{
+            CertificateChoices, x509::{
+                attr::{Attribute, AttributeType, AttributeValue}, der::{
+                    Decode, Encode, Tagged, asn1::{OctetString, OctetStringRef, SetOfVec, UtcTime},
+                },
+            },
+        }, content_info::ContentInfo, signed_data::{SignedAttributes, SignedData, SignerIdentifier, SignerInfo},
+    };
+    use const_oid::db::{rfc5911, rfc5912, rfc8410};
+    use ed25519::SignatureEncoding;
+    use ed25519_dalek::{self, Signer, Verifier, VerifyingKey, pkcs8::DecodePublicKey};
+
+    #[derive(Debug, Clone)]
+    pub enum VerificationStatus {
+        VerifiedSignature(CertificateChoices, Option<UtcTime>),
+        Invalid,
+    }
+
+    impl Not for VerificationStatus {
+        type Output = bool;
+
+        fn not(self) -> Self::Output {
+            match self {
+                VerificationStatus::VerifiedSignature(_, _) => false,
+                VerificationStatus::Invalid => true,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, thiserror::Error)]
+    pub enum VerificationError {
+        #[error("DER decoding error: {0}")]
+        DerError(
+            #[source]
+            #[from]
+            cms::cert::x509::der::Error,
+        ),
+        #[error("Incorrect digest algorithm found: {0:?}")]
+        IncorrectDigestAlgorithm(const_oid::ObjectIdentifier),
+        #[error("Incorrect signing algorithm found: {0:?}")]
+        IncorrectSignatureAlgorithm(const_oid::ObjectIdentifier),
+        #[error("Incorrect message content type: {0:?}")]
+        IncorrectContentType(const_oid::ObjectIdentifier),
+        #[error("No signer found")]
+        MissingSigner,
+        #[error("No issueing certificate found")]
+        MissingCertificate,
+        #[error("No signing attributes found")]
+        MissingSignedAttributes,
+        #[error("Missing signed attribute {0:?}")]
+        MissingSignedAttribute(const_oid::ObjectIdentifier),
+    }
+
+    impl SegmentSignature {
+        // pub fn sign_with(&mut self, certificate: &cms::cert::CertificateChoices) {
+        //     if self.signed {
+        //         return;
+        //     }
+
+        //     let mut signed_attrs = SignedAttributes::new();
+        //     Attribute { oid: rfc5911::ID_CONTENT_TYPE, values: [] }
+        // }
+
+        pub fn verify_against(&self, digest: &[u8]) -> Result<VerificationStatus, VerificationError> {
+            if !self.signed {
+                panic!("Can't verify unsigned data")
+            }
+
+            let content = cms::content_info::ContentInfo::from_der(&self.signature)?;
+            if content.content_type != rfc5911::ID_SIGNED_DATA {
+                return Err(VerificationError::IncorrectContentType(
+                    content.content_type,
+                ));
+            }
+
+            let content = content.content.decode_as::<SignedData>()?;
+            if content.signer_infos.as_ref().is_empty() {
+                return Err(VerificationError::MissingSigner);
+            }
+
+            let signer_info = content.signer_infos.as_ref().get(0).unwrap();
+            if signer_info.digest_alg.oid != rfc5912::ID_SHA_512 {
+                log::error!(
+                    "Digest algorithm {:?} was not ID_SHA_512",
+                    signer_info.digest_alg
+                );
+                return Err(VerificationError::IncorrectDigestAlgorithm(
+                    signer_info.digest_alg.oid.clone(),
+                ));
+            }
+
+            if signer_info.signature_algorithm.oid != rfc8410::ID_ED_25519 {
+                log::error!(
+                    "Signature algorithm {:?} was not ID_ED_25519",
+                    signer_info.signature_algorithm
+                );
+                return Err(VerificationError::IncorrectSignatureAlgorithm(
+                    signer_info.signature_algorithm.oid.clone(),
+                ));
+            }
+
+            let sid = &signer_info.sid;
+            let cert = if let SignerIdentifier::IssuerAndSerialNumber(issuer_serial) = sid {
+                content.certificates.as_ref().and_then(|cs| {
+                    cs.as_ref().iter().find_map(|c| match c {
+                        cms::cert::CertificateChoices::Certificate(c) => {
+                            if c.tbs_certificate.issuer == issuer_serial.issuer
+                                && c.tbs_certificate.serial_number == issuer_serial.serial_number
+                            {
+                                Some(c)
+                            } else {
+                                None
+                            }
+                        }
+                        cms::cert::CertificateChoices::Other(_) => None,
+                    })
+                })
+            } else {
+                None
+            };
+
+            if cert.is_none() {
+                log::error!("Certificate not found");
+                return Err(VerificationError::MissingCertificate);
+            }
+            let cert = cert.unwrap();
+
+            let pk = VerifyingKey::from_public_key_der(
+                &cert.tbs_certificate.subject_public_key_info.to_der()?,
+            )
+            .unwrap();
+
+            if signer_info.signed_attrs.is_none() {
+                log::error!("Signed attributes were missing");
+                return Err(VerificationError::MissingSignedAttributes);
+            }
+
+            let mut raw_to_verify = Vec::new();
+            let signed_attrs = signer_info.signed_attrs.as_ref().unwrap();
+            signed_attrs.encode_to_vec(&mut raw_to_verify)?;
+            raw_to_verify[0] = 49;
+            let signature =
+                ed25519::Signature::from_slice(signer_info.signature.as_bytes()).unwrap();
+            pk.verify(&raw_to_verify, &signature).unwrap();
+
+            fn find_attr_single_attr_value(
+                signed_attrs: &SetOfVec<Attribute>,
+                attr: const_oid::ObjectIdentifier,
+            ) -> Option<&AttributeValue> {
+                let content_tp = signed_attrs.iter().find(|v| v.oid == attr)?;
+                if content_tp.values.len() != 1 {
+                    log::error!("Found {} values for {:?}", content_tp.values.len(), attr);
+                    None
+                } else {
+                    content_tp.values.get(0)
+                }
+            }
+
+            let content_tp = find_attr_single_attr_value(signed_attrs, rfc5911::ID_MESSAGE_DIGEST)
+                .ok_or(VerificationError::MissingSignedAttribute(
+                    rfc5911::ID_MESSAGE_DIGEST,
+                ))?;
+            let message_digest = content_tp.decode_as::<OctetString>()?;
+            if digest != message_digest.as_bytes() {
+                log::warn!("The encoded digest was {message_digest:?}, did not match {digest:?}");
+                return Ok(VerificationStatus::Invalid);
+            }
+
+            let signing_time = find_attr_single_attr_value(signed_attrs, rfc5911::ID_SIGNING_TIME);
+            let sigining_time = if let Some(time) = signing_time {
+                Some(time.decode_as::<UtcTime>()?)
+            } else {
+                None
+            };
+            Ok(VerificationStatus::VerifiedSignature(CertificateChoices::Certificate(cert.clone()), sigining_time))
+        }
     }
 }
 
@@ -229,6 +419,7 @@ where
                 Some(offset),
                 Some(length),
                 sha2::Sha512::digest(&blob).to_vec(),
+                false,
             ));
         }
     }
@@ -329,6 +520,7 @@ pub fn segment_signature_from_record_batch(
             offset: offsets.is_valid(i).then(|| offsets.value(i)),
             length: lengths.is_valid(i).then(|| lengths.value(i)),
             signature: signatures.value(i).to_vec(),
+            signed: true,
         })
         .collect())
 }
@@ -356,7 +548,10 @@ mod async_impl {
     }
 
     impl SegmentSignature {
-        pub async fn read_digest_from_async<R: AsyncReadExt + AsyncSeekExt + Unpin>(&self, source: &mut R) -> io::Result<Vec<u8>> {
+        pub async fn read_digest_from_async<R: AsyncReadExt + AsyncSeekExt + Unpin>(
+            &self,
+            source: &mut R,
+        ) -> io::Result<Vec<u8>> {
             if let Some(offset) = self.offset {
                 source.seek(io::SeekFrom::Start(offset)).await?;
             }
@@ -419,6 +614,7 @@ mod async_impl {
                     Some(offset),
                     Some(length),
                     sha2::Sha512::digest(&blob).to_vec(),
+                    false,
                 ));
             }
         }
