@@ -7,6 +7,9 @@ whole-file row has null coordinates; all three rows persist `signed=true`.
 No private key is stored. The fixture demonstrates cryptographic compatibility,
 not CA trust or certified archive coverage.
 
+The local Git attributes preserve the signed JSON bytes on every platform;
+checkout line-ending conversion would invalidate its signature.
+
 The Rust integration test loads the Python-written Parquet table, checks both
 chunk and whole-file coordinates, verifies each signature against its original
 content, and rejects changed content. It also projects away `signed` to exercise
