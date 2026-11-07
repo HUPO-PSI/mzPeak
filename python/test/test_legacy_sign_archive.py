@@ -109,7 +109,7 @@ def sign_archive():
 
 
 class DemoArchive:
-    def __init__(self, files, changed_on_reopen=None):
+    def __init__(self, files, changed_on_reopen=None, stream_type=io.BytesIO):
         from types import SimpleNamespace
 
         self.files = files
@@ -117,6 +117,7 @@ class DemoArchive:
         self.changed_on_reopen = changed_on_reopen or {}
         self.open_counts = {}
         self.streams = []
+        self.stream_type = stream_type
 
     def open_stream(self, entry):
         name = entry if isinstance(entry, str) else entry.name
@@ -127,7 +128,7 @@ class DemoArchive:
             if count
             else self.files[name]
         )
-        stream = io.BytesIO(data)
+        stream = self.stream_type(data)
         self.streams.append(stream)
         return stream
 
@@ -177,3 +178,28 @@ def test_demo_rejects_content_changed_after_checksum(sign_archive, tmp_path):
         sign_archive(archive, output)
     assert all(stream.closed for stream in archive.streams)
     assert not output.exists()
+
+
+def test_demo_verifies_whole_file_with_bounded_reads(sign_archive, tmp_path):
+    from pyarrow import parquet
+
+    class BoundedStream(io.BytesIO):
+        def __init__(self, data):
+            super().__init__(data)
+            self.bytes_read = 0
+
+        def read(self, size=-1):
+            assert 0 <= size <= 65536, "whole-file verification must stream reads"
+            data = super().read(size)
+            self.bytes_read += len(data)
+            return data
+
+    data = b"auxiliary metadata\n" * 20000
+    archive = DemoArchive({"metadata.json": data}, stream_type=BoundedStream)
+    output = tmp_path / "streamed.parquet"
+    sign_archive(archive, output)
+    assert len(archive.streams) == 2
+    assert all(stream.closed and stream.bytes_read == len(data) for stream in archive.streams)
+    records = segment_signatures_from_table(parquet.read_table(output))
+    assert len(records) == 1 and records[0].length is None
+    assert records[0].verify_against(hashlib.sha512(data).digest())

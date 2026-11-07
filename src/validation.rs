@@ -6,8 +6,8 @@ use sha2::{self, Digest};
 
 use arrow::{
     array::{
-        Array, ArrayRef, LargeBinaryArray, LargeStringArray, LargeStringBuilder, RecordBatch,
-        UInt64Array, UInt64Builder,
+        Array, ArrayRef, BooleanArray, LargeBinaryArray, LargeStringArray, LargeStringBuilder,
+        RecordBatch, UInt64Array, UInt64Builder,
     },
     datatypes::{DataType, Field, Schema},
 };
@@ -428,15 +428,22 @@ where
 
 /// The Arrow schema used to store [`SegmentSignature`] records
 pub fn segment_signature_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new("filename", DataType::LargeUtf8, false),
-        Field::new("row_group", DataType::UInt64, false),
-        Field::new("column", DataType::UInt64, false),
-        Field::new("path", DataType::LargeUtf8, false),
-        Field::new("offset", DataType::UInt64, false),
-        Field::new("length", DataType::UInt64, false),
-        Field::new("signature", DataType::LargeBinary, false),
-    ]))
+    Arc::new(
+        Schema::new(vec![
+            Field::new("filename", DataType::LargeUtf8, false),
+            Field::new("row_group", DataType::UInt64, true),
+            Field::new("column", DataType::UInt64, true),
+            Field::new("path", DataType::LargeUtf8, true),
+            Field::new("offset", DataType::UInt64, true),
+            Field::new("length", DataType::UInt64, true),
+            Field::new("signature", DataType::LargeBinary, false),
+            Field::new("signed", DataType::Boolean, false),
+        ])
+        .with_metadata(std::collections::HashMap::from([(
+            "mzpeak.provenance".into(),
+            "2".into(),
+        )])),
+    )
 }
 
 /// Convert a slice of [`SegmentSignature`] into a [`RecordBatch`] with the
@@ -469,6 +476,9 @@ pub fn segment_signature_to_record_batch(checksums: &[SegmentSignature]) -> Reco
             Arc::new(offsets.finish()),
             Arc::new(lengths.finish()),
             Arc::new(signatures),
+            Arc::new(BooleanArray::from(
+                checksums.iter().map(|seg| seg.signed).collect::<Vec<_>>(),
+            )),
         ],
     )
     .unwrap()
@@ -478,18 +488,24 @@ pub fn segment_signature_to_record_batch(checksums: &[SegmentSignature]) -> Reco
 /// (or read back from a Parquet file holding it) into [`SegmentSignature`] records.
 ///
 /// Columns are looked up by name, and an error is returned if one is missing,
-/// has the wrong type, or contains nulls.
+/// has the wrong type, or a required field contains nulls. Legacy tables without
+/// `signed` classify 64-byte values as SHA-512 digests and other values as candidate
+/// CMS envelopes. This classification never establishes signature validity.
 pub fn segment_signature_from_record_batch(
     batch: &RecordBatch,
 ) -> io::Result<Vec<SegmentSignature>> {
-    fn column<'a, A: 'static>(batch: &'a RecordBatch, name: &str) -> io::Result<&'a A> {
+    fn column<'a, A: 'static>(
+        batch: &'a RecordBatch,
+        name: &str,
+        nullable: bool,
+    ) -> io::Result<&'a A> {
         let array = batch.column_by_name(name).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Missing column {name:?}"),
             )
         })?;
-        if array.null_count() > 0 {
+        if !nullable && array.null_count() > 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Column {name:?} contains nulls"),
@@ -503,13 +519,42 @@ pub fn segment_signature_from_record_batch(
         })
     }
 
-    let filenames = column::<LargeStringArray>(batch, "filename")?;
-    let row_groups = column::<UInt64Array>(batch, "row_group")?;
-    let columns = column::<UInt64Array>(batch, "column")?;
-    let paths = column::<LargeStringArray>(batch, "path")?;
-    let offsets = column::<UInt64Array>(batch, "offset")?;
-    let lengths = column::<UInt64Array>(batch, "length")?;
-    let signatures = column::<LargeBinaryArray>(batch, "signature")?;
+    let names = batch
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect::<std::collections::HashSet<_>>();
+    if names.len() != batch.num_columns() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "duplicate column names",
+        ));
+    }
+    let filenames = column::<LargeStringArray>(batch, "filename", false)?;
+    let row_groups = column::<UInt64Array>(batch, "row_group", true)?;
+    let columns = column::<UInt64Array>(batch, "column", true)?;
+    let paths = column::<LargeStringArray>(batch, "path", true)?;
+    let offsets = column::<UInt64Array>(batch, "offset", true)?;
+    let lengths = column::<UInt64Array>(batch, "length", true)?;
+    let signatures = column::<LargeBinaryArray>(batch, "signature", false)?;
+
+    if row_groups
+        .iter()
+        .chain(columns.iter())
+        .flatten()
+        .any(|value| usize::try_from(value).is_err())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "coordinate does not fit this platform",
+        ));
+    }
+    let signed = if batch.column_by_name("signed").is_some() {
+        Some(column::<BooleanArray>(batch, "signed", false)?)
+    } else {
+        None
+    };
 
     Ok((0..batch.num_rows())
         .map(|i| SegmentSignature {
@@ -520,7 +565,8 @@ pub fn segment_signature_from_record_batch(
             offset: offsets.is_valid(i).then(|| offsets.value(i)),
             length: lengths.is_valid(i).then(|| lengths.value(i)),
             signature: signatures.value(i).to_vec(),
-            signed: true,
+            signed: signed
+                .map_or_else(|| signatures.value(i).len() != 64, |values| values.value(i)),
         })
         .collect())
 }

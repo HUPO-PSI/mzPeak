@@ -46,7 +46,11 @@ def sign_archive(archive: mzpeak.MzPeakFile, output_path: Path):
     for block in blocks:
         block.sign_with(private_key, cert)
         with archive.open_stream(block.filename) as stream:
-            block.verify_against(block.read_and_digest(stream))
+            if block.length is None:
+                digest = provenance.checksum_stream(stream, block.filename).signature
+            else:
+                digest = block.read_and_digest(stream)
+            block.verify_against(digest)
 
     table = provenance.segment_signatures_to_table(blocks)
 
