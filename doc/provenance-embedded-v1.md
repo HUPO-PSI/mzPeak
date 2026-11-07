@@ -30,8 +30,9 @@ bind its canonical payload and complete envelope. Duplicate JSON keys, unknown
 fields and unsupported versions are errors. The whole embedded member is limited
 to 64 MiB uncompressed; individual evidence bundles retain their 16 MiB limit.
 
-The existing stage, signature, release and evidence formats are unchanged.
-Certificate chains live in the signature envelopes; archived certificates, CRLs
+Stage, release and evidence formats are unchanged. Signatures use the version-2
+CMS envelope specified in `provenance-signing-v1.md`; the bundle remains version 1.
+Complete detached CMS objects and certificate chains live in the signature envelopes; archived certificates, CRLs
 and RFC 3161 responses/requests live in evidence bundles. Private keys, HSM access
 configuration, trusted-root selection, signer grants and local verification
 policy are never inferred from this bundle. A bundle is a carrier for proof,

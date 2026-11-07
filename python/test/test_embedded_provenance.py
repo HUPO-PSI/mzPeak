@@ -2,6 +2,8 @@
 
 from dataclasses import replace
 import json
+import os
+import subprocess
 from pathlib import Path
 import shutil
 import zipfile
@@ -154,8 +156,9 @@ def test_rewrite_streams_content_and_enforces_bundle_limit(archive, monkeypatch)
 
 
 @pytest.mark.parametrize("language", ["python", "rust"])
+@pytest.mark.parametrize("policy", ["ecdsa", "pqc", "both"])
 def test_sign_archive_and_sign_into_archive_do_not_need_detached_outputs(
-    language, archive, tmp_path
+    language, archive, tmp_path, policy
 ):
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
@@ -200,6 +203,52 @@ def test_sign_archive_and_sign_into_archive_do_not_need_detached_outputs(
             }
         ],
     )
+    if policy != "ecdsa":
+        probe = subprocess.run(
+            ["openssl", "list", "-signature-algorithms"], capture_output=True, text=True
+        )
+        if probe.returncode or "ML-DSA-65" not in probe.stdout:
+            if os.environ.get("MZPEAK_REQUIRE_OPENSSL_PQC") == "1":
+                pytest.fail("PQC qualification requires OpenSSL 3.5+")
+            pytest.skip("ML-DSA backend requires OpenSSL 3.5+")
+        pq_key, pq_cert = tmp_path / "pq.key", tmp_path / "pq.pem"
+        subprocess.run(
+            ["openssl", "genpkey", "-algorithm", "ML-DSA-65", "-out", str(pq_key)],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            [
+                "openssl",
+                "req",
+                "-new",
+                "-x509",
+                "-key",
+                str(pq_key),
+                "-out",
+                str(pq_cert),
+                "-subj",
+                "/CN=Embedded PQC test",
+                "-days",
+                "1",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        signers = json.loads(config.read_text()) if policy == "both" else []
+        signers.append(
+            {
+                "algorithm": "ml-dsa-65",
+                "provider": {
+                    "kind": "software",
+                    "key_path": str(pq_key),
+                    "passphrase_file": None,
+                },
+                "certificate_path": str(pq_cert),
+                "chain_paths": [],
+            }
+        )
+        write_json(config, signers)
     second = tmp_path / "second.mzpeak"
     shutil.copyfile(archive, second)
     paths_before = set(tmp_path.iterdir())
@@ -214,18 +263,15 @@ def test_sign_archive_and_sign_into_archive_do_not_need_detached_outputs(
         "--signers",
         config,
         "--policy",
-        "ecdsa",
+        policy,
     )
     assert set(tmp_path.iterdir()) == paths_before
     record = read_embedded_provenance(archive).records[0]
-    assert (
-        len(
-            OpenSslBackend().verify(
-                record.stage.canonical_bytes(), record.envelope, SignaturePolicy.ECDSA
-            )
+    assert len(
+        OpenSslBackend().verify(
+            record.stage.canonical_bytes(), record.envelope, SignaturePolicy(policy)
         )
-        == 1
-    )
+    ) == (2 if policy == "both" else 1)
     assert b"PRIVATE KEY" not in read_embedded_provenance(archive).to_json()
     stage = write_json(tmp_path / "stage.json", record.stage.to_dict())
     success(
@@ -237,7 +283,7 @@ def test_sign_archive_and_sign_into_archive_do_not_need_detached_outputs(
         "--signers",
         config,
         "--policy",
-        "ecdsa",
+        policy,
     )
     assert len(read_embedded_provenance(second).records) == 1
     release = write_json(
@@ -253,11 +299,11 @@ def test_sign_archive_and_sign_into_archive_do_not_need_detached_outputs(
         "--signers",
         config,
         "--policy",
-        "ecdsa",
+        policy,
     )
     approval = read_embedded_provenance(second).releases["a" * 64]
     assert OpenSslBackend().verify(
-        approval.statement.canonical_bytes(), approval.envelope, SignaturePolicy.ECDSA
+        approval.statement.canonical_bytes(), approval.envelope, SignaturePolicy(policy)
     )
 
 

@@ -93,7 +93,7 @@ impl ProvenanceBundle {
         let mut runs = BTreeSet::new();
         for record in &self.records {
             record.stage.validate()?;
-            if record.envelope.version != 1 {
+            if record.envelope.version != 2 {
                 return Err(invalid("unsupported signature envelope version"));
             }
             record.envelope.canonical_bytes().map_err(invalid)?;
@@ -110,7 +110,7 @@ impl ProvenanceBundle {
         }
         for (key, release) in &self.releases {
             release.statement.canonical_bytes()?;
-            if release.envelope.version != 1 {
+            if release.envelope.version != 2 {
                 return Err(invalid("unsupported signature envelope version"));
             }
             release.envelope.canonical_bytes().map_err(invalid)?;
