@@ -132,6 +132,55 @@ def test_bundle_rejects_unknown_fields_duplicate_keys_and_unbound_evidence():
         ProvenanceBundle.from_json(json.dumps(raw).encode())
 
 
+@pytest.mark.parametrize("version", [1, 2.0])
+@pytest.mark.parametrize("record_kind", ["stage", "release"])
+@pytest.mark.parametrize("operation", ["validate", "to_json", "embed"])
+def test_direct_bundle_rejects_non_v2_envelopes(
+    archive, version, record_kind, operation
+):
+    value = bundle()
+    # Isolate envelope validation from the independent evidence binding checks.
+    value.stage_evidence.clear()
+    value.release_evidence.clear()
+    if record_kind == "stage":
+        record = value.records[0]
+        value.records[0] = replace(
+            record, envelope=replace(record.envelope, version=version)
+        )
+    else:
+        digest = next(iter(value.releases))
+        release = value.releases[digest]
+        value.releases[digest] = replace(
+            release, envelope=replace(release.envelope, version=version)
+        )
+    original = archive.read_bytes()
+    with pytest.raises(ValueError, match="envelope"):
+        if operation == "embed":
+            embed_provenance(archive, value)
+        else:
+            getattr(value, operation)()
+    assert archive.read_bytes() == original
+    assert not list(archive.parent.glob(".mzpeak-provenance-*"))
+
+
+def test_direct_v2_envelopes_round_trip_and_embed(archive):
+    source = bundle()
+    value = ProvenanceBundle(
+        records=[
+            replace(record, envelope=replace(record.envelope, version=2))
+            for record in source.records
+        ],
+        releases={
+            digest: replace(release, envelope=replace(release.envelope, version=2))
+            for digest, release in source.releases.items()
+        },
+    )
+    value.validate()
+    assert ProvenanceBundle.from_json(value.to_json()).to_dict() == value.to_dict()
+    embed_provenance(archive, value)
+    assert read_embedded_provenance(archive).to_dict() == value.to_dict()
+
+
 def test_rewrite_streams_content_and_enforces_bundle_limit(archive, monkeypatch):
     data = b"measurement" * 50000
     with zipfile.ZipFile(archive, "a") as output:

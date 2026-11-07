@@ -63,6 +63,8 @@ class ProvenanceBundle:
         runs = set()
         for record in self.records:
             record.stage.canonical_bytes()
+            if type(record.envelope.version) is not int or record.envelope.version != 2:
+                raise ValueError("unsupported embedded signature envelope version")
             record.envelope.canonical_bytes()
             identifier = record.stage.manifest.stage_id
             if identifier in stages:
@@ -73,6 +75,8 @@ class ProvenanceBundle:
             raise ValueError("embedded stages must belong to one run")
         for digest, release in self.releases.items():
             release.statement.canonical_bytes()
+            if type(release.envelope.version) is not int or release.envelope.version != 2:
+                raise ValueError("unsupported embedded signature envelope version")
             release.envelope.canonical_bytes()
             if digest != release.statement.release_sha256:
                 raise ValueError("release key differs from signed statement")

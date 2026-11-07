@@ -172,17 +172,20 @@ impl ProvenanceBundle {
         if additions.version != 1 {
             return Err(invalid("unsupported bundle version"));
         }
+        let mut positions = self
+            .records
+            .iter()
+            .enumerate()
+            .map(|(index, record)| (record.stage.manifest.stage_id.clone(), index))
+            .collect::<BTreeMap<_, _>>();
         let mut seen = BTreeSet::new();
         for record in &additions.records {
             let key = &record.stage.manifest.stage_id;
             if !seen.insert(key) {
                 return Err(invalid("duplicate added stage"));
             }
-            if let Some(old) = self
-                .records
-                .iter()
-                .find(|r| &r.stage.manifest.stage_id == key)
-            {
+            if let Some(&index) = positions.get(key) {
+                let old = &self.records[index];
                 if old.stage.canonical_bytes()? != record.stage.canonical_bytes()?
                     || old.envelope.canonical_bytes().map_err(invalid)?
                         != record.envelope.canonical_bytes().map_err(invalid)?
@@ -190,6 +193,7 @@ impl ProvenanceBundle {
                     return Err(invalid("cannot replace embedded stage"));
                 }
             } else {
+                positions.insert(key.clone(), self.records.len());
                 self.records.push(record.clone());
             }
         }
@@ -315,7 +319,8 @@ fn embed_with_budget(
         output.start_file(
             BUNDLE_PATH,
             zip::write::SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Stored),
+                .compression_method(zip::CompressionMethod::Stored)
+                .large_file(true),
         )?;
         output.write_all(&encoded)?;
         output.finish()?;
@@ -374,6 +379,118 @@ mod tests {
         }
         zip.finish().unwrap();
     }
+    #[test]
+    fn embedded_bundle_uses_zip64_local_header() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("zip64.mzpeak");
+        archive(&path);
+        let full = bundle();
+        let expected_size = full.to_json().unwrap().len() as u64;
+        embed_provenance(&path, &full).unwrap();
+        let header_start = {
+            let mut zip = open_archive(&path).unwrap();
+            let member = zip.by_name(BUNDLE_PATH).unwrap();
+            assert_eq!(member.compression(), zip::CompressionMethod::Stored);
+            assert_eq!(member.size(), expected_size);
+            member.header_start() as usize
+        };
+        let bytes = fs::read(&path).unwrap();
+        let header = &bytes[header_start..];
+        assert_eq!(&header[..4], b"PK\x03\x04");
+        // Both 32-bit size slots signal that the actual sizes are in ZIP64.
+        assert_eq!(&header[18..26], &[0xff; 8]);
+        let name_len = u16::from_le_bytes(header[26..28].try_into().unwrap()) as usize;
+        let extra_len = u16::from_le_bytes(header[28..30].try_into().unwrap()) as usize;
+        assert_eq!(&header[30..30 + name_len], BUNDLE_PATH.as_bytes());
+        let mut extra = &header[30 + name_len..30 + name_len + extra_len];
+        let mut sizes = None;
+        while !extra.is_empty() {
+            let tag = u16::from_le_bytes(extra[..2].try_into().unwrap());
+            let length = u16::from_le_bytes(extra[2..4].try_into().unwrap()) as usize;
+            if tag == 1 {
+                assert!(length >= 16);
+                sizes = Some((
+                    u64::from_le_bytes(extra[4..12].try_into().unwrap()),
+                    u64::from_le_bytes(extra[12..20].try_into().unwrap()),
+                ));
+            }
+            extra = &extra[4 + length..];
+        }
+        assert_eq!(sizes, Some((expected_size, expected_size)));
+        assert_eq!(
+            read_embedded_provenance(&path).unwrap().to_json().unwrap(),
+            full.to_json().unwrap()
+        );
+    }
+
+    #[test]
+    fn stage_batch_merge_preserves_order_idempotence_and_conflict_checks() {
+        let seed = bundle().records.remove(0);
+        let make = |index: usize| {
+            let mut record = seed.clone();
+            record.stage.manifest.stage_id = format!("stage-{index:04}");
+            record
+        };
+        let original = ProvenanceBundle {
+            records: (0..128).map(make).collect(),
+            ..Default::default()
+        };
+        let additions = ProvenanceBundle {
+            records: (64..256).rev().map(make).collect(),
+            ..Default::default()
+        };
+        let merged = original.clone().merge(&additions).unwrap();
+        let expected = (0..128)
+            .chain((128..256).rev())
+            .map(|i| format!("stage-{i:04}"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            merged
+                .records
+                .iter()
+                .map(|record| record.stage.manifest.stage_id.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            merged.clone().merge(&additions).unwrap().to_json().unwrap(),
+            merged.to_json().unwrap()
+        );
+        for index in [0, 256] {
+            let duplicate = ProvenanceBundle {
+                records: vec![make(index), make(index)],
+                ..Default::default()
+            };
+            assert!(
+                merged
+                    .clone()
+                    .merge(&duplicate)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("duplicate added stage")
+            );
+        }
+        let mut conflict = make(0);
+        conflict.envelope.signatures[0].cms_der_hex.push_str("00");
+        let additions = ProvenanceBundle {
+            records: vec![make(256), conflict],
+            ..Default::default()
+        };
+        assert!(
+            merged
+                .clone()
+                .merge(&additions)
+                .unwrap_err()
+                .to_string()
+                .contains("cannot replace embedded stage")
+        );
+        let initial_batch = ProvenanceBundle::default().merge(&original).unwrap();
+        assert_eq!(
+            initial_batch.to_json().unwrap(),
+            original.to_json().unwrap()
+        );
+    }
+
     #[test]
     fn moved_archive_carries_complete_historical_proof() {
         let temp = tempfile::tempdir().unwrap();
