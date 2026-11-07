@@ -35,6 +35,15 @@ must never be taken from an archive. Backend failures return errors without
 falling back to another algorithm or echoing provider diagnostics containing
 key references or secrets.
 
+Each OpenSSL child has a 30-second timeout by default. Configure Python
+`OpenSslBackend(timeout_seconds=...)` or Rust `OpenSslBackend { timeout:
+Duration::from_secs(...), ..Default::default() }` for the local provider's needs.
+The timeout applies to each OpenSSL invocation, including the immediate verification
+after signing, rather than to the entire multi-signer call. On expiry the backend
+terminates and reaps the child and returns a redacted error. Verification discards
+OpenSSL's recovered content instead of writing a second payload copy; content,
+signed-attribute and signature checks remain enabled.
+
 ## Signed bytes and envelope
 
 Sign the canonical bytes of the complete manifest or stage, not a reserialized

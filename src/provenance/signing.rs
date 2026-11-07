@@ -9,8 +9,10 @@
 
 use std::{
     fs,
+    io::{Read, Seek, SeekFrom},
     path::PathBuf,
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
@@ -446,27 +448,82 @@ fn cms_der(signature: &DetachedSignature) -> Result<Vec<u8>, SigningError> {
 #[derive(Debug, Clone)]
 pub struct OpenSslBackend {
     pub executable: PathBuf,
+    /// Deadline for each OpenSSL child, including its provider operations.
+    /// A multi-signer sign/verify call can invoke several children.
+    pub timeout: Duration,
 }
 
 impl Default for OpenSslBackend {
     fn default() -> Self {
         Self {
             executable: PathBuf::from("openssl"),
+            timeout: Duration::from_secs(30),
         }
     }
 }
 
 impl OpenSslBackend {
-    fn run(&self, args: &[String]) -> Result<Vec<u8>, SigningError> {
-        let output = Command::new(&self.executable)
-            .args(args)
-            .stdin(Stdio::null())
-            .output()?;
-        if !output.status.success() {
-            // Provider diagnostics may contain a PIN/configuration/key URI.
-            return Err(SigningError::Backend);
+    fn wait_for_exit(&self, child: &mut Child) -> Result<(), SigningError> {
+        let started = Instant::now();
+        loop {
+            let remaining = self.timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                // Always reap the direct child, including an exit racing kill.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(SigningError::Backend);
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    return if status.success() {
+                        Ok(())
+                    } else {
+                        Err(SigningError::Backend)
+                    };
+                }
+                Ok(None) => std::thread::sleep(remaining.min(Duration::from_millis(10))),
+                Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(SigningError::Backend);
+                }
+            }
         }
-        Ok(output.stdout)
+    }
+
+    fn execute(
+        &self,
+        command: &mut Command,
+        capture_output: bool,
+    ) -> Result<Vec<u8>, SigningError> {
+        // An anonymous file avoids full stdout/stderr pipes blocking the child
+        // while we enforce its deadline. Only signing needs captured CMS bytes;
+        // verification discards the potentially large recovered content.
+        let mut output = capture_output.then(tempfile::tempfile).transpose()?;
+        command
+            .stdin(Stdio::null())
+            .stdout(match &output {
+                Some(file) => Stdio::from(file.try_clone()?),
+                None => Stdio::null(),
+            })
+            // Provider diagnostics can contain PIN/configuration/key references.
+            .stderr(Stdio::null());
+        let mut child = command.spawn().map_err(|_| SigningError::Backend)?;
+        self.wait_for_exit(&mut child)?;
+        let mut bytes = Vec::new();
+        if let Some(file) = &mut output {
+            file.seek(SeekFrom::Start(0))?;
+            file.take(MAX_CMS_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() > MAX_CMS_BYTES {
+                return Err(SigningError::Backend);
+            }
+        }
+        Ok(bytes)
+    }
+
+    fn run(&self, args: &[String], capture_output: bool) -> Result<Vec<u8>, SigningError> {
+        self.execute(Command::new(&self.executable).args(args), capture_output)
     }
 
     fn verify_one(
@@ -481,26 +538,24 @@ impl OpenSslBackend {
         fs::write(&signature_path, cms_der(signature)?)?;
         // Disable only path validation, handled separately by our trust layer.
         // Force the exact bound leaf; never select an unrelated embedded key.
-        self.run(&[
-            "cms".into(),
-            "-verify".into(),
-            "-binary".into(),
-            "-inform".into(),
-            "DER".into(),
-            "-in".into(),
-            signature_path.to_string_lossy().into_owned(),
-            "-content".into(),
-            payload.to_string_lossy().into_owned(),
-            "-noverify".into(),
-            "-nointern".into(),
-            "-certfile".into(),
-            certificate_path.to_string_lossy().into_owned(),
-            "-out".into(),
-            directory
-                .join("verified.bin")
-                .to_string_lossy()
-                .into_owned(),
-        ])?;
+        self.run(
+            &[
+                "cms".into(),
+                "-verify".into(),
+                "-binary".into(),
+                "-inform".into(),
+                "DER".into(),
+                "-in".into(),
+                signature_path.to_string_lossy().into_owned(),
+                "-content".into(),
+                payload.to_string_lossy().into_owned(),
+                "-noverify".into(),
+                "-nointern".into(),
+                "-certfile".into(),
+                certificate_path.to_string_lossy().into_owned(),
+            ],
+            false,
+        )?;
         Ok(())
     }
 
@@ -601,7 +656,7 @@ impl OpenSslBackend {
                     ]);
                 }
             }
-            signature.cms_der_hex = hex::encode(self.run(&args)?);
+            signature.cms_der_hex = hex::encode(self.run(&args, true)?);
             // Also establishes that the supplied leaf matches the actual signing key.
             self.verify_one(&payload_path, signature, work.path())?;
         }
@@ -644,6 +699,126 @@ impl OpenSslBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn backend_child(mode: &str) -> Command {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "provenance::signing::tests::backend_process_fixture",
+                "--nocapture",
+            ])
+            .env("MZPEAK_SIGNING_CHILD_MODE", mode);
+        command
+    }
+
+    // A child copy of this test executable is a portable backend fixture. It
+    // needs neither a shell nor OpenSSL, including on Windows CI.
+    #[test]
+    fn backend_process_fixture() {
+        use std::io::Write;
+        let Ok(mode) = std::env::var("MZPEAK_SIGNING_CHILD_MODE") else {
+            return;
+        };
+        match mode.as_str() {
+            "stall" => {
+                fs::write(
+                    std::env::var_os("MZPEAK_SIGNING_CHILD_READY").unwrap(),
+                    b"ready",
+                )
+                .unwrap();
+                std::thread::sleep(Duration::from_secs(10));
+            }
+            "fail" => {
+                eprintln!("pkcs11:object=private-key /secret/provider.cnf /secret/key.pem");
+                std::process::exit(7);
+            }
+            "overflow" => {
+                std::io::stdout()
+                    .write_all(&vec![b'x'; MAX_CMS_BYTES + 1])
+                    .unwrap();
+                std::io::stderr()
+                    .write_all(&vec![b'x'; MAX_CMS_BYTES + 1])
+                    .unwrap();
+            }
+            "success" => println!("backend-output"),
+            _ => panic!("unknown backend fixture mode"),
+        }
+    }
+
+    #[test]
+    fn backend_timeout_terminates_and_reaps_child() {
+        let work = tempfile::tempdir().unwrap();
+        let ready = work.path().join("ready");
+        let mut child = backend_child("stall")
+            .env("MZPEAK_SIGNING_CHILD_READY", &ready)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let startup = Instant::now();
+        while !ready.exists() && startup.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if !ready.exists() {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("backend fixture did not start");
+        }
+        let backend = OpenSslBackend {
+            timeout: Duration::from_millis(100),
+            ..Default::default()
+        };
+        let started = Instant::now();
+        let error = backend.wait_for_exit(&mut child).unwrap_err();
+        assert!(matches!(error, SigningError::Backend));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(!child.try_wait().unwrap().unwrap().success());
+        // On Linux, a reaped process has no /proc entry (a zombie still does).
+        #[cfg(target_os = "linux")]
+        assert!(!std::path::Path::new(&format!("/proc/{}", child.id())).exists());
+    }
+
+    #[test]
+    fn backend_errors_are_redacted_and_output_modes_are_bounded() {
+        let backend = OpenSslBackend::default();
+        let error = backend
+            .execute(&mut backend_child("fail"), true)
+            .unwrap_err();
+        assert!(matches!(error, SigningError::Backend));
+        for message in [error.to_string(), format!("{error:?}")] {
+            assert!(!message.contains("private-key"));
+            assert!(!message.contains("/secret/"));
+        }
+        assert!(std::error::Error::source(&error).is_none());
+        let captured = backend
+            .execute(&mut backend_child("success"), true)
+            .unwrap();
+        assert!(
+            String::from_utf8(captured)
+                .unwrap()
+                .contains("backend-output")
+        );
+        assert!(
+            backend
+                .execute(&mut backend_child("success"), false)
+                .unwrap()
+                .is_empty()
+        );
+        // Both streams exceed a typical pipe buffer. The child must still exit,
+        // and captured CMS output must respect the existing per-object bound.
+        assert!(matches!(
+            backend.execute(&mut backend_child("overflow"), true),
+            Err(SigningError::Backend)
+        ));
+        assert!(
+            backend
+                .execute(&mut backend_child("overflow"), false)
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     fn available(pqc: bool) -> bool {
         let result = Command::new("openssl")
@@ -1039,6 +1214,38 @@ mod tests {
     }
 
     #[test]
+    fn cms_verification_discards_content_without_disabling_checks() {
+        if !available(false) {
+            return;
+        }
+        let (manifest, envelope) = fixture();
+        let work = tempfile::tempdir().unwrap();
+        let payload = work.path().join("payload.bin");
+        let mut content = signing_payload(&manifest, &envelope).unwrap();
+        fs::write(&payload, &content).unwrap();
+        let backend = OpenSslBackend::default();
+        backend
+            .verify_one(&payload, &envelope.signatures[0], work.path())
+            .unwrap();
+        let mut names = fs::read_dir(work.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(
+            names,
+            ["certificate.pem", "payload.bin", "signature.der"].map(std::ffi::OsString::from)
+        );
+        *content.last_mut().unwrap() ^= 1;
+        fs::write(&payload, content).unwrap();
+        assert!(
+            backend
+                .verify_one(&payload, &envelope.signatures[0], work.path())
+                .is_err()
+        );
+    }
+
+    #[test]
     fn inline_pin_rejected_before_backend_execution() {
         let (_, envelope) = fixture();
         let identity = SigningIdentity {
@@ -1052,6 +1259,7 @@ mod tests {
         };
         let backend = OpenSslBackend {
             executable: "does-not-exist".into(),
+            ..Default::default()
         };
         assert!(matches!(
             backend.sign(b"manifest", &[identity], SignaturePolicy::Ecdsa),

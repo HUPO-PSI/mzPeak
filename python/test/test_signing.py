@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import traceback
 
 import pytest
 
@@ -428,3 +429,81 @@ def test_signing_and_verifying_more_than_64_mib(identities):
     assert len(BACKEND.verify(payload, envelope, SignaturePolicy.BOTH)) == 2
     with pytest.raises(SigningError):
         BACKEND.verify(payload[:-1], envelope, SignaturePolicy.BOTH)
+
+
+@pytest.mark.parametrize("failure", ["timeout", "unavailable"])
+def test_backend_failure_traceback_redacts_command_details(monkeypatch, failure):
+    # Format the exception as a caller or CLI normally would: sanitizing only
+    # str(error) misses subprocess exceptions retained as an explicit cause.
+    secrets = [
+        "pkcs11:object=private-instrument",
+        "/private/ca/key.pem",
+        "/private/ca/provider.cnf",
+        "/private/bin/openssl",
+    ]
+    backend = OpenSslBackend(executable=secrets[-1], timeout_seconds=0.01)
+
+    def fail(command, **kwargs):
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(
+                command, kwargs["timeout"], stderr=b"sensitive provider diagnostic"
+            )
+        raise FileNotFoundError(2, "No such file", command[0])
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    with pytest.raises(
+        SigningError, match="unavailable or operation timed out"
+    ) as caught:
+        backend._run(
+            [
+                "cms",
+                "-sign",
+                "-inkey",
+                secrets[0],
+                "-config",
+                secrets[2],
+                "-passin",
+                "file:" + secrets[1],
+            ]
+        )
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert "OpenSSL unavailable or operation timed out" in rendered
+    assert "TimeoutExpired" not in rendered
+    assert "FileNotFoundError" not in rendered
+    assert "sensitive provider diagnostic" not in rendered
+    for secret in secrets:
+        assert secret not in rendered
+
+
+def test_cms_verification_discards_recovered_content(identities, monkeypatch):
+    # Inspect real child operations while the temporary directory still exists.
+    # Only the detached input may occupy payload-sized storage; CMS verification
+    # must neither create another file nor pipe the recovered content into RAM.
+    payload = b"detached content" * (128 * 1024)
+    original_run = subprocess.run
+    operations = []
+
+    def inspect(command, **kwargs):
+        result = original_run(command, **kwargs)
+        if command[1:3] == ["cms", "-verify"]:
+            source = Path(command[command.index("-content") + 1])
+            large_files = sorted(
+                path.name
+                for path in source.parent.iterdir()
+                if path.is_file() and path.stat().st_size >= len(payload)
+            )
+            operations.append((result.returncode, large_files, result.stdout))
+        return result
+
+    monkeypatch.setattr(subprocess, "run", inspect)
+    envelope = BACKEND.sign(payload, identities, SignaturePolicy.BOTH)
+    assert len(BACKEND.verify(payload, envelope, SignaturePolicy.BOTH)) == 2
+    with pytest.raises(SigningError):
+        BACKEND.verify(payload[:-1], envelope, SignaturePolicy.BOTH)
+    assert (
+        len(operations) == 5
+    )  # two sign self-checks, two verify checks, one rejection
+    assert [status == 0 for status, _, _ in operations] == [True] * 4 + [False]
+    for _, large_files, recovered_stdout in operations:
+        assert large_files == ["payload.bin"]
+        assert recovered_stdout is None

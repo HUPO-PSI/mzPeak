@@ -441,24 +441,25 @@ class OpenSslBackend:
     executable: str = "openssl"
     timeout_seconds: float = 30.0
 
-    def _run(self, args: list[str]) -> bytes:
+    def _run(self, args: list[str], *, discard_output: bool = False) -> bytes:
         try:
             result = subprocess.run(
                 [self.executable, *args],
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
+                stdout=subprocess.DEVNULL if discard_output else subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=self.timeout_seconds,
                 check=False,
             )
-        except (OSError, subprocess.TimeoutExpired) as error:
-            raise SigningError("OpenSSL unavailable or operation timed out") from error
+        except (OSError, subprocess.TimeoutExpired):
+            # The exception chain can include the complete command and key URI.
+            raise SigningError("OpenSSL unavailable or operation timed out") from None
         if result.returncode:
             # Providers can include URI/PIN/configuration details in diagnostics.
             raise SigningError(
                 "OpenSSL operation failed (check backend, key and profile)"
             )
-        return result.stdout
+        return result.stdout or b""
 
     def _verify_one(self, payload: Path, signature: DetachedSignature, directory: Path):
         certificate = directory / "certificate.pem"
@@ -468,6 +469,7 @@ class OpenSslBackend:
         # -noverify disables only certificate path validation, performed by our
         # separate trust layer. CMS signature/content/attribute checks stay on.
         # -nointern forces selection of the exact bound leaf, not a CMS-supplied key.
+        # Discard recovered content through stdout without storing another payload.
         self._run(
             [
                 "cms",
@@ -483,9 +485,8 @@ class OpenSslBackend:
                 "-nointern",
                 "-certfile",
                 str(certificate),
-                "-out",
-                str(directory / "verified.bin"),
-            ]
+            ],
+            discard_output=True,
         )
 
     def sign(
