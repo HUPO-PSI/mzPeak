@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{fs, process::Command};
 use x509_cert::{
-    Certificate,
     der::{DecodePem, Encode},
     ext::pkix::{BasicConstraints, ExtendedKeyUsage, KeyUsage},
+    Certificate,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,21 +185,22 @@ pub fn verify_certificate_with(
                 }
             }
         }
-        let grants: Vec<_> = policy
-            .authorizations
-            .iter()
-            .filter(|a| {
-                a.certificate_sha256 == result.certificate_sha256
-                    && a.role == role
-                    && a.identity == identity
-                    && !identity.is_empty()
-            })
-            .collect();
-        if grants.len() != 1 {
-            result
-                .details
-                .push("no unique locally configured role and identity grant".into());
-        } else {
+        // Application authorization is independent of path and revocation.
+        // A denied grant or EKU must not prevent those checks from running.
+        let authorize = (|| -> Result<(), String> {
+            let grants: Vec<_> = policy
+                .authorizations
+                .iter()
+                .filter(|a| {
+                    a.certificate_sha256 == result.certificate_sha256
+                        && a.role == role
+                        && a.identity == identity
+                        && !identity.is_empty()
+                })
+                .collect();
+            if grants.len() != 1 {
+                return Err("no unique locally configured role and identity grant".into());
+            }
             let required =
                 grants[0]
                     .required_eku
@@ -240,7 +241,11 @@ pub fn verify_certificate_with(
                     }
                 }
             }
-            result.authorization = CheckStatus::Valid;
+            Ok(())
+        })();
+        match authorize {
+            Ok(()) => result.authorization = CheckStatus::Valid,
+            Err(error) => result.details.push(error),
         }
         Ok(())
     })();
@@ -379,17 +384,15 @@ mod tests {
         p.roots_pem = vec![pem("other_root.pem")];
         assert!(!check("leaf.pem", &p, SignerRole::Acquisition).accepted());
         p = policy("leaf.pem", SignerRole::Acquisition);
-        assert!(
-            !verify_certificate(
-                &pem("leaf.pem"),
-                &[],
-                &p,
-                SignerRole::Acquisition,
-                "instrument-1"
-            )
-            .unwrap()
-            .accepted()
-        );
+        assert!(!verify_certificate(
+            &pem("leaf.pem"),
+            &[],
+            &p,
+            SignerRole::Acquisition,
+            "instrument-1"
+        )
+        .unwrap()
+        .accepted());
         p.validation_time += 172800;
         assert!(!check("leaf.pem", &p, SignerRole::Acquisition).accepted());
         p = policy("leaf.pem", SignerRole::Acquisition);
@@ -398,37 +401,78 @@ mod tests {
     }
     #[test]
     fn software_release_requires_eku() {
-        assert!(
-            !check(
-                "leaf.pem",
-                &policy("leaf.pem", SignerRole::SoftwareRelease),
-                SignerRole::SoftwareRelease
-            )
-            .accepted()
+        let denied = check(
+            "leaf.pem",
+            &policy("leaf.pem", SignerRole::SoftwareRelease),
+            SignerRole::SoftwareRelease,
         );
-        assert!(
-            check(
-                "release.pem",
-                &policy("release.pem", SignerRole::SoftwareRelease),
-                SignerRole::SoftwareRelease
-            )
-            .accepted()
-        );
+        assert_eq!(denied.path, CheckStatus::Valid);
+        assert_eq!(denied.authorization, CheckStatus::Invalid);
+        assert_eq!(denied.revocation, CheckStatus::Valid);
+        assert!(!denied.accepted());
+        assert!(check(
+            "release.pem",
+            &policy("release.pem", SignerRole::SoftwareRelease),
+            SignerRole::SoftwareRelease
+        )
+        .accepted());
+    }
+    #[test]
+    fn wrong_or_malformed_required_eku_only_invalidates_authorization() {
+        for required in ["1.3.6.1.5.5.7.3.1", "not-an-oid"] {
+            let mut p = policy("release.pem", SignerRole::SoftwareRelease);
+            p.authorizations[0].required_eku = Some(required.into());
+            let denied = check("release.pem", &p, SignerRole::SoftwareRelease);
+            assert_eq!(denied.path, CheckStatus::Valid, "{:?}", denied.details);
+            assert_eq!(denied.authorization, CheckStatus::Invalid);
+            assert_eq!(denied.revocation, CheckStatus::Valid);
+            assert!(!denied.accepted());
+        }
+    }
+    #[test]
+    fn denied_authorization_preserves_independent_revocation_results() {
+        let mut missing = policy("leaf.pem", SignerRole::SoftwareRelease);
+        missing.crls_pem.clear();
+        let mut stale = policy("leaf.pem", SignerRole::SoftwareRelease);
+        stale.validation_time += 172800;
+        for (leaf, p, revocation) in [
+            ("leaf.pem", missing, CheckStatus::Unknown),
+            ("leaf.pem", stale, CheckStatus::Invalid),
+            (
+                "revoked.pem",
+                policy("revoked.pem", SignerRole::SoftwareRelease),
+                CheckStatus::Invalid,
+            ),
+        ] {
+            let denied = check(leaf, &p, SignerRole::SoftwareRelease);
+            assert_eq!(denied.path, CheckStatus::Valid, "{:?}", denied.details);
+            assert_eq!(denied.authorization, CheckStatus::Invalid);
+            assert_eq!(denied.revocation, revocation);
+            assert!(!denied.accepted());
+        }
+    }
+    #[test]
+    fn denied_authorization_does_not_hide_an_invalid_path() {
+        let mut p = policy("leaf.pem", SignerRole::SoftwareRelease);
+        p.roots_pem = vec![pem("other_root.pem")];
+        let denied = check("leaf.pem", &p, SignerRole::SoftwareRelease);
+        assert_eq!(denied.path, CheckStatus::Invalid);
+        assert_eq!(denied.authorization, CheckStatus::Invalid);
+        assert_eq!(denied.revocation, CheckStatus::Unknown);
+        assert!(!denied.accepted());
     }
     #[test]
     fn malformed_and_bundled_leaf_are_not_trusted() {
         for leaf in ["garbage".into(), pem("leaf.pem") + &pem("root.pem")] {
-            assert!(
-                !verify_certificate(
-                    &leaf,
-                    &[],
-                    &policy("leaf.pem", SignerRole::Acquisition),
-                    SignerRole::Acquisition,
-                    "instrument-1"
-                )
-                .unwrap()
-                .accepted()
-            );
+            assert!(!verify_certificate(
+                &leaf,
+                &[],
+                &policy("leaf.pem", SignerRole::Acquisition),
+                SignerRole::Acquisition,
+                "instrument-1"
+            )
+            .unwrap()
+            .accepted());
         }
     }
     #[test]
@@ -458,14 +502,95 @@ mod tests {
         assert!(verify("eku-issuer-code.pem", &p).accepted());
         assert!(verify("eku-issuer-any.pem", &p).accepted());
         let denied = verify("eku-issuer-server.pem", &p);
+        assert_eq!(denied.path, CheckStatus::Valid);
+        assert_eq!(denied.authorization, CheckStatus::Invalid);
+        assert_eq!(denied.revocation, CheckStatus::Valid);
         assert!(!denied.accepted());
-        assert!(
-            denied
+        assert!(denied
+            .details
+            .iter()
+            .any(|detail| detail.contains("issuer extended key usage excludes")));
+        p.roots_pem = vec![pem("eku-root-server.pem")];
+        let denied = verify("eku-issuer-code.pem", &p);
+        assert_eq!(denied.path, CheckStatus::Valid);
+        assert_eq!(denied.authorization, CheckStatus::Invalid);
+        assert_eq!(denied.revocation, CheckStatus::Valid);
+        assert!(!denied.accepted());
+    }
+
+    #[test]
+    fn complete_pqc_certificate_and_crl_path() {
+        let available = Command::new("openssl")
+            .args(["list", "-signature-algorithms"])
+            .output()
+            .is_ok_and(|output| {
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("ML-DSA-65")
+            });
+        if !available {
+            assert_ne!(
+                std::env::var("MZPEAK_REQUIRE_OPENSSL_PQC").as_deref(),
+                Ok("1"),
+                "PQC qualification requires OpenSSL 3.5+ ML-DSA"
+            );
+            eprintln!("ML-DSA backend requires OpenSSL 3.5+");
+            return;
+        }
+        let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("test/data/provenance/signing/pqc-trust");
+        let pem = |name: &str| fs::read_to_string(base.join(name)).unwrap();
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&fs::read(base.join("validation.json")).unwrap()).unwrap();
+        let policy = |root: &str, issuer: &str, leaf: &str, strict: bool| TrustPolicy {
+            roots_pem: vec![pem(&format!("{root}.pem"))],
+            authorizations: vec![Authorization {
+                certificate_sha256: certificate_fingerprint(&pem(&format!("{leaf}.pem"))).unwrap(),
+                role: SignerRole::Acquisition,
+                identity: "pqc-instrument-1".into(),
+                required_eku: None,
+            }],
+            validation_time: metadata["validation_time"].as_i64().unwrap(),
+            crls_pem: vec![
+                pem(&format!("{root}.crl.pem")),
+                pem(&format!("{issuer}.crl.pem")),
+            ],
+            require_pqc_chain: strict,
+        };
+        let check = |issuer: &str, leaf: &str, policy: &TrustPolicy| {
+            verify_certificate(
+                &pem(&format!("{leaf}.pem")),
+                &[pem(&format!("{issuer}.pem"))],
+                policy,
+                SignerRole::Acquisition,
+                "pqc-instrument-1",
+            )
+            .unwrap()
+        };
+        let mut strict = policy("root", "issuer", "leaf", true);
+        let accepted = check("issuer", "leaf", &strict);
+        assert!(accepted.accepted(), "{accepted:?}");
+        assert_eq!(
+            (accepted.path, accepted.authorization, accepted.revocation),
+            (CheckStatus::Valid, CheckStatus::Valid, CheckStatus::Valid)
+        );
+        strict.crls_pem.clear();
+        let absent = check("issuer", "leaf", &strict);
+        assert!(!absent.accepted());
+        assert_eq!(absent.revocation, CheckStatus::Unknown);
+        for (root, issuer, leaf) in [
+            ("classical-root", "mixed-issuer", "mixed-leaf"),
+            ("root", "classical-issuer", "classical-issuer-leaf"),
+        ] {
+            let mut configured = policy(root, issuer, leaf, false);
+            let ordinary = check(issuer, leaf, &configured);
+            assert!(ordinary.accepted(), "{ordinary:?}");
+            configured.require_pqc_chain = true;
+            let rejected = check(issuer, leaf, &configured);
+            assert!(!rejected.accepted());
+            assert!(rejected
                 .details
                 .iter()
-                .any(|detail| detail.contains("issuer extended key usage excludes"))
-        );
-        p.roots_pem = vec![pem("eku-root-server.pem")];
-        assert!(!verify("eku-issuer-code.pem", &p).accepted());
+                .any(|detail| detail.contains("PQC identity policy rejects")));
+        }
     }
 }

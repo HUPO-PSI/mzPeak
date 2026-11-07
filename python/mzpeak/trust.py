@@ -122,6 +122,11 @@ def verify_certificate(leaf_pem: str, intermediates_pem: list[str],
                 if (cert.public_key_algorithm_oid.dotted_string not in _PQ_OIDS or
                         cert.signature_algorithm_oid.dotted_string not in _PQ_OIDS):
                     raise ValueError("PQC identity policy rejects a classical certificate path")
+    except (ValueError, x509.ExtensionNotFound, x509.DuplicateExtension) as exc:
+        result.details.append(str(exc))
+        return result
+    # A role or EKU denial must not suppress independent path and CRL checks.
+    try:
         grants = [a for a in policy.authorizations if
                   a.certificate_sha256 == result.certificate_sha256 and
                   a.role == role and a.identity == identity and bool(identity)]
@@ -152,7 +157,6 @@ def verify_certificate(leaf_pem: str, intermediates_pem: list[str],
             result.authorization = CheckStatus.VALID
     except (ValueError, x509.ExtensionNotFound, x509.DuplicateExtension) as exc:
         result.details.append(str(exc))
-        return result
     with tempfile.TemporaryDirectory(prefix="mzpeak-trust-") as temp:
         directory = Path(temp)
         (directory / "leaf.pem").write_text(leaf_pem, encoding="ascii")

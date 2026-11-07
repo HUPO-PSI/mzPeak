@@ -28,6 +28,11 @@ client in this first profile; export issuer CRLs into the evidence bundle. An
 explicit validation time alone is not evidence of when a signature existed;
 use the timestamp layer for historical validation.
 
+A missing role grant or a grant-specific EKU restriction invalidates
+authorization without suppressing the independent path and CRL checks. Thus a
+valid, unrevoked certificate can still be unauthorized for the requested role;
+its report preserves all three results and remains unaccepted.
+
 `require_pqc_chain` conservatively requires every supplied certificate public key
 and certificate signature, including configured roots, to use standardized
 ML-DSA. This is the strict PQC-only identity profile. Supply a separate PQC root

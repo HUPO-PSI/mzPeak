@@ -1,0 +1,35 @@
+name: Provenance profiles
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  openssl-pqc:
+    runs-on: ubuntu-24.04
+    env:
+      MZPEAK_REQUIRE_OPENSSL_PQC: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v6.1.0
+        with:
+          python-version: '3.12'
+      - name: Build pinned OpenSSL with ML-DSA
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl --fail --location --retry 3 --output openssl-3.5.9.tar.gz https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz
+          echo '603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a  openssl-3.5.9.tar.gz' | sha256sum --check -
+          tar -xzf openssl-3.5.9.tar.gz
+          cd openssl-3.5.9
+          ./Configure --prefix="$RUNNER_TEMP/mzpeak-openssl" no-shared no-tests
+          make -j2
+          make install_sw install_ssldirs
+          echo "$RUNNER_TEMP/mzpeak-openssl/bin" >> "$GITHUB_PATH"
+      - name: Require real ECDSA and ML-DSA validation
+        run: |
+          openssl version
+          cargo test --locked --lib provenance
+          python -m pip install './python[test,provenance]'
+          python -m pytest python/test --ignore=python/test/test_reader.py --ignore=python/test/test_filter.py
