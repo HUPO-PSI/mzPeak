@@ -16,6 +16,10 @@ def _inventory(archive: zipfile.ZipFile):
     content = {}
     names = set()
     for item in archive.infolist():
+        # zipfile can truncate NULs (or normalize separators) before exposing
+        # filename. Never validate or exclude an alias of the on-disk name.
+        if item.filename != item.orig_filename:
+            raise ValueError("normalized ZIP member name is not permitted")
         name = item.filename
         normalized = name[:-1] if item.is_dir() else name
         # Reserved names are valid transport records, but retain all path checks.

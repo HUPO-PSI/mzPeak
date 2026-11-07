@@ -86,3 +86,34 @@ def test_local_central_filename_disagreement_rejected(tmp_path):
     path.write_bytes(data)
     with pytest.raises(zipfile.BadZipFile):
         capture_archive(path, "run-1", "stage-1")
+
+
+@pytest.mark.parametrize("raw_name", [
+    "a\x00bad", "provenance/envelope.json\x00bad",
+    "provenance.parquet\x00bad", "provenance/\x00bad",
+])
+@pytest.mark.parametrize("operation", ["capture", "verify"])
+def test_normalized_zip_filename_rejected(tmp_path, raw_name, operation):
+    path = tmp_path / "data.mzpeak"
+    normalized = raw_name.split("\x00", 1)[0]
+    write_archive(path, [("spectra.parquet", b"data"), (normalized, b"proof")])
+    manifest = capture_archive(path, "run-1", "stage-1")
+
+    # ZipInfo truncates NULs even when writing, so patch both on-disk headers.
+    placeholder = raw_name.replace("\x00", "!")
+    write_archive(path, [("spectra.parquet", b"data"), (placeholder, b"proof")])
+    data = path.read_bytes()
+    assert data.count(placeholder.encode()) == 2
+    path.write_bytes(data.replace(placeholder.encode(), raw_name.encode()))
+    with zipfile.ZipFile(path) as archive:
+        item = archive.infolist()[1]
+        assert item.filename == normalized
+        assert item.orig_filename == raw_name
+        # Matching central/local original names pass zipfile's own check.
+        assert archive.read(item) == b"proof"
+
+    with pytest.raises(ValueError, match="normalized ZIP member name"):
+        if operation == "capture":
+            capture_archive(path, "run-1", "stage-1")
+        else:
+            verify_archive(path, manifest)
