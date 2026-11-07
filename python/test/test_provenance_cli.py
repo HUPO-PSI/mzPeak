@@ -181,7 +181,15 @@ def test_capture_and_acquisition_canonical_bytes_match_between_clis(archive, tmp
 
 
 @pytest.mark.parametrize(
-    "policy,selected", [("ecdsa", [0]), ("pqc", [1]), ("both", [0, 1])]
+    "policy,selected",
+    [
+        ("ecdsa", [0]),
+        ("pqc", [1]),
+        ("both", [0, 1]),
+        ("ecdsa", [0, 2]),
+        ("pqc", [1, 3]),
+        ("both", [0, 1, 2, 3]),
+    ],
 )
 def test_cms_signatures_interoperate_in_both_directions(
     archive, tmp_path, policy, selected
@@ -208,11 +216,17 @@ def test_cms_signatures_interoperate_in_both_directions(
     )
     success(PYTHON, "init-acquisition", manifest, stage)
     signers = []
-    for algorithm, parameters in [
-        ("ecdsa-p256-sha256", ["EC", "-pkeyopt", "ec_paramgen_curve:P-256"]),
-        ("ml-dsa-65", ["ML-DSA-65"]),
-    ]:
-        key, certificate = tmp_path / f"{algorithm}.key", tmp_path / f"{algorithm}.crt"
+    for index, (algorithm, parameters) in enumerate(
+        [
+            ("ecdsa-p256-sha256", ["EC", "-pkeyopt", "ec_paramgen_curve:P-256"]),
+            ("ml-dsa-65", ["ML-DSA-65"]),
+        ]
+        * 2
+    ):
+        key, certificate = (
+            tmp_path / f"{index}-{algorithm}.key",
+            tmp_path / f"{index}-{algorithm}.crt",
+        )
         subprocess.run(
             ["openssl", "genpkey", "-algorithm", *parameters, "-out", str(key)],
             check=True,
@@ -298,3 +312,25 @@ def test_cms_signatures_interoperate_in_both_directions(
             != 0
         )
         assert record.read_bytes() == previous
+
+
+@pytest.mark.parametrize("language", ["python", "rust"])
+def test_cli_metadata_input_larger_than_64_mib(language, archive, tmp_path):
+    cli = command(language)
+    path, _, _ = archive
+    manifest, stage = tmp_path / "large-manifest.json", tmp_path / "stage.json"
+    success(
+        cli,
+        "capture",
+        path,
+        manifest,
+        "--run-id",
+        "large-input",
+        "--stage-id",
+        "acquisition",
+    )
+    # JSON whitespace is legitimate input; canonicalization removes it afterward.
+    with manifest.open("ab") as stream:
+        stream.write(b" " * (64 * 1024 * 1024 + 1))
+    success(cli, "init-acquisition", manifest, stage)
+    assert Stage.from_bytes(stage.read_bytes()).manifest.run_id == "large-input"

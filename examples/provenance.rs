@@ -4,7 +4,7 @@ use std::{
     collections::BTreeMap,
     error::Error,
     fs,
-    io::{Read, Write},
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -28,7 +28,6 @@ use serde::{
 use serde_json::Value;
 
 type CliResult<T> = Result<T, Box<dyn Error>>;
-const MAX_JSON: u64 = 64 * 1024 * 1024;
 
 #[derive(Parser)]
 #[command(about = "Experimental mzPeak provenance capture, signing and verification")]
@@ -93,14 +92,8 @@ enum Commands {
 }
 
 fn read(path: impl AsRef<Path>) -> CliResult<Vec<u8>> {
-    let mut bytes = Vec::new();
-    fs::File::open(path)?
-        .take(MAX_JSON + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_JSON {
-        return Err("input exceeds the 64 MiB limit".into());
-    }
-    Ok(bytes)
+    // No format-level size ceiling; deployments supply their own resource budget.
+    Ok(fs::read(path)?)
 }
 
 // Preserve duplicate-key errors even for maps. Deserializing straight into

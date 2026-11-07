@@ -32,15 +32,11 @@ from .verification import (
     verify_archive_history,
 )
 
-_MAX_JSON = 64 * 1024 * 1024
-
 
 def _read(path):
-    with Path(path).open("rb") as stream:
-        data = stream.read(_MAX_JSON + 1)
-    if len(data) > _MAX_JSON:
-        raise ValueError("input exceeds the 64 MiB limit")
-    return data
+    # No format-level metadata size ceiling. Service deployments must apply
+    # resource budgets appropriate to their workloads before loading inputs.
+    return Path(path).read_bytes()
 
 
 def _json(path):
