@@ -25,7 +25,6 @@ use x509_cert::{
 
 const MAX_CMS_BYTES: usize = 1024 * 1024;
 const DOMAIN: &[u8] = b"mzPeak-cms-signature-v2\0";
-const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CERTIFICATE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, thiserror::Error)]
@@ -247,6 +246,13 @@ fn certificate_der(certificate_pem: &str, algorithm: Algorithm) -> Result<Vec<u8
         .map_err(|_| SigningError::Invalid("invalid certificate DER"))
 }
 
+fn signer_key(algorithm: Algorithm, pem: &str) -> Result<(Algorithm, [u8; 32]), SigningError> {
+    Ok((
+        algorithm,
+        Sha256::digest(certificate_der(pem, algorithm)?).into(),
+    ))
+}
+
 /// The CMS v2 content: domain, one-byte policy, u32 signer count, sorted
 /// entries (u32 algorithm-name length, ASCII name, 32-byte leaf DER SHA-256),
 /// then u64 manifest length and exact manifest bytes. Integers are big endian.
@@ -255,19 +261,23 @@ pub fn signing_payload(
     manifest: &[u8],
     envelope: &SignatureEnvelope,
 ) -> Result<Vec<u8>, SigningError> {
-    if manifest.len() > MAX_MANIFEST_BYTES {
-        return Err(SigningError::Invalid("manifest exceeds 64 MiB limit"));
-    }
     if envelope.version != 2 {
         return Err(SigningError::Invalid("unsupported envelope version"));
     }
-    if !(1..=2).contains(&envelope.signatures.len()) {
-        return Err(SigningError::Invalid("expected one or two signatures"));
+    let signer_count = u32::try_from(envelope.signatures.len())
+        .map_err(|_| SigningError::Invalid("signer count exceeds u32 framing"))?;
+    if signer_count == 0 {
+        return Err(SigningError::Invalid("expected a nonempty signer set"));
     }
     let algorithms: Vec<_> = envelope.signatures.iter().map(|s| s.algorithm).collect();
-    if algorithms.windows(2).any(|pair| pair[0] >= pair[1]) {
+    let keys = envelope
+        .signatures
+        .iter()
+        .map(|s| signer_key(s.algorithm, &s.certificate_pem))
+        .collect::<Result<Vec<_>, _>>()?;
+    if keys.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err(SigningError::Invalid(
-            "signatures must have unique, sorted algorithms",
+            "signers must be unique and sorted by algorithm and certificate digest",
         ));
     }
     if !envelope.policy.satisfied_by(&algorithms) {
@@ -277,10 +287,9 @@ pub fn signing_payload(
     }
     let mut output = Vec::from(DOMAIN);
     output.push(envelope.policy.tag());
-    output.extend_from_slice(&(algorithms.len() as u32).to_be_bytes());
-    for signature in &envelope.signatures {
+    output.extend_from_slice(&signer_count.to_be_bytes());
+    for (signature, (_, certificate_hash)) in envelope.signatures.iter().zip(&keys) {
         let name = signature.algorithm.as_str().as_bytes();
-        let der = certificate_der(&signature.certificate_pem, signature.algorithm)?;
         if signature.intermediates_pem.len() > 8 {
             return Err(SigningError::Invalid("too many intermediate certificates"));
         }
@@ -289,7 +298,7 @@ pub fn signing_payload(
         }
         output.extend_from_slice(&(name.len() as u32).to_be_bytes());
         output.extend_from_slice(name);
-        output.extend_from_slice(&Sha256::digest(&der));
+        output.extend_from_slice(certificate_hash);
     }
     output.extend_from_slice(&(manifest.len() as u64).to_be_bytes());
     output.extend_from_slice(manifest);
@@ -501,8 +510,17 @@ impl OpenSslBackend {
         identities: &[SigningIdentity],
         policy: SignaturePolicy,
     ) -> Result<SignatureEnvelope, SigningError> {
-        let mut identities: Vec<_> = identities.iter().collect();
-        identities.sort_by_key(|identity| identity.algorithm);
+        let mut ordered = identities
+            .iter()
+            .map(|identity| {
+                Ok((
+                    signer_key(identity.algorithm, &identity.certificate_pem)?,
+                    identity,
+                ))
+            })
+            .collect::<Result<Vec<_>, SigningError>>()?;
+        ordered.sort_by_key(|(key, _)| *key);
+        let identities: Vec<_> = ordered.into_iter().map(|(_, identity)| identity).collect();
         let mut envelope = SignatureEnvelope {
             version: 2,
             policy,
@@ -933,6 +951,91 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn same_algorithm_signers_bind_the_complete_plan() {
+        if !available(true) {
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let identities = vec![
+            identity(work.path(), Algorithm::EcdsaP256Sha256, "ec1"),
+            identity(work.path(), Algorithm::EcdsaP256Sha256, "ec2"),
+            identity(work.path(), Algorithm::MlDsa65, "pq1"),
+            identity(work.path(), Algorithm::MlDsa65, "pq2"),
+        ];
+        let backend = OpenSslBackend::default();
+        for (policy, selected) in [
+            (SignaturePolicy::Ecdsa, &identities[..2]),
+            (SignaturePolicy::Pqc, &identities[2..]),
+            (SignaturePolicy::Both, &identities[..]),
+        ] {
+            let payload = b"multiple same-algorithm signers";
+            let envelope = backend.sign(payload, selected, policy).unwrap();
+            let mut reverse = selected.to_vec();
+            reverse.reverse();
+            let other = backend.sign(payload, &reverse, policy).unwrap();
+            assert_eq!(
+                signing_payload(payload, &envelope).unwrap(),
+                signing_payload(payload, &other).unwrap()
+            );
+            assert_eq!(
+                backend.verify(payload, &envelope, policy).unwrap().len(),
+                selected.len()
+            );
+            let mut removed = envelope.clone();
+            removed.signatures.pop();
+            assert!(backend.verify(payload, &removed, policy).is_err());
+            let mut reordered = envelope.clone();
+            reordered.signatures.reverse();
+            assert!(backend.verify(payload, &reordered, policy).is_err());
+            let mut duplicate = envelope.clone();
+            duplicate.signatures.push(envelope.signatures[0].clone());
+            assert!(backend.verify(payload, &duplicate, policy).is_err());
+            if policy != SignaturePolicy::Both {
+                assert!(
+                    backend
+                        .verify(payload, &envelope, SignaturePolicy::Both)
+                        .is_err()
+                );
+            }
+            assert!(
+                backend
+                    .sign(payload, &[selected[0].clone(), selected[0].clone()], policy)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn sign_and_verify_content_above_64_mib() {
+        if !available(false) {
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let signer = identity(work.path(), Algorithm::EcdsaP256Sha256, "large");
+        let payload = vec![b'x'; 64 * 1024 * 1024 + 1];
+        let backend = OpenSslBackend::default();
+        let envelope = backend
+            .sign(&payload, &[signer], SignaturePolicy::Ecdsa)
+            .unwrap();
+        assert_eq!(
+            backend
+                .verify(&payload, &envelope, SignaturePolicy::Ecdsa)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            backend
+                .verify(
+                    &payload[..payload.len() - 1],
+                    &envelope,
+                    SignaturePolicy::Ecdsa
+                )
+                .is_err()
+        );
     }
 
     #[test]

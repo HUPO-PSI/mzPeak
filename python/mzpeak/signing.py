@@ -24,7 +24,6 @@ from asn1crypto import algos, cms, core, pem, x509
 
 
 DOMAIN = b"mzPeak-cms-signature-v2\0"
-MAX_MANIFEST_BYTES = 64 * 1024 * 1024
 MAX_CERTIFICATE_BYTES = 64 * 1024
 
 
@@ -286,21 +285,32 @@ def _satisfies(algorithms: set[Algorithm], policy: SignaturePolicy) -> bool:
     raise SigningError("Unsupported signature policy")
 
 
+def _signer_key(algorithm, certificate_pem):
+    if not isinstance(algorithm, Algorithm):
+        raise SigningError("Unsupported signature algorithm")
+    return algorithm.value, hashlib.sha256(
+        _check_certificate(certificate_pem, algorithm)
+    ).digest()
+
+
 def signing_payload(manifest: bytes, envelope: SignatureEnvelope) -> bytes:
     """Return the CMS v2 content, binding the manifest and complete signer plan."""
-    if not isinstance(manifest, bytes) or len(manifest) > MAX_MANIFEST_BYTES:
-        raise SigningError("Manifest must be bytes within the 64 MiB limit")
+    if not isinstance(manifest, bytes):
+        raise SigningError("Manifest must be bytes")
     if type(envelope.version) is not int or envelope.version != 2:
         raise SigningError("Unsupported envelope version")
     if not isinstance(envelope.policy, SignaturePolicy):
         raise SigningError("Unsupported signature policy")
-    if not 1 <= len(envelope.signatures) <= 2:
-        raise SigningError("Expected one or two signatures")
+    if not 1 <= len(envelope.signatures) <= 0xFFFFFFFF:
+        raise SigningError("Expected a nonempty signer set representable as u32")
     algorithms = [s.algorithm for s in envelope.signatures]
     if any(not isinstance(a, Algorithm) for a in algorithms):
         raise SigningError("Unsupported signature algorithm")
-    if algorithms != sorted(set(algorithms), key=lambda a: a.value):
-        raise SigningError("Signatures must have unique, sorted algorithms")
+    keys = [_signer_key(s.algorithm, s.certificate_pem) for s in envelope.signatures]
+    if keys != sorted(set(keys)):
+        raise SigningError(
+            "Signers must be unique and sorted by algorithm and certificate digest"
+        )
     if not _satisfies(set(algorithms), envelope.policy):
         raise SigningError("Signatures do not satisfy the declared policy")
     output = bytearray(DOMAIN)
@@ -312,15 +322,14 @@ def signing_payload(manifest: bytes, envelope: SignatureEnvelope) -> bytes:
         ]
     )
     output += struct.pack(">I", len(algorithms))
-    for signature in envelope.signatures:
+    for signature, (_, certificate_hash) in zip(envelope.signatures, keys):
         algorithm = signature.algorithm.value.encode("ascii")
-        der = _check_certificate(signature.certificate_pem, signature.algorithm)
         if len(signature.intermediates_pem) > 8:
             raise SigningError("Too many intermediate certificates")
         for certificate in signature.intermediates_pem:
             _certificate_der(certificate)
         output += struct.pack(">I", len(algorithm)) + algorithm
-        output += hashlib.sha256(der).digest()
+        output += certificate_hash
     output += struct.pack(">Q", len(manifest)) + manifest
     return bytes(output)
 
@@ -485,7 +494,12 @@ class OpenSslBackend:
         identities: Sequence[SigningIdentity],
         policy: SignaturePolicy,
     ) -> SignatureEnvelope:
-        identities = sorted(identities, key=lambda identity: identity.algorithm.value)
+        identities = sorted(
+            identities,
+            key=lambda identity: _signer_key(
+                identity.algorithm, identity.certificate_pem
+            ),
+        )
         envelope = SignatureEnvelope(
             2,
             policy,

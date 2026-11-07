@@ -358,3 +358,73 @@ def test_cms_relying_party_policy_matrix(identities, declared, indices, required
     else:
         with pytest.raises(SigningError):
             BACKEND.verify(b"policy matrix", envelope, required)
+
+
+@pytest.fixture
+def additional_signers(identities, tmp_path):
+    extra = []
+    for algorithm, parameters in [
+        (Algorithm.ECDSA_P256_SHA256, ["EC", "-pkeyopt", "ec_paramgen_curve:P-256"]),
+        (Algorithm.ML_DSA_65, ["ML-DSA-65"]),
+    ]:
+        key, cert = (
+            tmp_path / (algorithm.value + ".key"),
+            tmp_path / (algorithm.value + ".crt"),
+        )
+        run("genpkey", "-algorithm", *parameters, "-out", key)
+        run(
+            "req",
+            "-new",
+            "-x509",
+            "-key",
+            key,
+            "-out",
+            cert,
+            "-days",
+            "1",
+            "-subj",
+            "/CN=Additional signer",
+        )
+        extra.append(SigningIdentity(algorithm, SoftwareKey(key), cert.read_text()))
+    return (identities[0], extra[0], identities[1], extra[1])
+
+
+@pytest.mark.parametrize(
+    "policy,indices",
+    [
+        (SignaturePolicy.ECDSA, [0, 1]),
+        (SignaturePolicy.PQC, [2, 3]),
+        (SignaturePolicy.BOTH, [0, 1, 2, 3]),
+    ],
+)
+def test_same_algorithm_signers_and_complete_plan_binding(
+    additional_signers, policy, indices
+):
+    selected = [additional_signers[i] for i in indices]
+    payload = b"multiple identities using the same algorithm"
+    envelope = BACKEND.sign(payload, selected, policy)
+    reverse = BACKEND.sign(payload, selected[::-1], policy)
+    assert signing_payload(payload, envelope) == signing_payload(payload, reverse)
+    verified = BACKEND.verify(payload, envelope, policy)
+    assert len(verified) == len(selected)
+    assert len({s.certificate_sha256 for s in verified}) == len(selected)
+    for modified in [
+        replace(envelope, signatures=envelope.signatures[:-1]),
+        replace(envelope, signatures=envelope.signatures[::-1]),
+        replace(envelope, signatures=(*envelope.signatures, envelope.signatures[0])),
+    ]:
+        with pytest.raises(SigningError):
+            BACKEND.verify(payload, modified, policy)
+    if policy != SignaturePolicy.BOTH:
+        with pytest.raises(SigningError):
+            BACKEND.verify(payload, envelope, SignaturePolicy.BOTH)
+    with pytest.raises(SigningError, match="unique"):
+        BACKEND.sign(payload, [selected[0], selected[0]], policy)
+
+
+def test_signing_and_verifying_more_than_64_mib(identities):
+    payload = b"x" * (64 * 1024 * 1024 + 1)
+    envelope = BACKEND.sign(payload, identities, SignaturePolicy.BOTH)
+    assert len(BACKEND.verify(payload, envelope, SignaturePolicy.BOTH)) == 2
+    with pytest.raises(SigningError):
+        BACKEND.verify(payload[:-1], envelope, SignaturePolicy.BOTH)

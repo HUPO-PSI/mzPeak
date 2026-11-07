@@ -42,23 +42,25 @@ selection of its fields. Every CMS object authenticates the same detached conten
 
 1. ASCII `mzPeak-cms-signature-v2` followed by one zero byte.
 2. One policy byte: `1` ECDSA, `2` PQC, or `3` both.
-3. A big-endian unsigned 32-bit signer count, one or two.
-4. For each signer, in ascending algorithm-name order: its ASCII name's
-   big-endian unsigned 32-bit byte length, the name, and the 32-byte SHA-256
-   digest of its leaf certificate in DER.
+3. A big-endian unsigned 32-bit signer count (nonzero).
+4. For each signer, in ascending `(algorithm name, leaf-certificate SHA-256)`
+   order: its ASCII algorithm name's big-endian unsigned 32-bit byte length,
+   the name, and the 32-byte SHA-256 digest of its leaf certificate in DER.
 5. The manifest's big-endian unsigned 64-bit byte length, then its exact bytes.
 
-Duplicate algorithms are rejected. The manifest limit is 64 MiB. Each signer
-has exactly one PEM leaf certificate (at most 64 KiB), up to eight intermediate
+Multiple signers may use the same algorithm. Duplicate signer descriptors
+(the same algorithm and leaf-certificate digest) are rejected. There is no fixed
+manifest byte limit; the transcript encodes its length as an unsigned 64-bit integer.
+Each signer has exactly one PEM leaf certificate (at most 64 KiB), up to eight intermediate
 certificates, and a lowercase hexadecimal DER CMS `ContentInfo` in `cms_der_hex`. The JSON envelope has
 exactly `version`, `policy`, and `signatures`; a signature has exactly
 `algorithm`, `certificate_pem`, `intermediates_pem`, and `cms_der_hex`.
 Unknown and duplicate JSON fields are rejected. The envelope version is integer `2` (the manifest and bundle versions remain `1`).
 
 Each descriptor carries one complete, detached CMS `SignedData` object with
-exactly one `SignerInfo`. A `both` record therefore contains two independently
-verifiable CMS objects over the same content. This supports different digests
-and key providers without inventing CMS attributes or a composite algorithm.
+exactly one `SignerInfo`. A `both` record contains at least one ECDSA and one
+ML-DSA CMS proof, and may contain more signers. All CMS objects authenticate
+the same content. This supports different digests and key providers without inventing CMS attributes or a composite algorithm.
 Generic CMS tools can verify each object; mzPeak additionally enforces the
 complete signer set, policy, content coverage, lineage and certificate eligibility.
 
@@ -182,3 +184,16 @@ The environment variables `MZPEAK_TEST_PKCS11_CONFIG`, `MZPEAK_TEST_PKCS11_URI`
 and `MZPEAK_TEST_PKCS11_CERTIFICATE` enable the provider tests against an existing
 test key. `MZPEAK_REQUIRE_OPENSSL_PQC=1` makes a missing OpenSSL/ML-DSA backend a
 test failure instead of an optional-backend skip.
+
+
+Signer count is not an approval quorum: `ecdsa`, `pqc` and `both` specify required
+algorithm coverage, and every included signature must verify. The existing trust
+layer still checks each certificate against the record's externally configured
+identity and role. Multiple certificates do not by themselves establish independent
+approvers; multi-party role/threshold policy is a separate feature.
+
+Manifest/stage inputs and CLI metadata files have no fixed 64 MiB ceiling.
+Current implementations materialize JSON and signing content in memory, so available
+memory remains a practical limit. Services handling untrusted inputs must enforce
+workload-appropriate resource budgets before loading them. Optional embedded-bundle
+byte budgets are described in `provenance-embedded-v1.md`.
