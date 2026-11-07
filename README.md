@@ -270,3 +270,17 @@ head(mzIntens)
 5 202.6076  3729.591
 6 202.6078  2819.127
 ```
+## Experimental certificate provenance
+
+The Rust and Python prototypes include matching APIs and CLIs for signed
+manifests, certificate trust, ECDSA/ML-DSA signatures, PKCS#11 keys, processing
+history, publisher release approvals and RFC 3161 evidence. Start with the
+[demo guide](doc/provenance-demo.md). The proposed profiles are documented for
+[manifests](doc/provenance-manifest-v1.md), [trust](doc/provenance-trust.md),
+[signatures](doc/provenance-signing-v1.md), [stages](doc/provenance-stages-v1.md)
+and [historical evidence](doc/provenance-evidence.md).
+
+These profiles require specification review and deployment qualification. They
+preserve the original signed index; existing readers do not automatically select
+later stage snapshots. They do not by themselves establish regulatory compliance
+or prove that an approved software binary actually executed.

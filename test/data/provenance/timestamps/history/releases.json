@@ -1,0 +1,21 @@
+{
+  "a8b077366207a4f60b23396338f9e2d65007c87d49e7bcc1f8f7d18db947d085": {
+    "statement": {
+      "name": "mzPeak certified converter",
+      "version": "1.0",
+      "release_sha256": "a8b077366207a4f60b23396338f9e2d65007c87d49e7bcc1f8f7d18db947d085"
+    },
+    "envelope": {
+      "version": 1,
+      "policy": "ecdsa",
+      "signatures": [
+        {
+          "algorithm": "ecdsa-p256-sha256",
+          "certificate_pem": "-----BEGIN CERTIFICATE-----\nMIIBsDCCAVWgAwIBAgIUVDsr8l3ZrhofvwldVNEs3bY4cD8wCgYIKoZIzj0EAwIw\nITEfMB0GA1UEAwwWVEVTVCBPTkxZIGhpc3Rvcnkgcm9vdDAeFw0yNjExMDUxMTI0\nNDFaFw0yNjExMDgxMTI0NDFaMBQxEjAQBgNVBAMMCXB1Ymxpc2hlcjBZMBMGByqG\nSM49AgEGCCqGSM49AwEHA0IABGLQg5mSqZLIw+yuKP+ONy77FfmwfcUfYqNAEpUZ\ntbE4uCpqClTf7yU80gEQp39fePusRnRueseZ6yl4KvwsmfKjeDB2MAwGA1UdEwEB\n/wQCMAAwDgYDVR0PAQH/BAQDAgeAMB0GA1UdDgQWBBTD5XmuGLxbg2Lpi1z7A37q\nvqc70TAfBgNVHSMEGDAWgBQ9pTKzyL7rMJmDpoMFZitlJtBriDAWBgNVHSUBAf8E\nDDAKBggrBgEFBQcDAzAKBggqhkjOPQQDAgNJADBGAiEAwIt7LYnOU95TAtFf5bNM\nBQt45LTeVi+T0FWQrtDGx6ECIQDyUz6w3yb2YhnsZqROsTTNWosic2hnjEf65Go9\nqq56VA==\n-----END CERTIFICATE-----\n",
+          "intermediates_pem": [],
+          "signature_hex": "3045022100f9223b924a58452fde8a135dc14c0e4bbdc7df1be02e3a2bf2e29948718b2f3f0220690b93ebdb808fa3f45fb192ba59e2a011a859c9762657e029d0bcd3babd88d6"
+        }
+      ]
+    }
+  }
+}

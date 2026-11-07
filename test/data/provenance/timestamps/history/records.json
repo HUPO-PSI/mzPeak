@@ -1,0 +1,95 @@
+[
+  {
+    "stage": {
+      "version": 1,
+      "kind": "acquisition",
+      "manifest": {
+        "version": 1,
+        "run_id": "run-1",
+        "stage_id": "acquisition",
+        "files": [
+          {
+            "path": "raw.bin",
+            "size": 26,
+            "sha256": "3b801db8bc72a2fa5da20beacfafbf41ca121837810e2e9b1efe146e4ddef9f6",
+            "chunks": []
+          },
+          {
+            "path": "snapshots/acquisition-index.json",
+            "size": 17,
+            "sha256": "c66aed1fcc1d095478ad3d6ddae9d293271a6d05faf83e9531fbd2d67ee6aef7",
+            "chunks": []
+          }
+        ]
+      },
+      "parents": [],
+      "inputs": [],
+      "software": null
+    },
+    "envelope": {
+      "version": 1,
+      "policy": "ecdsa",
+      "signatures": [
+        {
+          "algorithm": "ecdsa-p256-sha256",
+          "certificate_pem": "-----BEGIN CERTIFICATE-----\nMIIBmjCCAUCgAwIBAgIUGclCQRjZsNgnOH1nkqMaMStffdAwCgYIKoZIzj0EAwIw\nITEfMB0GA1UEAwwWVEVTVCBPTkxZIGhpc3Rvcnkgcm9vdDAeFw0yNjExMDUxMTI0\nNDFaFw0yNjExMDgxMTI0NDFaMBcxFTATBgNVBAMMDGluc3RydW1lbnQtMTBZMBMG\nByqGSM49AgEGCCqGSM49AwEHA0IABLFJ4SBBmcmr6IIVAadLLRvmgZ3FJ+vgc84t\nEzx4PxdGB9rlRmsgj2x4AtkrdUft0M/VI58JmgyswdArUzsHU02jYDBeMAwGA1Ud\nEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgeAMB0GA1UdDgQWBBRE+ZzK5hbqMp8l4HPP\nNYuRLerYczAfBgNVHSMEGDAWgBQ9pTKzyL7rMJmDpoMFZitlJtBriDAKBggqhkjO\nPQQDAgNIADBFAiEAhbgHfoiDN9xjmQ3pKNGYfS+BLz4RYgkeKDpWucs7/FICIAlP\n0T1esWzl55srSmEtlJ1m+B36idfsQrlj6XzamHrm\n-----END CERTIFICATE-----\n",
+          "intermediates_pem": [],
+          "signature_hex": "304502210094cdf3883c30a2b7bb847363f2d67a3af9b0b9d94efd0adf9606a892529fb9b902204600e0973543018a3f52bb2c34e4030e435c17356033fef41e63578a837d4f5a"
+        }
+      ]
+    }
+  },
+  {
+    "stage": {
+      "version": 1,
+      "kind": "processing",
+      "manifest": {
+        "version": 1,
+        "run_id": "run-1",
+        "stage_id": "processing",
+        "files": [
+          {
+            "path": "processed.json",
+            "size": 18,
+            "sha256": "c9e654e8902aa47de7edcd7ab902ed16ef68b2d1beb54a4644aada70c1964b49",
+            "chunks": []
+          },
+          {
+            "path": "snapshots/processing-index.json",
+            "size": 46,
+            "sha256": "39b04987918e366e02898a6b3f510757dd23e7883b2d183db37ee8e5289d6bff",
+            "chunks": []
+          }
+        ]
+      },
+      "parents": [
+        "8b8c04baa8759370072d69f6f8c32eff9e837a133fa5696787f73d57c4be9dcf"
+      ],
+      "inputs": [
+        {
+          "stage_sha256": "8b8c04baa8759370072d69f6f8c32eff9e837a133fa5696787f73d57c4be9dcf",
+          "path": "raw.bin",
+          "sha256": "3b801db8bc72a2fa5da20beacfafbf41ca121837810e2e9b1efe146e4ddef9f6"
+        }
+      ],
+      "software": {
+        "name": "mzPeak certified converter",
+        "version": "1.0",
+        "release_sha256": "a8b077366207a4f60b23396338f9e2d65007c87d49e7bcc1f8f7d18db947d085",
+        "parameters_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      }
+    },
+    "envelope": {
+      "version": 1,
+      "policy": "ecdsa",
+      "signatures": [
+        {
+          "algorithm": "ecdsa-p256-sha256",
+          "certificate_pem": "-----BEGIN CERTIFICATE-----\nMIIBmzCCAUKgAwIBAgIUUwi5z27CtuwLUwGMtgMq3PSDxl0wCgYIKoZIzj0EAwIw\nITEfMB0GA1UEAwwWVEVTVCBPTkxZIGhpc3Rvcnkgcm9vdDAeFw0yNjExMDUxMTI0\nNDFaFw0yNjExMDgxMTI0NDFaMBkxFzAVBgNVBAMMDmluc3RhbGxhdGlvbi0xMFkw\nEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEPPWH86XnDJnygo2EjVOBZO6CQDNKzQFK\np+Pm+gkhD+jdYipnpcxIHSV2ikNIvo3BMln++lVNorne+HYA/bPcxaNgMF4wDAYD\nVR0TAQH/BAIwADAOBgNVHQ8BAf8EBAMCB4AwHQYDVR0OBBYEFN8DcXAmqAKzBP+L\nfUFZyZaMjczpMB8GA1UdIwQYMBaAFD2lMrPIvuswmYOmgwVmK2Um0GuIMAoGCCqG\nSM49BAMCA0cAMEQCIGriLx+EvOQS2JgCFMUaEA8j7Hq7OX8SLjNV0fsOraG6AiAc\nhN2bBHNfIDrIAZ3v+rpA2Rjgr7w8liwqK4snQ0NiGw==\n-----END CERTIFICATE-----\n",
+          "intermediates_pem": [],
+          "signature_hex": "3046022100aa3124eaa90d786e7866933b128eb1404589541c720402f6c88c86be6d756a1a022100866ceefed4d9d1675ce3ce3c3398454d158e55e20bd4e48afd4d3992122d57f3"
+        }
+      ]
+    }
+  }
+]
