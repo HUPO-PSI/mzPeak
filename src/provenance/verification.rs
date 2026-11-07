@@ -1,0 +1,336 @@
+//! Compose content coverage, stage signatures, certificate policy and publisher approval.
+//! Acceptance covers supplied history; external expected heads protect against rollback.
+use super::{
+    manifest::{CoverageReport, Manifest, ManifestError, canonical_json, validate_digest},
+    signing::{OpenSslBackend, SignatureEnvelope, SignaturePolicy},
+    stages::{LineageReport, Stage, StageKind, verify_lineage},
+    trust::{
+        CertificateReport, CheckStatus, SignerRole, TrustError, TrustPolicy,
+        verify_certificate_with,
+    },
+};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseStatement {
+    pub name: String,
+    pub version: String,
+    pub release_sha256: String,
+}
+impl ReleaseStatement {
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, ManifestError> {
+        validate_digest(&self.release_sha256)?;
+        for text in [&self.name, &self.version] {
+            if text.is_empty() || text.len() > 128 || !text.bytes().all(|b| (32..=126).contains(&b))
+            {
+                return Err(ManifestError::Invalid(
+                    "invalid release name/version".into(),
+                ));
+            }
+        }
+        canonical_json(
+            &serde_json::json!({"type":"mzpeak-software-release","version":1,
+            "name":self.name,"software_version":self.version,"release_sha256":self.release_sha256}),
+        )
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignedRelease {
+    pub statement: ReleaseStatement,
+    pub envelope: SignatureEnvelope,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignedStage {
+    pub stage: Stage,
+    pub envelope: SignatureEnvelope,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StageReport {
+    pub stage_id: String,
+    pub signature: CheckStatus,
+    pub certificates: Vec<CertificateReport>,
+    pub software_release: Option<CheckStatus>,
+    pub release_certificates: Vec<CertificateReport>,
+    pub details: Vec<String>,
+}
+impl StageReport {
+    pub fn accepted(&self) -> bool {
+        self.signature == CheckStatus::Valid
+            && !self.certificates.is_empty()
+            && self.certificates.iter().all(|c| c.accepted())
+            && self
+                .software_release
+                .is_none_or(|s| s == CheckStatus::Valid)
+    }
+}
+#[derive(Debug, Clone, Serialize)]
+pub struct HistoryReport {
+    pub coverage: CoverageReport,
+    pub lineage: LineageReport,
+    pub stages: Vec<StageReport>,
+}
+impl HistoryReport {
+    pub fn accepted(&self) -> bool {
+        self.coverage.complete()
+            && !self.stages.is_empty()
+            && self.stages.iter().all(|s| s.accepted())
+    }
+}
+/// All values here are relying-party configuration, never implicitly trusted archive metadata.
+pub struct HistoryPolicy<'a> {
+    pub trust: &'a TrustPolicy,
+    pub required_signatures: SignaturePolicy,
+    pub identities: &'a BTreeMap<String, String>,
+    pub publishers: &'a BTreeMap<String, String>,
+    pub expected_heads: Option<&'a [String]>,
+}
+#[derive(Debug, thiserror::Error)]
+pub enum HistoryError {
+    #[error(transparent)]
+    Manifest(#[from] ManifestError),
+    #[error(transparent)]
+    Trust(#[from] TrustError),
+}
+fn union_manifest(records: &[SignedStage]) -> Result<Manifest, ManifestError> {
+    let first = records
+        .first()
+        .ok_or_else(|| ManifestError::Invalid("empty history".into()))?;
+    let mut files = BTreeMap::new();
+    for record in records {
+        for file in &record.stage.manifest.files {
+            if let Some(previous) = files.insert(file.path.clone(), file.clone()) {
+                if previous != *file {
+                    return Err(ManifestError::Invalid(
+                        "inconsistent repeated file descriptor".into(),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(Manifest {
+        version: 1,
+        run_id: first.stage.manifest.run_id.clone(),
+        stage_id: "verified-history".into(),
+        files: files.into_values().collect(),
+    })
+}
+fn check_stages(
+    records: &[SignedStage],
+    policy: &HistoryPolicy<'_>,
+    releases: &BTreeMap<String, SignedRelease>,
+    backend: &OpenSslBackend,
+) -> Result<Vec<StageReport>, HistoryError> {
+    let mut reports = Vec::new();
+    for record in records {
+        let stage = &record.stage;
+        let mut report = StageReport {
+            stage_id: stage.manifest.stage_id.clone(),
+            signature: CheckStatus::Invalid,
+            certificates: vec![],
+            software_release: None,
+            release_certificates: vec![],
+            details: vec![],
+        };
+        let Some(identity) = policy
+            .identities
+            .get(&stage.manifest.stage_id)
+            .filter(|v| !v.is_empty())
+        else {
+            report
+                .details
+                .push("no externally configured stage identity".into());
+            reports.push(report);
+            continue;
+        };
+        let signers = match backend.verify(
+            &stage.canonical_bytes()?,
+            &record.envelope,
+            policy.required_signatures,
+        ) {
+            Ok(signers) => signers,
+            Err(e) => {
+                report.details.push(e.to_string());
+                reports.push(report);
+                continue;
+            }
+        };
+        report.signature = CheckStatus::Valid;
+        let role = if stage.kind == StageKind::Acquisition {
+            SignerRole::Acquisition
+        } else {
+            SignerRole::Processing
+        };
+        for signer in signers {
+            report.certificates.push(verify_certificate_with(
+                &backend.executable,
+                &signer.certificate_pem,
+                &signer.intermediates_pem,
+                policy.trust,
+                role,
+                identity,
+            )?);
+        }
+        if let Some(software) = &stage.software {
+            report.software_release = Some(CheckStatus::Invalid);
+            match (
+                releases.get(&software.release_sha256),
+                policy.publishers.get(&software.release_sha256),
+            ) {
+                (Some(release), Some(publisher))
+                    if release.statement.name == software.name
+                        && release.statement.version == software.version
+                        && release.statement.release_sha256 == software.release_sha256 =>
+                {
+                    match backend.verify(
+                        &release.statement.canonical_bytes()?,
+                        &release.envelope,
+                        policy.required_signatures,
+                    ) {
+                        Ok(signers) => {
+                            for signer in signers {
+                                report.release_certificates.push(verify_certificate_with(
+                                    &backend.executable,
+                                    &signer.certificate_pem,
+                                    &signer.intermediates_pem,
+                                    policy.trust,
+                                    SignerRole::SoftwareRelease,
+                                    publisher,
+                                )?);
+                            }
+                            if !report.release_certificates.is_empty()
+                                && report.release_certificates.iter().all(|r| r.accepted())
+                            {
+                                report.software_release = Some(CheckStatus::Valid);
+                            }
+                        }
+                        Err(e) => report.details.push(e.to_string()),
+                    }
+                }
+                _ => report.details.push(
+                    "matching publisher approval for this software release is missing".into(),
+                ),
+            }
+        }
+        reports.push(report);
+    }
+    Ok(reports)
+}
+
+pub fn verify_history(
+    records: &[SignedStage],
+    files: &BTreeMap<String, Vec<u8>>,
+    policy: &HistoryPolicy<'_>,
+    releases: &BTreeMap<String, SignedRelease>,
+    backend: &OpenSslBackend,
+) -> Result<HistoryReport, HistoryError> {
+    let stages: Vec<_> = records.iter().map(|r| r.stage.clone()).collect();
+    let lineage = verify_lineage(&stages, policy.expected_heads)?;
+    let coverage = union_manifest(records)?.verify_files(files)?;
+    let reports = check_stages(records, policy, releases, backend)?;
+    Ok(HistoryReport {
+        coverage,
+        lineage,
+        stages: reports,
+    })
+}
+
+pub fn verify_archive_history(
+    archive: impl AsRef<std::path::Path>,
+    records: &[SignedStage],
+    policy: &HistoryPolicy<'_>,
+    releases: &BTreeMap<String, SignedRelease>,
+    backend: &OpenSslBackend,
+) -> Result<HistoryReport, HistoryError> {
+    let stages: Vec<_> = records.iter().map(|r| r.stage.clone()).collect();
+    let lineage = verify_lineage(&stages, policy.expected_heads)?;
+    let coverage = super::archive::verify_archive(archive, &union_manifest(records)?)?;
+    let reports = check_stages(records, policy, releases, backend)?;
+    Ok(HistoryReport {
+        coverage,
+        lineage,
+        stages: reports,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn read(name: &str) -> Vec<u8> {
+        std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("test/data/provenance/history")
+                .join(name),
+        )
+        .unwrap()
+    }
+    #[test]
+    fn shared_full_history_and_security_failures() {
+        let mut records: Vec<SignedStage> = serde_json::from_slice(&read("records.json")).unwrap();
+        let releases: BTreeMap<String, SignedRelease> =
+            serde_json::from_slice(&read("releases.json")).unwrap();
+        let mut trust: TrustPolicy = serde_json::from_slice(&read("trust.json")).unwrap();
+        let encoded: BTreeMap<String, String> =
+            serde_json::from_slice(&read("files.json")).unwrap();
+        let mut files: BTreeMap<_, _> = encoded
+            .into_iter()
+            .map(|(k, v)| (k, hex::decode(v).unwrap()))
+            .collect();
+        let heads: Vec<String> = serde_json::from_slice(&read("heads.json")).unwrap();
+        let identities = BTreeMap::from([
+            ("acquisition".into(), "instrument-1".into()),
+            ("processing".into(), "installation-1".into()),
+        ]);
+        let publishers = releases
+            .keys()
+            .map(|k| (k.clone(), "publisher-1".into()))
+            .collect();
+        let p = HistoryPolicy {
+            trust: &trust,
+            required_signatures: SignaturePolicy::Ecdsa,
+            identities: &identities,
+            publishers: &publishers,
+            expected_heads: Some(&heads),
+        };
+        let backend = OpenSslBackend::default();
+        let report = verify_history(&records, &files, &p, &releases, &backend).unwrap();
+        assert!(report.accepted(), "{report:?}");
+        assert!(report.lineage.checkpoint_checked);
+        assert!(verify_history(&records[..1], &files, &p, &releases, &backend).is_err());
+        assert!(
+            !verify_history(&records, &files, &p, &BTreeMap::new(), &backend)
+                .unwrap()
+                .accepted()
+        );
+        files.get_mut("raw.bin").unwrap().push(0);
+        assert!(
+            !verify_history(&records, &files, &p, &releases, &backend)
+                .unwrap()
+                .accepted()
+        );
+        files.get_mut("raw.bin").unwrap().pop();
+        records[0].envelope = records[1].envelope.clone();
+        assert!(
+            !verify_history(&records, &files, &p, &releases, &backend)
+                .unwrap()
+                .accepted()
+        );
+        records = serde_json::from_slice(&read("records.json")).unwrap();
+        trust.crls_pem.clear();
+        let p = HistoryPolicy {
+            trust: &trust,
+            required_signatures: SignaturePolicy::Ecdsa,
+            identities: &identities,
+            publishers: &publishers,
+            expected_heads: Some(&heads),
+        };
+        assert!(
+            !verify_history(&records, &files, &p, &releases, &backend)
+                .unwrap()
+                .accepted()
+        );
+    }
+}

@@ -1,0 +1,1 @@
+TEST ONLY public certificate, CRL, signed acquisition/processing stages and publisher-approved release. Validation time is 2030-01-01T00:00:00Z. Private keys were discarded. Both reference implementations verify these same bytes. File values are hex-encoded to preserve exact bytes.

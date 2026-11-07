@@ -1,0 +1,95 @@
+[
+  {
+    "stage": {
+      "version": 1,
+      "kind": "acquisition",
+      "manifest": {
+        "version": 1,
+        "run_id": "run-1",
+        "stage_id": "acquisition",
+        "files": [
+          {
+            "path": "raw.bin",
+            "size": 26,
+            "sha256": "3b801db8bc72a2fa5da20beacfafbf41ca121837810e2e9b1efe146e4ddef9f6",
+            "chunks": []
+          },
+          {
+            "path": "snapshots/acquisition-index.json",
+            "size": 17,
+            "sha256": "c66aed1fcc1d095478ad3d6ddae9d293271a6d05faf83e9531fbd2d67ee6aef7",
+            "chunks": []
+          }
+        ]
+      },
+      "parents": [],
+      "inputs": [],
+      "software": null
+    },
+    "envelope": {
+      "version": 1,
+      "policy": "ecdsa",
+      "signatures": [
+        {
+          "algorithm": "ecdsa-p256-sha256",
+          "certificate_pem": "-----BEGIN CERTIFICATE-----\nMIIBmjCCAUCgAwIBAgIUL/mgomLXmII5WA8H1TW41p0kFIwwCgYIKoZIzj0EAwIw\nITEfMB0GA1UEAwwWVEVTVCBPTkxZIGhpc3Rvcnkgcm9vdDAeFw0yOTAxMDEwMDAw\nMDBaFw0zMTAxMDEwMDAwMDBaMBcxFTATBgNVBAMMDGluc3RydW1lbnQtMTBZMBMG\nByqGSM49AgEGCCqGSM49AwEHA0IABCwCZLqL86aj1ToPtRZKwl+r7osopoJ83dzK\n+8A0s0a0OSQHBD+TPI+fJaCDXItX7F+wc810LjcoCMrZGe3oF/yjYDBeMAwGA1Ud\nEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgeAMB0GA1UdDgQWBBQ5suJGxYlLijjshEOr\nqtmyqXxfAzAfBgNVHSMEGDAWgBSDArACD8mAUaNZVUmiDfIyquDewDAKBggqhkjO\nPQQDAgNIADBFAiEA9/T8DmuMzT5lnOuXhh7Q9V7J/ZNBaPem09mi8UlhHAcCIGN9\nzVpYrDwZq3yk/3eBsGymyQSkd/+5gONPsj8i4JGo\n-----END CERTIFICATE-----\n",
+          "intermediates_pem": [],
+          "signature_hex": "304602210096321beed049a528b849317818bee181a0792a865a4569bc413b2716e43ce899022100ca3156fd9d3b74906b181b13f93f676f5bfcd304a2affe59b58e67f4fb30fad1"
+        }
+      ]
+    }
+  },
+  {
+    "stage": {
+      "version": 1,
+      "kind": "processing",
+      "manifest": {
+        "version": 1,
+        "run_id": "run-1",
+        "stage_id": "processing",
+        "files": [
+          {
+            "path": "processed.json",
+            "size": 18,
+            "sha256": "c9e654e8902aa47de7edcd7ab902ed16ef68b2d1beb54a4644aada70c1964b49",
+            "chunks": []
+          },
+          {
+            "path": "snapshots/processing-index.json",
+            "size": 46,
+            "sha256": "39b04987918e366e02898a6b3f510757dd23e7883b2d183db37ee8e5289d6bff",
+            "chunks": []
+          }
+        ]
+      },
+      "parents": [
+        "8b8c04baa8759370072d69f6f8c32eff9e837a133fa5696787f73d57c4be9dcf"
+      ],
+      "inputs": [
+        {
+          "stage_sha256": "8b8c04baa8759370072d69f6f8c32eff9e837a133fa5696787f73d57c4be9dcf",
+          "path": "raw.bin",
+          "sha256": "3b801db8bc72a2fa5da20beacfafbf41ca121837810e2e9b1efe146e4ddef9f6"
+        }
+      ],
+      "software": {
+        "name": "mzPeak certified converter",
+        "version": "1.0",
+        "release_sha256": "a8b077366207a4f60b23396338f9e2d65007c87d49e7bcc1f8f7d18db947d085",
+        "parameters_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      }
+    },
+    "envelope": {
+      "version": 1,
+      "policy": "ecdsa",
+      "signatures": [
+        {
+          "algorithm": "ecdsa-p256-sha256",
+          "certificate_pem": "-----BEGIN CERTIFICATE-----\nMIIBnTCCAUKgAwIBAgIUZjwQtUBFxlekWXzUwvONEkNgkT4wCgYIKoZIzj0EAwIw\nITEfMB0GA1UEAwwWVEVTVCBPTkxZIGhpc3Rvcnkgcm9vdDAeFw0yOTAxMDEwMDAw\nMDBaFw0zMTAxMDEwMDAwMDBaMBkxFzAVBgNVBAMMDmluc3RhbGxhdGlvbi0xMFkw\nEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE6k41bS63VQF+AC1d181+OwBwP7fhi5lA\nG5fZU17Jld7rc/7I/JgwzLEbplVkdknFE1soNHxhOZbBfFOQVHuknKNgMF4wDAYD\nVR0TAQH/BAIwADAOBgNVHQ8BAf8EBAMCB4AwHQYDVR0OBBYEFJMoV5HMcaO10d5W\n+stsKatH/tG4MB8GA1UdIwQYMBaAFIMCsAIPyYBRo1lVSaIN8jKq4N7AMAoGCCqG\nSM49BAMCA0kAMEYCIQCDbALGQYl3OErB8197STp2shkB4QbBgZDqkrnzoABnzQIh\nAOuWvLJuP/+JJdhJ9IlkSwNF7ORIBv/IU8yaYtiWiV0f\n-----END CERTIFICATE-----\n",
+          "intermediates_pem": [],
+          "signature_hex": "30450220082862bce83975f459dbfb7f5c18555c4f39027ee5df7e1e8e4b3282ead7a0660221009a1223b482fa35feffcfe5a7d563b996463dfd23cadaad2de4b329a225657db1"
+        }
+      ]
+    }
+  }
+]
