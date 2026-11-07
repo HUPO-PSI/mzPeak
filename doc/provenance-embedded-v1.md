@@ -27,8 +27,14 @@ The bundle has exactly five JSON fields:
 All fields are present; the three maps may be empty. Stage IDs are unique and all
 stages belong to one run. Evidence must identify an existing signed record and
 bind its canonical payload and complete envelope. Duplicate JSON keys, unknown
-fields and unsupported versions are errors. The whole embedded member is limited
-to 64 MiB uncompressed; individual evidence bundles retain their 16 MiB limit.
+fields and unsupported versions are errors. There is no fixed whole-bundle byte limit; individual evidence bundles retain
+their 16 MiB limit. Python read/write APIs accept optional `max_bytes`; Rust offers
+`read_embedded_provenance_with_limit` and `embed_provenance_with_limit`. These
+caller-selected uncompressed byte budgets reject oversized ZIP members before
+reading them, and writers check the resulting bundle before replacing the archive.
+They are deployment resource controls, not format validity rules. Default APIs
+and CLIs have no fixed aggregate ceiling and materialize the bundle in memory;
+untrusted-input services should select a budget appropriate to their workload.
 
 Stage, release and evidence formats are unchanged. Signatures use the version-2
 CMS envelope specified in `provenance-signing-v1.md`; the bundle remains version 1.
@@ -57,7 +63,7 @@ exclusive writer access and enough free space for a second archive; detected
 concurrent changes abort before replacement. Writing through a symlink is refused.
 
 The CLI's `verify archive.mzpeak` discovers the embedded member automatically.
-Missing, oversized, ambiguous or malformed embedded proof is an error. There is
+Missing, ambiguous or malformed embedded proof is an error. There is
 no implicit fallback to adjacent files or to an integrity-only success. An
 explicit records-file argument selects the older detached workflow instead.
 Unknown files elsewhere in the reserved provenance namespace are not measurement

@@ -149,16 +149,18 @@ def test_rewrite_streams_content_and_enforces_bundle_limit(archive, monkeypatch)
     with zipfile.ZipFile(archive) as source:
         assert source.read("large.bin") == data
     original = archive.read_bytes()
-    monkeypatch.setattr("mzpeak.embedded.MAX_BUNDLE_BYTES", 32)
-    with pytest.raises(ValueError, match="64 MiB"):
-        embed_provenance(archive, bundle())
+    with pytest.raises(ValueError, match="caller byte budget"):
+        embed_provenance(archive, bundle(), max_bytes=32)
     assert archive.read_bytes() == original
 
 
 @pytest.mark.parametrize("language", ["python", "rust"])
-@pytest.mark.parametrize("policy", ["ecdsa", "pqc", "both"])
+@pytest.mark.parametrize(
+    "policy,copies",
+    [("ecdsa", 1), ("pqc", 1), ("both", 1), ("ecdsa", 2), ("pqc", 2), ("both", 2)],
+)
 def test_sign_archive_and_sign_into_archive_do_not_need_detached_outputs(
-    language, archive, tmp_path, policy
+    language, archive, tmp_path, policy, copies
 ):
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
@@ -249,6 +251,51 @@ def test_sign_archive_and_sign_into_archive_do_not_need_detached_outputs(
             }
         )
         write_json(config, signers)
+    if copies == 2:
+        signers = json.loads(config.read_text())
+        for index, original in enumerate(list(signers)):
+            key, cert = tmp_path / f"extra-{index}.key", tmp_path / f"extra-{index}.crt"
+            parameters = (
+                ["EC", "-pkeyopt", "ec_paramgen_curve:P-256"]
+                if original["algorithm"] == "ecdsa-p256-sha256"
+                else ["ML-DSA-65"]
+            )
+            subprocess.run(
+                ["openssl", "genpkey", "-algorithm", *parameters, "-out", str(key)],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [
+                    "openssl",
+                    "req",
+                    "-new",
+                    "-x509",
+                    "-key",
+                    str(key),
+                    "-out",
+                    str(cert),
+                    "-subj",
+                    "/CN=Additional embedded signer",
+                    "-days",
+                    "1",
+                ],
+                check=True,
+                capture_output=True,
+            )
+            signers.append(
+                {
+                    "algorithm": original["algorithm"],
+                    "provider": {
+                        "kind": "software",
+                        "key_path": str(key),
+                        "passphrase_file": None,
+                    },
+                    "certificate_path": str(cert),
+                    "chain_paths": [],
+                }
+            )
+        write_json(config, signers)
     second = tmp_path / "second.mzpeak"
     shutil.copyfile(archive, second)
     paths_before = set(tmp_path.iterdir())
@@ -271,7 +318,7 @@ def test_sign_archive_and_sign_into_archive_do_not_need_detached_outputs(
         OpenSslBackend().verify(
             record.stage.canonical_bytes(), record.envelope, SignaturePolicy(policy)
         )
-    ) == (2 if policy == "both" else 1)
+    ) == copies * (2 if policy == "both" else 1)
     assert b"PRIVATE KEY" not in read_embedded_provenance(archive).to_json()
     stage = write_json(tmp_path / "stage.json", record.stage.to_dict())
     success(
@@ -453,3 +500,17 @@ def test_move_only_archive_and_verify_historical_proof_across_languages(
         for name, content in files.items():
             output.writestr(name, content)
     assert invoke(reader, *args).returncode != 0
+
+
+def test_large_embedded_input_and_explicit_resource_budget(archive):
+    with zipfile.ZipFile(archive, "a", compression=zipfile.ZIP_DEFLATED) as output:
+        output.writestr(BUNDLE_PATH, b" " * (64 * 1024 * 1024 + 1) + bundle().to_json())
+    with pytest.raises(ValueError, match="caller byte budget"):
+        read_embedded_provenance(archive, max_bytes=64 * 1024 * 1024)
+    assert len(read_embedded_provenance(archive).records) == len(bundle().records)
+    previous = archive.read_bytes()
+    with pytest.raises(ValueError, match="caller byte budget"):
+        embed_provenance(archive, bundle(), max_bytes=32)
+    assert archive.read_bytes() == previous
+    embed_provenance(archive, bundle())
+    assert read_embedded_provenance(archive, max_bytes=len(bundle().to_json())).records

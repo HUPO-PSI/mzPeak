@@ -18,7 +18,6 @@ use std::{
 };
 
 pub const BUNDLE_PATH: &str = "provenance/bundle-v1.json";
-pub const MAX_BUNDLE_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EmbeddedError {
@@ -160,9 +159,6 @@ impl ProvenanceBundle {
         Ok(())
     }
     pub fn from_json(bytes: &[u8]) -> Result<Self, EmbeddedError> {
-        if bytes.len() as u64 > MAX_BUNDLE_BYTES {
-            return Err(invalid("bundle exceeds 64 MiB"));
-        }
         let bundle: Self = serde_json::from_slice(bytes)?;
         bundle.validate()?;
         Ok(bundle)
@@ -170,9 +166,6 @@ impl ProvenanceBundle {
     pub fn to_json(&self) -> Result<Vec<u8>, EmbeddedError> {
         self.validate()?;
         let bytes = serde_json::to_vec(self)?;
-        if bytes.len() as u64 > MAX_BUNDLE_BYTES {
-            return Err(invalid("bundle exceeds 64 MiB"));
-        }
         Ok(bytes)
     }
     fn merge(mut self, additions: &Self) -> Result<Self, EmbeddedError> {
@@ -225,6 +218,7 @@ impl ProvenanceBundle {
 
 fn read_bundle(
     archive: &mut zip::ZipArchive<fs::File>,
+    max_bytes: Option<u64>,
 ) -> Result<Option<ProvenanceBundle>, EmbeddedError> {
     inventory(archive)?;
     for name in archive.file_names() {
@@ -237,19 +231,31 @@ fn read_bundle(
         Err(zip::result::ZipError::FileNotFound) => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    if member.size() > MAX_BUNDLE_BYTES {
-        return Err(invalid("bundle exceeds 64 MiB"));
+    if max_bytes.is_some_and(|limit| member.size() > limit) {
+        return Err(invalid("bundle exceeds caller byte budget"));
     }
     let mut bytes = vec![];
     member
         .by_ref()
-        .take(MAX_BUNDLE_BYTES + 1)
+        .take(max_bytes.map(|n| n.saturating_add(1)).unwrap_or(u64::MAX))
         .read_to_end(&mut bytes)?;
+    if max_bytes.is_some_and(|limit| bytes.len() as u64 > limit) {
+        return Err(invalid("bundle exceeds caller byte budget"));
+    }
     Ok(Some(ProvenanceBundle::from_json(&bytes)?))
 }
 
 pub fn read_embedded_provenance(path: impl AsRef<Path>) -> Result<ProvenanceBundle, EmbeddedError> {
-    read_bundle(&mut open_archive(path)?)?
+    read_bundle(&mut open_archive(path)?, None)?
+        .ok_or_else(|| invalid("archive has no embedded provenance bundle"))
+}
+
+/// Read with a caller-selected uncompressed byte budget (including ZIP metadata checks).
+pub fn read_embedded_provenance_with_limit(
+    path: impl AsRef<Path>,
+    max_bytes: u64,
+) -> Result<ProvenanceBundle, EmbeddedError> {
+    read_bundle(&mut open_archive(path)?, Some(max_bytes))?
         .ok_or_else(|| invalid("archive has no embedded provenance bundle"))
 }
 
@@ -259,16 +265,35 @@ pub fn embed_provenance(
     path: impl AsRef<Path>,
     additions: &ProvenanceBundle,
 ) -> Result<ProvenanceBundle, EmbeddedError> {
-    let path = path.as_ref();
+    embed_with_budget(path.as_ref(), additions, None)
+}
+
+/// Merge while bounding both the old and resulting uncompressed bundle size.
+pub fn embed_provenance_with_limit(
+    path: impl AsRef<Path>,
+    additions: &ProvenanceBundle,
+    max_bytes: u64,
+) -> Result<ProvenanceBundle, EmbeddedError> {
+    embed_with_budget(path.as_ref(), additions, Some(max_bytes))
+}
+
+fn embed_with_budget(
+    path: &Path,
+    additions: &ProvenanceBundle,
+    max_bytes: Option<u64>,
+) -> Result<ProvenanceBundle, EmbeddedError> {
     let initial = fs::symlink_metadata(path)?;
     if initial.file_type().is_symlink() {
         return Err(invalid("refusing to rewrite through a symbolic link"));
     }
     let mut archive = open_archive(path)?;
-    let bundle = read_bundle(&mut archive)?
+    let bundle = read_bundle(&mut archive, max_bytes)?
         .unwrap_or_default()
         .merge(additions)?;
     let encoded = bundle.to_json()?;
+    if max_bytes.is_some_and(|limit| encoded.len() as u64 > limit) {
+        return Err(invalid("bundle exceeds caller byte budget"));
+    }
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -457,6 +482,44 @@ mod tests {
         assert!(invalid.to_json().is_err());
     }
     #[test]
+    fn large_bundle_inputs_use_caller_selected_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("large.mzpeak");
+        let full = bundle();
+        let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        zip.start_file(
+            BUNDLE_PATH,
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated),
+        )
+        .unwrap();
+        let padding = vec![b' '; 1024 * 1024];
+        for _ in 0..65 {
+            zip.write_all(&padding).unwrap();
+        }
+        zip.write_all(&full.to_json().unwrap()).unwrap();
+        zip.finish().unwrap();
+        assert!(
+            read_embedded_provenance_with_limit(&path, 64 * 1024 * 1024)
+                .unwrap_err()
+                .to_string()
+                .contains("caller byte budget")
+        );
+        assert_eq!(
+            read_embedded_provenance(&path).unwrap().records.len(),
+            full.records.len()
+        );
+        let before = fs::read(&path).unwrap();
+        assert!(embed_provenance_with_limit(&path, &full, 32).is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        embed_provenance(&path, &full).unwrap();
+        assert!(
+            read_embedded_provenance_with_limit(&path, full.to_json().unwrap().len() as u64)
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn aliased_bundle_and_oversized_member_are_rejected() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("bad.mzpeak");
@@ -490,7 +553,7 @@ mod tests {
         let mut bytes = fs::read(&path).unwrap();
         let offset = bytes.windows(4).position(|b| b == b"PK\x01\x02").unwrap();
         bytes[offset + 24..offset + 28]
-            .copy_from_slice(&((MAX_BUNDLE_BYTES + 1) as u32).to_le_bytes());
+            .copy_from_slice(&((64 * 1024 * 1024 + 1) as u32).to_le_bytes());
         fs::write(&path, bytes).unwrap();
         assert!(read_embedded_provenance(&path).is_err());
     }

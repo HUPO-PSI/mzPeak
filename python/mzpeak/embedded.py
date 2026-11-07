@@ -17,7 +17,6 @@ from .stages import Stage
 from .verification import ReleaseStatement, SignedRelease, SignedStage
 
 BUNDLE_PATH = "provenance/bundle-v1.json"
-MAX_BUNDLE_BYTES = 64 * 1024 * 1024
 
 
 def _json(value):
@@ -107,14 +106,10 @@ class ProvenanceBundle:
     def to_json(self):
         self.validate()
         data = _json(self.to_dict())
-        if len(data) > MAX_BUNDLE_BYTES:
-            raise ValueError("embedded provenance exceeds 64 MiB")
         return data
 
     @classmethod
     def from_json(cls, data):
-        if len(data) > MAX_BUNDLE_BYTES:
-            raise ValueError("embedded provenance exceeds 64 MiB")
         value = _load_json(data)
         _keys(
             value,
@@ -158,7 +153,13 @@ class ProvenanceBundle:
         return result
 
 
-def _read_bundle(archive):
+def _budget(max_bytes):
+    if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 0):
+        raise ValueError("bundle byte budget must be a nonnegative integer")
+
+
+def _read_bundle(archive, max_bytes=None):
+    _budget(max_bytes)
     _inventory(archive)
     for item in archive.infolist():
         if (
@@ -170,16 +171,19 @@ def _read_bundle(archive):
         info = archive.getinfo(BUNDLE_PATH)
     except KeyError:
         return None
-    if info.file_size > MAX_BUNDLE_BYTES:
-        raise ValueError("embedded provenance exceeds 64 MiB")
+    if max_bytes is not None and info.file_size > max_bytes:
+        raise ValueError("embedded provenance exceeds caller byte budget")
     with archive.open(info) as stream:
-        return ProvenanceBundle.from_json(stream.read(MAX_BUNDLE_BYTES + 1))
+        data = stream.read() if max_bytes is None else stream.read(max_bytes + 1)
+    if max_bytes is not None and len(data) > max_bytes:
+        raise ValueError("embedded provenance exceeds caller byte budget")
+    return ProvenanceBundle.from_json(data)
 
 
-def read_embedded_provenance(path):
-    """Read a bounded, validated bundle. Missing proof never means success."""
+def read_embedded_provenance(path, *, max_bytes=None):
+    """Read validated proof with an optional caller-selected decompression budget."""
     with zipfile.ZipFile(path) as archive:
-        result = _read_bundle(archive)
+        result = _read_bundle(archive, max_bytes)
     if result is None:
         raise ValueError("archive has no embedded provenance bundle")
     return result
@@ -210,13 +214,14 @@ def _merge(existing, additions):
     return ProvenanceBundle.from_json(_json(old))
 
 
-def embed_provenance(path, additions):
+def embed_provenance(path, additions, *, max_bytes=None):
     """Atomically add public proofs, preserving all existing records and content.
 
     Uses a temporary sibling ZIP and bounded copying. Requires exclusive writer
     access; detected source changes abort before replacement. No keys or trust
     configuration belong in this bundle. Packaging does not certify its contents.
     """
+    _budget(max_bytes)
     path = Path(path).absolute()
     if path.is_symlink():
         raise ValueError("refusing to rewrite an archive through a symbolic link")
@@ -224,8 +229,10 @@ def embed_provenance(path, additions):
     temporary = None
     try:
         with zipfile.ZipFile(path) as source:
-            bundle = _merge(_read_bundle(source), additions)
+            bundle = _merge(_read_bundle(source, max_bytes), additions)
             encoded = bundle.to_json()
+            if max_bytes is not None and len(encoded) > max_bytes:
+                raise ValueError("embedded provenance exceeds caller byte budget")
             with tempfile.NamedTemporaryFile(
                 dir=path.parent,
                 prefix=".mzpeak-provenance-",
