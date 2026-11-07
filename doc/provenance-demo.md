@@ -3,8 +3,11 @@
 These commands exercise an experimental format proposal, not an approved mzPeak
 standard or a regulatory certification. The Python and Rust implementations use
 the same manifests, signed-stage records, signer configuration and trust policy.
-They do not change the input archive or generate signing keys. Outputs must name
-new files; an existing destination is never overwritten.
+The default exchange form embeds public proofs inside the mzPeak ZIP.
+`sign-archive`, `sign --archive`, `sign-release --archive` and `embed` update that
+archive atomically, preserving measurement content and existing proofs. No command
+generates signing keys. Explicit detached outputs must name new files and are
+never overwritten. See [embedded provenance](provenance-embedded-v1.md).
 
 Install Python with the provenance extra (`pip install 'python/[provenance]'`) or
 build Rust with `cargo build --example provenance`. Use OpenSSL 3.5 or newer for
@@ -16,6 +19,21 @@ invocation is `cargo run --example provenance --` followed by the same arguments
 An optional global `--openssl /trusted/path/to/openssl` precedes the subcommand.
 
 ## Capture and sign an acquisition
+
+```sh
+python -m mzpeak.provenance_cli sign-archive small.mzpeak \
+  --run-id demo-run --stage-id acquisition \
+  --signers instrument-signers.json --policy ecdsa
+python -m mzpeak.provenance_cli verify small.mzpeak \
+  --trust trust.json --identities identities.json --policy ecdsa
+```
+
+The resulting file carries its signed stage and public certificates. Use `embed`
+to add publisher approvals and timestamp evidence. Verification discovers those
+records in the ZIP; historical verification additionally takes the recipient's
+TSA policy and bound policy identifier/bytes, as described in the embedded guide.
+
+For an explicitly detached, step-by-step workflow:
 
 ```sh
 python -m mzpeak.provenance_cli capture small.mzpeak acquisition-manifest.json \

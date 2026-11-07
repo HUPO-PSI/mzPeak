@@ -1,4 +1,4 @@
-//! Experimental versioned provenance. These APIs do not alter legacy mzPeak archives.
+//! Experimental versioned provenance with optional embedded public proof storage.
 pub mod manifest;
 pub mod archive;
 pub mod stages;
@@ -14,3 +14,5 @@ pub mod verification;
 pub mod evidence;
 #[cfg(feature = "verification")]
 pub mod historical;
+#[cfg(feature = "verification")]
+pub mod embedded;
