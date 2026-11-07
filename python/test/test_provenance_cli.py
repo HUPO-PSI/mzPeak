@@ -180,7 +180,12 @@ def test_capture_and_acquisition_canonical_bytes_match_between_clis(archive, tmp
     assert outputs[0] == outputs[1]
 
 
-def test_dual_signatures_interoperate_in_both_directions(archive, tmp_path):
+@pytest.mark.parametrize(
+    "policy,selected", [("ecdsa", [0]), ("pqc", [1]), ("both", [0, 1])]
+)
+def test_cms_signatures_interoperate_in_both_directions(
+    archive, tmp_path, policy, selected
+):
     rust = command("rust")
     path, _, _ = archive
     probe = subprocess.run(
@@ -247,7 +252,7 @@ def test_dual_signatures_interoperate_in_both_directions(archive, tmp_path):
                 "chain_paths": [],
             }
         )
-    config = write_json(tmp_path / "signers.json", signers)
+    config = write_json(tmp_path / "signers.json", [signers[i] for i in selected])
     identities = write_json(
         tmp_path / "identities.json", {"acquisition": "instrument-1"}
     )
@@ -257,7 +262,7 @@ def test_dual_signatures_interoperate_in_both_directions(archive, tmp_path):
     ]:
         record = tmp_path / f"{name}-signed.json"
         success(
-            signer_cli, "sign", stage, record, "--signers", config, "--policy", "both"
+            signer_cli, "sign", stage, record, "--signers", config, "--policy", policy
         )
         result = invoke(
             verifier_cli,
@@ -269,7 +274,7 @@ def test_dual_signatures_interoperate_in_both_directions(archive, tmp_path):
             "--identities",
             identities,
             "--policy",
-            "both",
+            policy,
         )
         assert result.returncode == 1, result.stderr
         report = json.loads(result.stdout)
@@ -277,7 +282,7 @@ def test_dual_signatures_interoperate_in_both_directions(archive, tmp_path):
             report["accepted"] is False
         )  # Self-signed leaf certificates are not trusted.
         assert report["report"]["stages"][0]["signature"] == "valid"
-        assert len(report["report"]["stages"][0]["certificates"]) == 2
+        assert len(report["report"]["stages"][0]["certificates"]) == len(selected)
         previous = record.read_bytes()
         assert (
             invoke(
@@ -288,7 +293,7 @@ def test_dual_signatures_interoperate_in_both_directions(archive, tmp_path):
                 "--signers",
                 config,
                 "--policy",
-                "both",
+                policy,
             ).returncode
             != 0
         )

@@ -172,3 +172,7 @@ python -m mzpeak.provenance_cli verify fixture.mzpeak \
 This fixture policy uses an artificial validation time within its test certificate
 and CRL validity periods. It is a reproducible test, not deployment trust policy.
 Running the same arguments with Rust produces the same acceptance and report.
+
+The signing profile uses version-2 CMS envelopes. Old experimental raw envelopes
+are rejected; regenerate signatures and their timestamp evidence when migrating.
+The independent legacy Ed25519/CMS archive verifier remains available.
