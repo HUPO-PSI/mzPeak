@@ -1,0 +1,1 @@
+Public, test-only certificate/CRL fixtures. Private keys were discarded. Validation instant: 2030-01-01T00:00:00Z (1893456000). Root -> issuer -> end entities; issuer CRL revokes `revoked.pem`. CRLs expire after one day. These are not demo/production credentials.
