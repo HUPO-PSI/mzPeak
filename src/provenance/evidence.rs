@@ -373,7 +373,9 @@ pub fn verify_timestamp_with(
             .arg("-CApath")
             .arg(&empty)
             .arg("-CAstore")
-            .arg(&empty)
+            // OpenSSL 3.0 eagerly loads the store and rejects an empty directory.
+            // Reuse the explicit policy bundle so default roots stay excluded.
+            .arg(&roots)
             .arg("-attime")
             .arg(info.time.to_string())
             .args(["-x509_strict", "-check_ss_sig"]);

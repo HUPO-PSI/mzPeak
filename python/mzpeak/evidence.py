@@ -195,7 +195,9 @@ def verify_timestamp(
                 "-CApath",
                 empty,
                 "-CAstore",
-                empty,
+                # OpenSSL 3.0 eagerly loads the store and rejects an empty
+                # directory. Use the explicit policy bundle to exclude defaults.
+                roots,
                 "-attime",
                 str(claimed_time),
                 "-x509_strict",

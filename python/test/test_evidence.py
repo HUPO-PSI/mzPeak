@@ -3,6 +3,7 @@
 from dataclasses import replace
 import json
 from pathlib import Path
+import subprocess
 
 from asn1crypto import tsp
 import pytest
@@ -64,6 +65,30 @@ def test_genuine_timestamp_uses_historical_tsa_validity():
     assert verify_timestamp(
         raw("envelope.json"), raw("response.tsr"), None, policy()
     ).accepted
+
+
+@pytest.mark.parametrize("include_query", [True, False])
+def test_default_ca_locations_cannot_override_explicit_tsa_roots(
+    monkeypatch, tmp_path, include_query
+):
+    root_path = DATA / "tsa-root.pem"
+    subject_hash = subprocess.check_output(
+        ["openssl", "x509", "-in", str(root_path), "-hash", "-noout"], text=True
+    ).strip()
+    (tmp_path / f"{subject_hash}.0").write_text(pem("tsa-root.pem"))
+    monkeypatch.setenv("SSL_CERT_FILE", str(DATA / "tsa-root.pem"))
+    monkeypatch.setenv("SSL_CERT_DIR", str(tmp_path))
+    query = raw("request.tsq") if include_query else None
+    assert verify_timestamp(
+        raw("envelope.json"), raw("response.tsr"), query, policy()
+    ).accepted
+    other_root = (DATA.parent / "trust" / "other_root.pem").read_text()
+    report = verify_timestamp(
+        raw("envelope.json"), raw("response.tsr"), query,
+        replace(policy(), roots_pem=[other_root]),
+    )
+    assert report.status == CheckStatus.INVALID
+    assert report.trusted_time is None
 
 
 @pytest.mark.parametrize(
