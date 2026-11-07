@@ -4,8 +4,10 @@ import io
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from asn1crypto import cms
+from asn1crypto import cms, keys
 from cryptography import x509
+from cryptography.exceptions import UnsupportedAlgorithm
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.x509.oid import NameOID
 
@@ -119,6 +121,26 @@ def mutate(record, callback):
     callback(envelope["content"])
     record.signature = envelope.dump()
     return record
+
+
+def test_unsupported_certificate_key_is_a_verification_error(signing_key):
+    # Valid secp128r1 SubjectPublicKeyInfo, a curve cryptography does not support.
+    public_key_der = bytes.fromhex(
+        "3036301006072a8648ce3d020106052b8104001c03220004"
+        "4e09762a2229f4c4c2f71691a561a2afbccc367b783535d12f5d179cf05a10fa"
+    )
+    with pytest.raises(UnsupportedAlgorithm):
+        serialization.load_der_public_key(public_key_der)
+
+    def unsupported_key(data):
+        certificate = data["certificates"][0].chosen
+        certificate["tbs_certificate"]["subject_public_key_info"] = keys.PublicKeyInfo.load(public_key_der)
+        data["certificates"] = [cms.CertificateChoices(name="certificate", value=certificate)]
+
+    record = mutate(signed(signing_key), unsupported_key)
+    with pytest.raises(VerificationError) as error:
+        record.verify_against(segment().signature)
+    assert isinstance(error.value.__cause__, UnsupportedAlgorithm)
 
 
 def test_multiple_signers_and_attached_content_rejected(signing_key):

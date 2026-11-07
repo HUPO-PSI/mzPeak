@@ -9,7 +9,7 @@ try:
     from asn1crypto import algos, cms, core, pem
     from asn1crypto import x509 as x509_asn1
     from cryptography import x509
-    from cryptography.exceptions import InvalidSignature
+    from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import ed25519
     has_crypto = True
@@ -107,7 +107,11 @@ class SegmentSignature:
         if not isinstance(private_key, ed25519.Ed25519PrivateKey):
             raise ValueError("legacy segments require an Ed25519 private key")
         cert_key = certificate.public_key()
-        if not isinstance(cert_key, ed25519.Ed25519PublicKey) or private_key.public_key().public_bytes_raw() != cert_key.public_bytes_raw():
+        if not isinstance(cert_key, ed25519.Ed25519PublicKey) or (
+            private_key.public_key().public_bytes(
+                serialization.Encoding.Raw, serialization.PublicFormat.Raw
+            ) != cert_key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        ):
             raise ValueError("certificate does not match the signing key")
         if len(self.signature) != hashlib.sha512().digest_size:
             raise ValueError("unsigned segment must contain a SHA-512 digest")
@@ -210,7 +214,9 @@ class SegmentSignature:
             return self._verify_against(digest)
         except VerificationError:
             raise
-        except (ValueError, TypeError, KeyError, IndexError, InvalidSignature) as error:
+        except (
+            ValueError, TypeError, KeyError, IndexError, InvalidSignature, UnsupportedAlgorithm
+        ) as error:
             raise VerificationError("malformed or invalid legacy CMS signature") from error
 
     def _verify_against(self, digest: bytes):
