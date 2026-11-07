@@ -1,22 +1,24 @@
-# Experimental detached-signature profile v1
+# Experimental CMS signature profile v2
 
-Python `mzpeak.signing` and Rust `provenance::signing` implement this prototype
-profile. It requires review in the mzPeak specification repository before it
-becomes a standard. Existing Ed25519/CMS provenance records remain a separate
-legacy format. The new envelope is **not CMS** and makes no RFC 9882 compatibility
-claim: the OpenSSL 3.5 backend supports native ML-DSA signing but does not provide
-the required CMS ML-DSA implementation.
+Python `mzpeak.signing` and Rust `provenance::signing` use standard CMS
+SignedData (RFC 5652), ECDSA (RFC 5753) and ML-DSA (RFC 9882). The mzPeak
+content and acceptance rules remain experimental and require specification review.
+Existing Ed25519/CMS archive records remain supported by the separate legacy
+verifier. The superseded experimental raw-signature prototype is replaced, not silently
+accepted as CMS: its version-1 envelopes must be re-signed and re-timestamped.
 
 ## Algorithms and backend
 
 The two explicit algorithms are:
 
-| Identifier | Primitive | Signature encoding |
+| Identifier | Primitive | CMS content digest |
 | --- | --- | --- |
-| `ecdsa-p256-sha256` | ECDSA with named curve P-256 and SHA-256 | ASN.1 DER sequence of integers |
-| `ml-dsa-65` | FIPS 204 pure ML-DSA-65, empty context | 3309 raw bytes |
+| `ecdsa-p256-sha256` | ECDSA with named curve P-256 and SHA-256 | SHA-256 |
+| `ml-dsa-65` | FIPS 204 pure ML-DSA-65, empty context | SHA-512 |
 
-ML-DSA is not HashML-DSA or the older Dilithium algorithm. X.509 public keys must
+CMS hashes the content into a signed `messageDigest` attribute; ML-DSA signs
+the DER signed attributes using pure mode, as specified in RFC 9882. This is
+not HashML-DSA or the older Dilithium algorithm. X.509 public keys must
 use the corresponding standardized OIDs and parameters: EC named-curve P-256,
 or ML-DSA-65 with absent parameters. Unknown algorithms, other curves, mislabeled
 certificates and noncanonical DER certificates are rejected.
@@ -36,9 +38,9 @@ key references or secrets.
 ## Signed bytes and envelope
 
 Sign the canonical bytes of the complete manifest or stage, not a reserialized
-selection of its fields. Every signature covers the same transcript:
+selection of its fields. Every CMS object authenticates the same detached content:
 
-1. ASCII `mzPeak-signature-v1` followed by one zero byte.
+1. ASCII `mzPeak-cms-signature-v2` followed by one zero byte.
 2. One policy byte: `1` ECDSA, `2` PQC, or `3` both.
 3. A big-endian unsigned 32-bit signer count, one or two.
 4. For each signer, in ascending algorithm-name order: its ASCII name's
@@ -48,10 +50,35 @@ selection of its fields. Every signature covers the same transcript:
 
 Duplicate algorithms are rejected. The manifest limit is 64 MiB. Each signer
 has exactly one PEM leaf certificate (at most 64 KiB), up to eight intermediate
-certificates, and a lowercase hexadecimal signature. The JSON envelope has
+certificates, and a lowercase hexadecimal DER CMS `ContentInfo` in `cms_der_hex`. The JSON envelope has
 exactly `version`, `policy`, and `signatures`; a signature has exactly
-`algorithm`, `certificate_pem`, `intermediates_pem`, and `signature_hex`.
-Unknown and duplicate JSON fields are rejected. The version is integer `1`.
+`algorithm`, `certificate_pem`, `intermediates_pem`, and `cms_der_hex`.
+Unknown and duplicate JSON fields are rejected. The envelope version is integer `2` (the manifest and bundle versions remain `1`).
+
+Each descriptor carries one complete, detached CMS `SignedData` object with
+exactly one `SignerInfo`. A `both` record therefore contains two independently
+verifiable CMS objects over the same content. This supports different digests
+and key providers without inventing CMS attributes or a composite algorithm.
+Generic CMS tools can verify each object; mzPeak additionally enforces the
+complete signer set, policy, content coverage, lineage and certificate eligibility.
+
+The CMS profile requires canonical DER, `id-data`, SignedData/SignerInfo version 1,
+issuer-and-serial signer identification, and signed `contentType` and
+`messageDigest` attributes. Optional `signingTime` is only a signer assertion,
+never a trusted timestamp. Duplicate/multivalued/unknown attributes, unsigned
+attributes, attached content, extra signers and embedded CRLs are rejected.
+Revocation and timestamp evidence uses the separately specified evidence bundle.
+The certificate set must exactly match the descriptor's leaf and intermediates,
+without duplicates. Signature algorithm parameters must be absent. SHA-256/SHA-512
+digest parameters may be absent or NULL. Other algorithms are rejected. Each
+CMS object is bounded to 1 MiB before decoding.
+
+The verifier checks the CMS structure and certificate binding, then invokes
+`openssl cms -verify -binary` with `-nointern` and the exact bound leaf.
+`-noverify` disables only CMS certificate-path verification: the separate mzPeak
+trust validator handles roots, roles, time and revocation. Content, signed
+attributes and signature verification remain enabled. No embedded certificate
+is automatically trusted.
 
 The transcript binds the complete signer set, leaf identities, algorithms and
 declared policy. An attacker cannot strip the PQC signature and relabel an
@@ -62,9 +89,9 @@ silently ignored. Signing immediately verifies each produced signature against
 its supplied leaf, rejecting a key/certificate mismatch.
 
 `SignatureEnvelope.canonical_bytes()` returns compact ASCII JSON with object
-keys sorted recursively, including actual signature values and all certificates.
+keys sorted recursively, including complete CMS DER objects and all certificates.
 Use these bytes for RFC 3161 timestamp requests. They are distinct from the
-binary signature transcript. The shared public-only fixture in
+detached CMS content. Timestamp evidence must be regenerated when an envelope changes. The shared public-only fixture in
 `test/data/provenance/signing/` tests transcript bytes, canonical envelope bytes,
 and both signature algorithms across Rust and Python.
 

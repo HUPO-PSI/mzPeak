@@ -1,7 +1,7 @@
-//! Experimental v1 detached signatures of canonical manifest bytes.
+//! Experimental v2 CMS signatures of canonical manifest bytes.
 //!
-//! This is a raw-signature envelope, **not CMS**. The OpenSSL subprocess backend
-//! uses P-256/SHA-256 (DER signatures) and pure ML-DSA-65 with an empty context.
+//! Each signer produces detached DER SignedData with signed attributes.
+//! ECDSA uses P-256/SHA-256; ML-DSA-65 uses a SHA-512 content digest (RFC 9882).
 //! OpenSSL 3.5+ is required for ML-DSA. No private key material is exported from
 //! a PKCS#11 provider. [`OpenSslBackend::verify`] establishes cryptographic
 //! integrity only; its returned signers still need certificate trust, role,
@@ -17,10 +17,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use x509_cert::{
     Certificate,
-    der::{DecodePem, Encode, asn1::ObjectIdentifier},
+    der::{
+        Decode, DecodePem, Encode,
+        asn1::{ObjectIdentifier, OctetString},
+    },
 };
 
-const DOMAIN: &[u8] = b"mzPeak-signature-v1\0";
+const MAX_CMS_BYTES: usize = 1024 * 1024;
+const DOMAIN: &[u8] = b"mzPeak-cms-signature-v2\0";
 const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CERTIFICATE_BYTES: usize = 64 * 1024;
 
@@ -111,7 +115,7 @@ pub struct DetachedSignature {
     pub algorithm: Algorithm,
     pub certificate_pem: String,
     pub intermediates_pem: Vec<String>,
-    pub signature_hex: String,
+    pub cms_der_hex: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,7 +182,7 @@ impl SignatureEnvelope {
 
     pub fn from_json(data: &[u8]) -> Result<Self, SigningError> {
         let envelope: Self = serde_json::from_slice(data)?;
-        if envelope.version != 1 {
+        if envelope.version != 2 {
             return Err(SigningError::Invalid("unsupported envelope version"));
         }
         Ok(envelope)
@@ -243,7 +247,7 @@ fn certificate_der(certificate_pem: &str, algorithm: Algorithm) -> Result<Vec<u8
         .map_err(|_| SigningError::Invalid("invalid certificate DER"))
 }
 
-/// The v1 binary transcript: domain, one-byte policy, u32 signer count, sorted
+/// The CMS v2 content: domain, one-byte policy, u32 signer count, sorted
 /// entries (u32 algorithm-name length, ASCII name, 32-byte leaf DER SHA-256),
 /// then u64 manifest length and exact manifest bytes. Integers are big endian.
 /// This binds the complete signer plan, preventing stripping or relabeling.
@@ -254,7 +258,7 @@ pub fn signing_payload(
     if manifest.len() > MAX_MANIFEST_BYTES {
         return Err(SigningError::Invalid("manifest exceeds 64 MiB limit"));
     }
-    if envelope.version != 1 {
+    if envelope.version != 2 {
         return Err(SigningError::Invalid("unsupported envelope version"));
     }
     if !(1..=2).contains(&envelope.signatures.len()) {
@@ -292,6 +296,142 @@ pub fn signing_payload(
     Ok(output)
 }
 
+/// Validate CMS structure and descriptor binding before cryptographic verification.
+fn cms_der(signature: &DetachedSignature) -> Result<Vec<u8>, SigningError> {
+    use cms::{
+        cert::CertificateChoices,
+        content_info::{CmsVersion, ContentInfo},
+        signed_data::{SignedData, SignerIdentifier},
+    };
+    use std::collections::BTreeSet;
+    let bad = || SigningError::Invalid("invalid CMS signature/profile");
+    if signature.cms_der_hex.len() > 2 * MAX_CMS_BYTES {
+        return Err(bad());
+    }
+    let raw = hex::decode(&signature.cms_der_hex).map_err(|_| bad())?;
+    if hex::encode(&raw) != signature.cms_der_hex {
+        return Err(bad());
+    }
+    let info = ContentInfo::from_der(&raw).map_err(|_| bad())?;
+    if info.content_type != ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.2")
+        || info.to_der().map_err(|_| bad())? != raw
+    {
+        return Err(bad());
+    }
+    let data: SignedData = info.content.decode_as().map_err(|_| bad())?;
+    if data.to_der().map_err(|_| bad())? != info.content.to_der().map_err(|_| bad())?
+        || data.version != CmsVersion::V1
+        || data.encap_content_info.econtent_type
+            != ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.1")
+        || data.encap_content_info.econtent.is_some()
+        || data.crls.is_some()
+        || data.signer_infos.0.len() != 1
+    {
+        return Err(bad());
+    }
+    let signer = data.signer_infos.0.iter().next().ok_or_else(bad)?;
+    let leaf = certificate(&signature.certificate_pem)?;
+    certificate_der(&signature.certificate_pem, signature.algorithm)?;
+    let SignerIdentifier::IssuerAndSerialNumber(sid) = &signer.sid else {
+        return Err(bad());
+    };
+    if signer.version != CmsVersion::V1
+        || sid.issuer != leaf.tbs_certificate.issuer
+        || sid.serial_number != leaf.tbs_certificate.serial_number
+        || signer.unsigned_attrs.is_some()
+    {
+        return Err(bad());
+    }
+    let mut expected = BTreeSet::new();
+    expected.insert(leaf.to_der().map_err(|_| bad())?);
+    for pem in &signature.intermediates_pem {
+        if !expected.insert(certificate(pem)?.to_der().map_err(|_| bad())?) {
+            return Err(bad());
+        }
+    }
+    let certs = data.certificates.as_ref().ok_or_else(bad)?;
+    let mut actual = BTreeSet::new();
+    for item in certs.0.iter() {
+        let CertificateChoices::Certificate(cert) = item else {
+            return Err(bad());
+        };
+        if !actual.insert(cert.to_der().map_err(|_| bad())?) {
+            return Err(bad());
+        }
+    }
+    if expected != actual {
+        return Err(bad());
+    }
+    let (digest_oid, signature_oid, digest_size) = match signature.algorithm {
+        Algorithm::EcdsaP256Sha256 => ("2.16.840.1.101.3.4.2.1", "1.2.840.10045.4.3.2", 32),
+        Algorithm::MlDsa65 => ("2.16.840.1.101.3.4.2.3", "2.16.840.1.101.3.4.3.18", 64),
+    };
+    let digest_oid = ObjectIdentifier::new_unwrap(digest_oid);
+    for alg in data
+        .digest_algorithms
+        .iter()
+        .chain(std::iter::once(&signer.digest_alg))
+    {
+        if alg.oid != digest_oid
+            || alg
+                .parameters
+                .as_ref()
+                .is_some_and(|p| p.to_der().ok().as_deref() != Some(&[5, 0]))
+        {
+            return Err(bad());
+        }
+    }
+    if data.digest_algorithms.len() != 1
+        || signer.signature_algorithm.oid != ObjectIdentifier::new_unwrap(signature_oid)
+        || signer.signature_algorithm.parameters.is_some()
+    {
+        return Err(bad());
+    }
+    let attrs = signer.signed_attrs.as_ref().ok_or_else(bad)?;
+    let mut seen = BTreeSet::new();
+    for attr in attrs.iter() {
+        if !seen.insert(attr.oid) || attr.values.len() != 1 {
+            return Err(bad());
+        }
+        let value = attr.values.iter().next().ok_or_else(bad)?;
+        match attr.oid.to_string().as_str() {
+            "1.2.840.113549.1.9.3" => {
+                if value.decode_as::<ObjectIdentifier>().map_err(|_| bad())?
+                    != data.encap_content_info.econtent_type
+                {
+                    return Err(bad());
+                }
+            }
+            "1.2.840.113549.1.9.4" => {
+                if value
+                    .decode_as::<OctetString>()
+                    .map_err(|_| bad())?
+                    .as_bytes()
+                    .len()
+                    != digest_size
+                {
+                    return Err(bad());
+                }
+            }
+            "1.2.840.113549.1.9.5" => {
+                x509_cert::time::Time::from_der(&value.to_der().map_err(|_| bad())?)
+                    .map_err(|_| bad())?;
+            }
+            _ => return Err(bad()),
+        }
+    }
+    if !seen.contains(&ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.3"))
+        || !seen.contains(&ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.4"))
+        || match signature.algorithm {
+            Algorithm::MlDsa65 => signer.signature.as_bytes().len() != 3309,
+            Algorithm::EcdsaP256Sha256 => !(8..=72).contains(&signer.signature.as_bytes().len()),
+        }
+    {
+        return Err(bad());
+    }
+    Ok(raw)
+}
+
 /// Optional prototype backend. Executable and provider configuration are trusted
 /// local settings, not archive fields. Process arguments never invoke a shell.
 #[derive(Debug, Clone)]
@@ -327,55 +467,31 @@ impl OpenSslBackend {
         directory: &std::path::Path,
     ) -> Result<(), SigningError> {
         let certificate_path = directory.join("certificate.pem");
-        let public_key = directory.join("public.pem");
-        let signature_path = directory.join("signature.bin");
+        let signature_path = directory.join("signature.der");
         fs::write(&certificate_path, &signature.certificate_pem)?;
-        let max_hex_length = match signature.algorithm {
-            Algorithm::MlDsa65 => 6618,
-            Algorithm::EcdsaP256Sha256 => 144,
-        };
-        if signature.signature_hex.len() > max_hex_length {
-            return Err(SigningError::Invalid("signature exceeds profile length"));
-        }
-        let raw = hex::decode(&signature.signature_hex)
-            .map_err(|_| SigningError::Invalid("invalid signature hex"))?;
-        if hex::encode(&raw) != signature.signature_hex
-            || match signature.algorithm {
-                Algorithm::MlDsa65 => raw.len() != 3309,
-                Algorithm::EcdsaP256Sha256 => !(8..=72).contains(&raw.len()),
-            }
-        {
-            return Err(SigningError::Invalid(
-                "invalid signature encoding or length",
-            ));
-        }
-        fs::write(&signature_path, raw)?;
-        fs::write(
-            &public_key,
-            self.run(&[
-                "x509".into(),
-                "-in".into(),
-                certificate_path.to_string_lossy().into_owned(),
-                "-pubkey".into(),
-                "-noout".into(),
-            ])?,
-        )?;
-        let mut args = vec![
-            "pkeyutl".into(),
+        fs::write(&signature_path, cms_der(signature)?)?;
+        // Disable only path validation, handled separately by our trust layer.
+        // Force the exact bound leaf; never select an unrelated embedded key.
+        self.run(&[
+            "cms".into(),
             "-verify".into(),
-            "-pubin".into(),
-            "-inkey".into(),
-            public_key.to_string_lossy().into_owned(),
-            "-rawin".into(),
+            "-binary".into(),
+            "-inform".into(),
+            "DER".into(),
             "-in".into(),
-            payload.to_string_lossy().into_owned(),
-            "-sigfile".into(),
             signature_path.to_string_lossy().into_owned(),
-        ];
-        if signature.algorithm == Algorithm::EcdsaP256Sha256 {
-            args.extend(["-digest".into(), "sha256".into()]);
-        }
-        self.run(&args)?;
+            "-content".into(),
+            payload.to_string_lossy().into_owned(),
+            "-noverify".into(),
+            "-nointern".into(),
+            "-certfile".into(),
+            certificate_path.to_string_lossy().into_owned(),
+            "-out".into(),
+            directory
+                .join("verified.bin")
+                .to_string_lossy()
+                .into_owned(),
+        ])?;
         Ok(())
     }
 
@@ -388,7 +504,7 @@ impl OpenSslBackend {
         let mut identities: Vec<_> = identities.iter().collect();
         identities.sort_by_key(|identity| identity.algorithm);
         let mut envelope = SignatureEnvelope {
-            version: 1,
+            version: 2,
             policy,
             signatures: identities
                 .iter()
@@ -396,7 +512,7 @@ impl OpenSslBackend {
                     algorithm: identity.algorithm,
                     certificate_pem: identity.certificate_pem.clone(),
                     intermediates_pem: identity.intermediates_pem.clone(),
-                    signature_hex: String::new(),
+                    cms_der_hex: String::new(),
                 })
                 .collect(),
         };
@@ -405,13 +521,34 @@ impl OpenSslBackend {
         let payload_path = work.path().join("payload.bin");
         fs::write(&payload_path, payload)?;
         for (identity, signature) in identities.iter().zip(envelope.signatures.iter_mut()) {
+            let certificate_path = work.path().join("signer.pem");
+            fs::write(&certificate_path, &identity.certificate_pem)?;
             let mut args = vec![
-                "pkeyutl".into(),
+                "cms".into(),
                 "-sign".into(),
-                "-rawin".into(),
+                "-binary".into(),
+                "-nosmimecap".into(),
+                "-outform".into(),
+                "DER".into(),
                 "-in".into(),
                 payload_path.to_string_lossy().into_owned(),
+                "-signer".into(),
+                certificate_path.to_string_lossy().into_owned(),
+                "-md".into(),
+                match identity.algorithm {
+                    Algorithm::EcdsaP256Sha256 => "sha256",
+                    Algorithm::MlDsa65 => "sha512",
+                }
+                .into(),
             ];
+            if !identity.intermediates_pem.is_empty() {
+                let chain_path = work.path().join("chain.pem");
+                fs::write(&chain_path, identity.intermediates_pem.join("\n"))?;
+                args.extend([
+                    "-certfile".into(),
+                    chain_path.to_string_lossy().into_owned(),
+                ]);
+            }
             match &identity.key {
                 KeyProvider::Software {
                     key_path,
@@ -446,10 +583,7 @@ impl OpenSslBackend {
                     ]);
                 }
             }
-            if identity.algorithm == Algorithm::EcdsaP256Sha256 {
-                args.extend(["-digest".into(), "sha256".into()]);
-            }
-            signature.signature_hex = hex::encode(self.run(&args)?);
+            signature.cms_der_hex = hex::encode(self.run(&args)?);
             // Also establishes that the supplied leaf matches the actual signing key.
             self.verify_one(&payload_path, signature, work.path())?;
         }
@@ -687,7 +821,7 @@ mod tests {
                 .is_err()
         );
         let (_, mut envelope) = fixture();
-        envelope.signatures[1].signature_hex = "00".repeat(3309);
+        envelope.signatures[1].cms_der_hex = "00".repeat(3309);
         assert!(
             backend
                 .verify(&manifest, &envelope, SignaturePolicy::Ecdsa)
@@ -754,7 +888,7 @@ mod tests {
     fn malformed_envelopes_and_relabeling_rejected() {
         let (manifest, envelope) = fixture();
         let mut changed = envelope.clone();
-        changed.version = 2;
+        changed.version = 1;
         assert!(signing_payload(&manifest, &changed).is_err());
         changed = envelope.clone();
         changed.signatures.reverse();
@@ -780,6 +914,25 @@ mod tests {
             SignatureEnvelope::from_bytes(br#"{"version":true,"policy":"ecdsa","signatures":[]}"#)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn shared_invalid_cms_cases_are_rejected() {
+        let (manifest, envelope) = fixture();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("test/data/provenance/signing/cms-invalid.json");
+        let cases: std::collections::BTreeMap<String, String> =
+            serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        for (name, value) in cases {
+            let mut changed = envelope.clone();
+            changed.signatures[0].cms_der_hex = value;
+            assert!(
+                OpenSslBackend::default()
+                    .verify(&manifest, &changed, SignaturePolicy::Ecdsa)
+                    .is_err(),
+                "{name}"
+            );
+        }
     }
 
     #[test]

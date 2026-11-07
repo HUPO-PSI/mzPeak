@@ -1,8 +1,8 @@
-"""Experimental v1 detached manifest signatures using an OpenSSL backend.
+"""Experimental v2 CMS signatures of canonical manifests using OpenSSL.
 
-This is deliberately a raw-signature envelope, not CMS. ML-DSA is the pure
-ML-DSA-65 variant with an empty context; ECDSA uses P-256/SHA-256 and DER encoded
-signatures. OpenSSL 3.5 or newer is needed for ML-DSA. ``verify`` establishes
+Each signer produces detached DER CMS SignedData with signed attributes.
+ML-DSA-65 uses SHA-512 for the content digest per RFC 9882; ECDSA uses
+P-256/SHA-256. OpenSSL 3.5 or newer is needed for ML-DSA. ``verify`` establishes
 cryptographic integrity only: pass each returned signer to the trust validator.
 
 The signed binary transcript binds the manifest, the declared policy, and every
@@ -20,10 +20,10 @@ import subprocess
 import tempfile
 from typing import Sequence
 
-from asn1crypto import algos, core, pem, x509
+from asn1crypto import algos, cms, core, pem, x509
 
 
-DOMAIN = b"mzPeak-signature-v1\0"
+DOMAIN = b"mzPeak-cms-signature-v2\0"
 MAX_MANIFEST_BYTES = 64 * 1024 * 1024
 MAX_CERTIFICATE_BYTES = 64 * 1024
 
@@ -56,6 +56,32 @@ class _Certificate(core.Sequence):
         ("tbs_certificate", _TbsCertificate),
         ("signature_algorithm", algos.SignedDigestAlgorithm),
         ("signature_value", core.OctetBitString),
+    ]
+
+
+class _CMSCertificateChoices(cms.CertificateChoices):
+    _alternatives = [
+        (item[0], _Certificate, *item[2:]) if item[0] == "certificate" else item
+        for item in cms.CertificateChoices._alternatives
+    ]
+
+
+class _CMSCertificateSet(core.SetOf):
+    _child_spec = _CMSCertificateChoices
+
+
+class _CMSSignedData(cms.SignedData):
+    _fields = [
+        (item[0], _CMSCertificateSet, *item[2:]) if item[0] == "certificates" else item
+        for item in cms.SignedData._fields
+    ]
+
+
+class _CMSContentInfo(core.Sequence):
+    # Local schema avoids changing asn1crypto's global algorithm registries.
+    _fields = [
+        ("content_type", cms.ContentType),
+        ("content", _CMSSignedData, {"explicit": 0}),
     ]
 
 
@@ -102,7 +128,7 @@ class DetachedSignature:
     algorithm: Algorithm
     certificate_pem: str
     intermediates_pem: tuple[str, ...]
-    signature_hex: str
+    cms_der_hex: str
 
 
 @dataclass(frozen=True)
@@ -134,7 +160,7 @@ class SignatureEnvelope:
                         "algorithm": s.algorithm.value,
                         "certificate_pem": s.certificate_pem,
                         "intermediates_pem": list(s.intermediates_pem),
-                        "signature_hex": s.signature_hex,
+                        "cms_der_hex": s.cms_der_hex,
                     }
                     for s in self.signatures
                 ],
@@ -157,7 +183,7 @@ class SignatureEnvelope:
             obj = json.loads(data, object_pairs_hook=object_pairs)
             if set(obj) != {"version", "policy", "signatures"}:
                 raise SigningError("Unknown or missing envelope field")
-            if type(obj["version"]) is not int or obj["version"] != 1:
+            if type(obj["version"]) is not int or obj["version"] != 2:
                 raise SigningError("Unsupported envelope version")
             if not isinstance(obj["signatures"], list):
                 raise SigningError("Signatures must be an array")
@@ -167,7 +193,7 @@ class SignatureEnvelope:
                     "algorithm",
                     "certificate_pem",
                     "intermediates_pem",
-                    "signature_hex",
+                    "cms_der_hex",
                 }:
                     raise SigningError("Unknown or missing signature field")
                 if not isinstance(value["intermediates_pem"], list):
@@ -177,7 +203,7 @@ class SignatureEnvelope:
                         Algorithm(value["algorithm"]),
                         value["certificate_pem"],
                         tuple(value["intermediates_pem"]),
-                        value["signature_hex"],
+                        value["cms_der_hex"],
                     )
                 )
             return cls(
@@ -261,10 +287,10 @@ def _satisfies(algorithms: set[Algorithm], policy: SignaturePolicy) -> bool:
 
 
 def signing_payload(manifest: bytes, envelope: SignatureEnvelope) -> bytes:
-    """Return the v1 length-framed transcript, also used for test vectors."""
+    """Return the CMS v2 content, binding the manifest and complete signer plan."""
     if not isinstance(manifest, bytes) or len(manifest) > MAX_MANIFEST_BYTES:
         raise SigningError("Manifest must be bytes within the 64 MiB limit")
-    if type(envelope.version) is not int or envelope.version != 1:
+    if type(envelope.version) is not int or envelope.version != 2:
         raise SigningError("Unsupported envelope version")
     if not isinstance(envelope.policy, SignaturePolicy):
         raise SigningError("Unsupported signature policy")
@@ -299,6 +325,102 @@ def signing_payload(manifest: bytes, envelope: SignatureEnvelope) -> bytes:
     return bytes(output)
 
 
+MAX_CMS_BYTES = 1024 * 1024
+
+
+def _cms_der(signature: DetachedSignature) -> bytes:
+    """Enforce our bounded CMS profile before invoking the crypto backend."""
+    try:
+        value = signature.cms_der_hex
+        if not isinstance(value, str) or len(value) > 2 * MAX_CMS_BYTES:
+            raise ValueError("CMS exceeds profile limit")
+        raw = bytes.fromhex(value)
+        if raw.hex() != value:
+            raise ValueError("CMS requires lowercase hex")
+        info = _CMSContentInfo.load(raw, strict=True)
+        if info["content_type"].native != "signed_data" or info.dump(force=True) != raw:
+            raise ValueError("Expected canonical DER SignedData")
+        data = info["content"]
+        content = data["encap_content_info"]
+        if (
+            data["version"].native != "v1"
+            or content["content_type"].native != "data"
+            or content["content"].native is not None
+            or data["crls"].native is not None
+            or len(data["signer_infos"]) != 1
+        ):
+            raise ValueError("Expected detached single-signer CMS without CRLs")
+        signer = data["signer_infos"][0]
+        leaf_der = _check_certificate(signature.certificate_pem, signature.algorithm)
+        leaf = _Certificate.load(leaf_der)
+        sid = signer["sid"]
+        if (
+            signer["version"].native != "v1"
+            or sid.name != "issuer_and_serial_number"
+            or sid.chosen["issuer"].dump() != leaf["tbs_certificate"]["issuer"].dump()
+            or sid.chosen["serial_number"].native
+            != leaf["tbs_certificate"]["serial_number"].native
+            or signer["unsigned_attrs"].native is not None
+        ):
+            raise ValueError("CMS signer does not match the bound certificate/profile")
+        expected_certs = [leaf_der] + [
+            _certificate_der(p) for p in signature.intermediates_pem
+        ]
+        actual_certs = []
+        for item in data["certificates"]:
+            if item.name != "certificate":
+                raise ValueError("Only X.509 certificates are allowed")
+            actual_certs.append(item.chosen.dump())
+        if len(set(expected_certs)) != len(expected_certs) or sorted(
+            actual_certs
+        ) != sorted(expected_certs):
+            raise ValueError("CMS certificate set differs from signer descriptor")
+        digest_oid, signature_oid, size = (
+            ("2.16.840.1.101.3.4.2.1", "1.2.840.10045.4.3.2", 32)
+            if signature.algorithm == Algorithm.ECDSA_P256_SHA256
+            else ("2.16.840.1.101.3.4.2.3", "2.16.840.1.101.3.4.3.18", 64)
+        )
+
+        def digest_ok(identifier):
+            return identifier["algorithm"].dotted == digest_oid and identifier[
+                "parameters"
+            ].dump() in (b"", b"\x05\x00")
+
+        if (
+            len(data["digest_algorithms"]) != 1
+            or not digest_ok(data["digest_algorithms"][0])
+            or not digest_ok(signer["digest_algorithm"])
+            or signer["signature_algorithm"]["algorithm"].dotted != signature_oid
+            or signer["signature_algorithm"]["parameters"].dump() != b""
+        ):
+            raise ValueError("CMS algorithm identifiers differ from the profile")
+        attrs = {}
+        for attr in signer["signed_attrs"]:
+            oid = attr["type"].dotted
+            if oid in attrs or len(attr["values"]) != 1:
+                raise ValueError("Duplicate or multivalued CMS signed attribute")
+            attrs[oid] = attr["values"][0]
+        if (
+            not {"1.2.840.113549.1.9.3", "1.2.840.113549.1.9.4"} <= attrs.keys()
+            or not attrs.keys()
+            <= {"1.2.840.113549.1.9.3", "1.2.840.113549.1.9.4", "1.2.840.113549.1.9.5"}
+            or attrs["1.2.840.113549.1.9.3"].native != "data"
+            or len(attrs["1.2.840.113549.1.9.4"].native) != size
+        ):
+            raise ValueError("Missing or unsupported CMS signed attributes")
+        signature_bytes = signer["signature"].native
+        if (
+            signature.algorithm == Algorithm.ML_DSA_65 and len(signature_bytes) != 3309
+        ) or (
+            signature.algorithm == Algorithm.ECDSA_P256_SHA256
+            and not 8 <= len(signature_bytes) <= 72
+        ):
+            raise ValueError("Invalid CMS signature length")
+        return raw
+    except (ValueError, TypeError, KeyError, IndexError) as error:
+        raise SigningError("Invalid CMS signature/profile") from error
+
+
 @dataclass(frozen=True)
 class OpenSslBackend:
     """Use an explicitly selected OpenSSL executable with argument vectors.
@@ -331,44 +453,31 @@ class OpenSslBackend:
 
     def _verify_one(self, payload: Path, signature: DetachedSignature, directory: Path):
         certificate = directory / "certificate.pem"
-        public_key = directory / "public.pem"
-        signature_path = directory / "signature.bin"
+        signature_path = directory / "signature.der"
         certificate.write_text(signature.certificate_pem, encoding="ascii")
-        try:
-            if not isinstance(signature.signature_hex, str):
-                raise ValueError()
-            limit = 6618 if signature.algorithm == Algorithm.ML_DSA_65 else 144
-            if len(signature.signature_hex) > limit:
-                raise ValueError()
-            raw = bytes.fromhex(signature.signature_hex)
-            if raw.hex() != signature.signature_hex:
-                raise ValueError()
-            if signature.algorithm == Algorithm.ML_DSA_65:
-                if len(raw) != 3309:
-                    raise ValueError()
-            elif not 8 <= len(raw) <= 72:
-                raise ValueError()
-        except ValueError as error:
-            raise SigningError("Invalid signature encoding or length") from error
-        signature_path.write_bytes(raw)
-        public_key.write_bytes(
-            self._run(["x509", "-in", str(certificate), "-pubkey", "-noout"])
+        signature_path.write_bytes(_cms_der(signature))
+        # -noverify disables only certificate path validation, performed by our
+        # separate trust layer. CMS signature/content/attribute checks stay on.
+        # -nointern forces selection of the exact bound leaf, not a CMS-supplied key.
+        self._run(
+            [
+                "cms",
+                "-verify",
+                "-binary",
+                "-inform",
+                "DER",
+                "-in",
+                str(signature_path),
+                "-content",
+                str(payload),
+                "-noverify",
+                "-nointern",
+                "-certfile",
+                str(certificate),
+                "-out",
+                str(directory / "verified.bin"),
+            ]
         )
-        args = [
-            "pkeyutl",
-            "-verify",
-            "-pubin",
-            "-inkey",
-            str(public_key),
-            "-rawin",
-            "-in",
-            str(payload),
-            "-sigfile",
-            str(signature_path),
-        ]
-        if signature.algorithm == Algorithm.ECDSA_P256_SHA256:
-            args += ["-digest", "sha256"]
-        self._run(args)
 
     def sign(
         self,
@@ -378,7 +487,7 @@ class OpenSslBackend:
     ) -> SignatureEnvelope:
         identities = sorted(identities, key=lambda identity: identity.algorithm.value)
         envelope = SignatureEnvelope(
-            1,
+            2,
             policy,
             tuple(
                 DetachedSignature(
@@ -397,7 +506,30 @@ class OpenSslBackend:
             payload_path = directory / "payload.bin"
             payload_path.write_bytes(payload)
             for identity, descriptor in zip(identities, envelope.signatures):
-                args = ["pkeyutl", "-sign", "-rawin", "-in", str(payload_path)]
+                certificate_path = directory / "signer.pem"
+                certificate_path.write_text(identity.certificate_pem, encoding="ascii")
+                args = [
+                    "cms",
+                    "-sign",
+                    "-binary",
+                    "-nosmimecap",
+                    "-outform",
+                    "DER",
+                    "-in",
+                    str(payload_path),
+                    "-signer",
+                    str(certificate_path),
+                    "-md",
+                    "sha256"
+                    if identity.algorithm == Algorithm.ECDSA_P256_SHA256
+                    else "sha512",
+                ]
+                if identity.intermediates_pem:
+                    chain_path = directory / "chain.pem"
+                    chain_path.write_text(
+                        "\n".join(identity.intermediates_pem), encoding="ascii"
+                    )
+                    args += ["-certfile", str(chain_path)]
                 if isinstance(identity.key, SoftwareKey):
                     args += ["-inkey", str(identity.key.key_path)]
                     if identity.key.passphrase_file is not None:
@@ -422,8 +554,6 @@ class OpenSslBackend:
                     ]
                 else:
                     raise SigningError("Unsupported key provider")
-                if identity.algorithm == Algorithm.ECDSA_P256_SHA256:
-                    args += ["-digest", "sha256"]
                 raw = self._run(args)
                 signature = DetachedSignature(
                     descriptor.algorithm,
@@ -434,7 +564,7 @@ class OpenSslBackend:
                 # This also rejects a private key that does not match the supplied leaf.
                 self._verify_one(payload_path, signature, directory)
                 signatures.append(signature)
-        return SignatureEnvelope(1, policy, tuple(signatures))
+        return SignatureEnvelope(2, policy, tuple(signatures))
 
     def verify(
         self,

@@ -141,7 +141,7 @@ def test_policy_enforced_and_bad_signature_not_ignored(identities):
     with pytest.raises(SigningError):
         BACKEND.verify(manifest, classical, SignaturePolicy.BOTH)
     envelope = BACKEND.sign(manifest, identities, SignaturePolicy.BOTH)
-    bad = replace(envelope.signatures[1], signature_hex="00" * 3309)
+    bad = replace(envelope.signatures[1], cms_der_hex="00" * 3309)
     with pytest.raises(SigningError):
         BACKEND.verify(
             manifest,
@@ -193,7 +193,7 @@ def test_key_certificate_mismatch_and_wrong_curve(identities, tmp_path):
 def test_invalid_envelope_profiles(identities):
     envelope = BACKEND.sign(b"validation", identities[:1], SignaturePolicy.ECDSA)
     for changed in [
-        replace(envelope, version=2),
+        replace(envelope, version=1),
         replace(envelope, signatures=()),
         replace(envelope, signatures=envelope.signatures * 2),
         replace(
@@ -204,7 +204,7 @@ def test_invalid_envelope_profiles(identities):
         ),
         replace(
             envelope,
-            signatures=(replace(envelope.signatures[0], signature_hex="not-hex"),),
+            signatures=(replace(envelope.signatures[0], cms_der_hex="not-hex"),),
         ),
     ]:
         with pytest.raises(SigningError):
@@ -373,3 +373,72 @@ def test_pkcs11_software_token_integration_when_configured():
         len(BACKEND.verify(b"PKCS11 qualification", envelope, SignaturePolicy.ECDSA))
         == 1
     )
+
+
+@pytest.mark.parametrize(
+    "name,value", json.loads((FIXTURES / "cms-invalid.json").read_text()).items()
+)
+def test_invalid_cms_is_rejected(name, value):
+    envelope = SignatureEnvelope.from_json((FIXTURES / "envelope.json").read_bytes())
+    changed = replace(
+        envelope,
+        signatures=(
+            replace(envelope.signatures[0], cms_der_hex=value),
+            *envelope.signatures[1:],
+        ),
+    )
+    with pytest.raises(SigningError):
+        BACKEND.verify(
+            (FIXTURES / "manifest.json").read_bytes(), changed, SignaturePolicy.ECDSA
+        )
+
+
+def test_cms_interoperates_with_standard_openssl(identities, tmp_path):
+    envelope = SignatureEnvelope.from_json((FIXTURES / "envelope.json").read_bytes())
+    for stem, signature in zip(("ecdsa", "pqc"), envelope.signatures):
+        assert (
+            FIXTURES / (stem + ".cms.der")
+        ).read_bytes().hex() == signature.cms_der_hex
+        # Independent standard CMS verification. This does not assert certificate trust.
+        output = run(
+            "cms",
+            "-verify",
+            "-binary",
+            "-inform",
+            "DER",
+            "-in",
+            FIXTURES / (stem + ".cms.der"),
+            "-content",
+            FIXTURES / "cms-content.bin",
+            "-noverify",
+        )
+        assert output == (FIXTURES / "cms-content.bin").read_bytes()
+
+
+def test_old_raw_envelope_is_not_silently_accepted(identities):
+    envelope = BACKEND.sign(b"migration", identities[:1], SignaturePolicy.ECDSA)
+    obj = json.loads(envelope.to_json())
+    obj["version"] = 1
+    obj["signatures"][0]["signature_hex"] = obj["signatures"][0].pop("cms_der_hex")
+    with pytest.raises(SigningError):
+        SignatureEnvelope.from_json(json.dumps(obj).encode())
+
+
+@pytest.mark.parametrize(
+    "declared,indices",
+    [
+        (SignaturePolicy.ECDSA, [0]),
+        (SignaturePolicy.PQC, [1]),
+        (SignaturePolicy.BOTH, [0, 1]),
+    ],
+)
+@pytest.mark.parametrize("required", list(SignaturePolicy))
+def test_cms_relying_party_policy_matrix(identities, declared, indices, required):
+    envelope = BACKEND.sign(
+        b"policy matrix", [identities[i] for i in indices], declared
+    )
+    if declared == SignaturePolicy.BOTH or declared == required:
+        assert BACKEND.verify(b"policy matrix", envelope, required)
+    else:
+        with pytest.raises(SigningError):
+            BACKEND.verify(b"policy matrix", envelope, required)
