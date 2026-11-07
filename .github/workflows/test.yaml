@@ -51,7 +51,7 @@ jobs:
       - name: install library
         shell: bash
         run: |
-          pip install -v python/
+          pip install -v './python[test,provenance]'
           pip install coverage pytest pytest-cov pytest-xdist scipy pynumpress pyteomics -U
       - name: run tests
         shell: bash

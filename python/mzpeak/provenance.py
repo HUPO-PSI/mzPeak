@@ -2,7 +2,6 @@ import hashlib
 import hmac
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
-from dataclasses import fields as dataclasses_fields
 from datetime import UTC, datetime
 from typing import IO, TYPE_CHECKING, Self
 
@@ -43,19 +42,19 @@ class SegmentSignature:
     # The name of the file the column chunk was read from
     filename: str
     # The index of the row group this column chunk belongs to
-    row_group: int
+    row_group: int | None
     # The index of the column within the row group
-    column: int
+    column: int | None
     # The dotted path of the column in the Parquet schema
-    path: str
+    path: str | None
     # The byte offset of the first page of the chunk in the file
-    offset: int
+    offset: int | None
     # The number of bytes in the chunk (total compressed size)
-    length: int
+    length: int | None
     # The SHA-512 digest of the chunk's bytes, potentially signed in Cryptographic Messaging Syntax (CMS) ASN.1 DER
     # using the provider's private key.
     signature: bytes
-    # Whether the chunk is signed or not
+    # Whether signature contains a CMS envelope; this is NOT a trust decision.
     signed: bool = False
 
     def copy(self) -> Self:
@@ -321,13 +320,14 @@ def segment_signature_schema() -> "pyarrow.Schema":
     return pa.schema(
         [
             pa.field("filename", pa.large_string(), False),
-            pa.field("row_group", pa.uint64(), False),
-            pa.field("column", pa.uint64(), False),
-            pa.field("path", pa.large_string(), False),
-            pa.field("offset", pa.uint64(), False),
-            pa.field("length", pa.uint64(), False),
+            pa.field("row_group", pa.uint64(), True),
+            pa.field("column", pa.uint64(), True),
+            pa.field("path", pa.large_string(), True),
+            pa.field("offset", pa.uint64(), True),
+            pa.field("length", pa.uint64(), True),
             pa.field("signature", pa.large_binary(), False),
-        ]
+            pa.field("signed", pa.bool_(), False),
+        ], metadata={"mzpeak.provenance": "2"}
     )
 
 
@@ -353,16 +353,30 @@ def segment_signatures_from_table(
     Convert a table or record batch produced by :func:`segment_signatures_to_table`
     (or read back from a Parquet file holding it) into :class:`SegmentSignature` records.
 
-    Columns are looked up by name. A :class:`KeyError` is raised if one is missing and a
-    :class:`ValueError` if one contains nulls.
+    Nullable coordinates represent whole-file records. Legacy tables without the
+    ``signed`` column classify 64-byte values as SHA-512 digests and other values as
+    candidate CMS envelopes. This classification never establishes signature validity.
     """
-    names = [f.name for f in dataclasses_fields(SegmentSignature) if f.name != 'signed']
+    if len(set(table.schema.names)) != len(table.schema.names):
+        raise ValueError("duplicate column names")
+    schema = segment_signature_schema()
+    names = [f.name for f in schema if f.name != "signed"]
     columns = {}
     for name in names:
         if name not in table.schema.names:
             raise KeyError(f"Missing column {name!r}")
         col = table.column(name)
-        if col.null_count > 0:
+        field = schema.field(name)
+        if col.type != field.type:
+            raise ValueError(f"Column {name!r} has unexpected type {col.type}")
+        if not field.nullable and col.null_count > 0:
             raise ValueError(f"Column {name!r} contains nulls")
         columns[name] = col.to_pylist()
-    return [SegmentSignature(*row) for row in zip(*(columns[n] for n in names))]
+    if "signed" in table.schema.names:
+        col = table.column("signed")
+        if col.type != schema.field("signed").type or col.null_count:
+            raise ValueError("Column 'signed' must contain non-null booleans")
+        columns["signed"] = col.to_pylist()
+    else:
+        columns["signed"] = [len(value) != 64 for value in columns["signature"]]
+    return [SegmentSignature(*row) for row in zip(*(columns[n] for n in [*names, "signed"]))]
