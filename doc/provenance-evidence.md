@@ -69,3 +69,9 @@ if not report.accepted:
 ```
 
 Rust exposes matching functions in `provenance::historical`, with the ordinary `HistoryPolicy` and a separate `HistoricalPolicy`. The public fixtures in `test/data/provenance/timestamps/history` exercise both implementations end to end with real signed acquisition/processing stages, an independently signed publisher approval, and three separate OpenSSL RFC 3161 responses. Both signing and TSA leaves are expired at the fixed later verification time. The archived evidence permits historical validation while current-time verification fails.
+
+CMS migration: the version-2 signature envelope contains complete detached CMS
+SignedData objects. Timestamp the entire canonical envelope after all CMS proofs
+are present. Old prototype timestamps cannot be transferred to regenerated CMS
+signatures; the shared fixtures were re-signed and re-timestamped. CMS signed
+`signingTime` attributes are not used as trusted time.

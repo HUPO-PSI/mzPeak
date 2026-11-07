@@ -2,7 +2,7 @@
 
 These are generated test certificates and signed data, not operational credentials.
 `response.tsr` is an actual OpenSSL 3.5 timestamp response to `request.tsq` over the
-complete canonical bytes in `envelope.json` (including its signature values).
+complete canonical bytes in `envelope.json` (including its complete version-2 CMS objects).
 The envelope comes from the shared signing fixture; this folder tests timestamp
 integrity and separately tests historical certificate eligibility, not a production
 trust decision for the signing fixture's demo certificates.
