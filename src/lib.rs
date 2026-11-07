@@ -6,6 +6,7 @@ pub mod peak_series;
 pub mod spectrum;
 
 pub mod validation;
+pub mod provenance;
 
 pub mod reader;
 pub mod writer;
