@@ -102,13 +102,20 @@ fn union_manifest(records: &[SignedStage]) -> Result<Manifest, ManifestError> {
     let mut files = BTreeMap::new();
     for record in records {
         for file in &record.stage.manifest.files {
-            if let Some(previous) = files.insert(file.path.clone(), file.clone()) {
-                if previous != *file {
-                    return Err(ManifestError::Invalid(
-                        "inconsistent repeated file descriptor".into(),
-                    ));
-                }
+            // Match the chunk order used by manifest/stage canonicalization.
+            let mut normalized = file.clone();
+            normalized
+                .chunks
+                .sort_by_key(|chunk| (chunk.offset, chunk.length));
+            if files
+                .get(&file.path)
+                .is_some_and(|previous| previous != &normalized)
+            {
+                return Err(ManifestError::Invalid(
+                    "inconsistent repeated file descriptor".into(),
+                ));
             }
+            files.insert(file.path.clone(), normalized);
         }
     }
     Ok(Manifest {
@@ -259,6 +266,7 @@ pub fn verify_archive_history(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     fn read(name: &str) -> Vec<u8> {
         std::fs::read(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -332,5 +340,98 @@ mod tests {
                 .unwrap()
                 .accepted()
         );
+    }
+
+    #[test]
+    fn repeated_chunk_order_preserves_signed_history_and_checkpoint() {
+        let mut records: Vec<SignedStage> =
+            serde_json::from_slice(&read("chunk-order/records.json")).unwrap();
+        let releases: BTreeMap<String, SignedRelease> =
+            serde_json::from_slice(&read("chunk-order/releases.json")).unwrap();
+        let trust: TrustPolicy = serde_json::from_slice(&read("chunk-order/trust.json")).unwrap();
+        let encoded: BTreeMap<String, String> =
+            serde_json::from_slice(&read("chunk-order/files.json")).unwrap();
+        let files: BTreeMap<_, _> = encoded
+            .into_iter()
+            .map(|(name, value)| (name, hex::decode(value).unwrap()))
+            .collect();
+        let heads: Vec<String> = serde_json::from_slice(&read("chunk-order/heads.json")).unwrap();
+        let identities = BTreeMap::from([
+            ("acquisition".into(), "instrument-1".into()),
+            ("processing".into(), "installation-1".into()),
+        ]);
+        let publishers = releases
+            .keys()
+            .map(|key| (key.clone(), "publisher-1".into()))
+            .collect();
+        let mut policy = HistoryPolicy {
+            trust: &trust,
+            required_signatures: SignaturePolicy::Ecdsa,
+            identities: &identities,
+            publishers: &publishers,
+            expected_heads: Some(&heads),
+        };
+        let backend = OpenSslBackend::default();
+        let original = verify_history(&records, &files, &policy, &releases, &backend).unwrap();
+        assert!(original.accepted(), "{original:?}");
+
+        let signed_bytes = records[1].stage.canonical_bytes().unwrap();
+        let repeated = records[1]
+            .stage
+            .manifest
+            .files
+            .iter_mut()
+            .find(|file| file.path == "raw.bin")
+            .unwrap();
+        assert_eq!(repeated.chunks.len(), 2);
+        repeated.chunks.reverse();
+        assert_eq!(records[1].stage.canonical_bytes().unwrap(), signed_bytes);
+        assert_eq!(records[1].stage.digest().unwrap(), heads[0]);
+        let reordered = verify_history(&records, &files, &policy, &releases, &backend).unwrap();
+        assert!(reordered.accepted(), "{reordered:?}");
+        assert!(reordered.lineage.checkpoint_checked);
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("reordered.mzpeak");
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        for (name, data) in &files {
+            writer
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(data).unwrap();
+        }
+        writer.finish().unwrap();
+        let archived =
+            verify_archive_history(&path, &records, &policy, &releases, &backend).unwrap();
+        assert!(archived.accepted(), "{archived:?}");
+        assert!(archived.lineage.checkpoint_checked);
+
+        // Even without an external checkpoint, the union must reject changed
+        // chunk hashes or coordinates rather than select one signed claim.
+        policy.expected_heads = None;
+        for change_coordinates in [false, true] {
+            let mut conflicting = records.clone();
+            let chunk = &mut conflicting[1]
+                .stage
+                .manifest
+                .files
+                .iter_mut()
+                .find(|file| file.path == "raw.bin")
+                .unwrap()
+                .chunks[0];
+            if change_coordinates {
+                chunk.column_path = Some("different.column".into());
+            } else {
+                chunk.sha256 = "0".repeat(64);
+            }
+            assert_ne!(conflicting[1].stage.digest().unwrap(), heads[0]);
+            let error =
+                verify_history(&conflicting, &files, &policy, &releases, &backend).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("inconsistent repeated file descriptor")
+            );
+        }
     }
 }

@@ -17,22 +17,22 @@ from mzpeak.verification import (
 P = Path(__file__).resolve().parents[2] / "test/data/provenance/history"
 
 
-def fixture():
+def fixture(path=P):
     records = [
         SignedStage(
             Stage.from_dict(r["stage"]),
             SignatureEnvelope.from_json(json.dumps(r["envelope"]).encode()),
         )
-        for r in json.loads((P / "records.json").read_text())
+        for r in json.loads((path / "records.json").read_text())
     ]
     releases = {
         k: SignedRelease(
             ReleaseStatement(**v["statement"]),
             SignatureEnvelope.from_json(json.dumps(v["envelope"]).encode()),
         )
-        for k, v in json.loads((P / "releases.json").read_text()).items()
+        for k, v in json.loads((path / "releases.json").read_text()).items()
     }
-    obj = json.loads((P / "trust.json").read_text())
+    obj = json.loads((path / "trust.json").read_text())
     obj["authorizations"] = [
         Authorization(**{**a, "role": SignerRole(a["role"])})
         for a in obj["authorizations"]
@@ -40,9 +40,9 @@ def fixture():
     trust = TrustPolicy(**obj)
     files = {
         k: bytes.fromhex(v)
-        for k, v in json.loads((P / "files.json").read_text()).items()
+        for k, v in json.loads((path / "files.json").read_text()).items()
     }
-    heads = json.loads((P / "heads.json").read_text())
+    heads = json.loads((path / "heads.json").read_text())
     kwargs = dict(
         releases=releases,
         publishers={k: "publisher-1" for k in releases},
@@ -144,5 +144,74 @@ def test_repeated_file_cannot_replace_previously_signed_chunk_descriptors():
     kwargs.pop("expected_heads")
     # Fail before signature evaluation: a union must never silently choose one
     # stage's chunk claims and discard a different stage's signed descriptors.
+    with pytest.raises(ValueError, match="inconsistent repeated file descriptor"):
+        check(records, files, trust, kwargs)
+
+
+def test_reordered_repeated_chunks_preserve_signed_history_and_checkpoint(tmp_path):
+    records, files, trust, kwargs = fixture(P / "chunk-order")
+    assert check(records, files, trust, kwargs).accepted
+    original_stage = records[1].stage
+    repeated = next(f for f in original_stage.manifest.files if f.path == "raw.bin")
+    assert len(repeated.chunks) == 2
+    reordered = replace(repeated, chunks=tuple(reversed(repeated.chunks)))
+    manifest = replace(
+        original_stage.manifest,
+        files=tuple(
+            reordered if f.path == repeated.path else f
+            for f in original_stage.manifest.files
+        ),
+    )
+    records[1] = replace(records[1], stage=replace(original_stage, manifest=manifest))
+    assert records[1].stage.canonical_bytes() == original_stage.canonical_bytes()
+    assert records[1].stage.digest() == kwargs["expected_heads"][0]
+    report = check(records, files, trust, kwargs)
+    assert report.accepted
+    assert report.lineage.checkpoint_checked
+
+    archive = tmp_path / "reordered.mzpeak"
+    with zipfile.ZipFile(archive, "w") as writer:
+        for name, data in files.items():
+            writer.writestr(name, data)
+    archived = verify_archive_history(
+        archive,
+        records,
+        trust,
+        SignaturePolicy.ECDSA,
+        {"acquisition": "instrument-1", "processing": "installation-1"},
+        **kwargs,
+    )
+    assert archived.accepted
+    assert archived.lineage.checkpoint_checked
+
+
+@pytest.mark.parametrize(
+    "changed_fields", [{"sha256": "0" * 64}, {"column_path": "different.column"}]
+)
+def test_repeated_chunk_claim_changes_remain_inconsistent(changed_fields):
+    records, files, trust, kwargs = fixture(P / "chunk-order")
+    later = records[1].stage
+    repeated = next(f for f in later.manifest.files if f.path == "raw.bin")
+    changed = replace(
+        repeated,
+        chunks=(replace(repeated.chunks[0], **changed_fields), *repeated.chunks[1:]),
+    )
+    records[1] = replace(
+        records[1],
+        stage=replace(
+            later,
+            manifest=replace(
+                later.manifest,
+                files=tuple(
+                    changed if f.path == repeated.path else f
+                    for f in later.manifest.files
+                ),
+            ),
+        ),
+    )
+    assert records[1].stage.digest() != kwargs["expected_heads"][0]
+    kwargs.pop("expected_heads")
+    # The union must reject conflicting signed claims, even when no external
+    # checkpoint is supplied, rather than silently choosing one descriptor.
     with pytest.raises(ValueError, match="inconsistent repeated file descriptor"):
         check(records, files, trust, kwargs)

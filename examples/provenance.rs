@@ -285,6 +285,7 @@ fn records(path: &Path) -> CliResult<Vec<SignedStage>> {
 fn run(cli: Cli) -> CliResult<bool> {
     let backend = OpenSslBackend {
         executable: cli.openssl,
+        ..Default::default()
     };
     match cli.command {
         Commands::Capture {

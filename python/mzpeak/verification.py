@@ -100,7 +100,12 @@ def _union_manifest(records):
     files = {}
     for record in records:
         for descriptor in record.stage.manifest.files:
-            if descriptor.path in files and files[descriptor.path] != descriptor:
+            # Chunk order has no signed meaning: FileDigest.to_dict uses the
+            # same normalized order as manifest/stage canonicalization.
+            if (
+                descriptor.path in files
+                and files[descriptor.path].to_dict() != descriptor.to_dict()
+            ):
                 raise ValueError("inconsistent repeated file descriptor")
             files[descriptor.path] = descriptor
     return Manifest(first.run_id, "verified-history", tuple(files.values()))
