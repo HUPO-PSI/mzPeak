@@ -38,6 +38,8 @@ def _inventory(archive: zipfile.ZipFile):
         if (kind == stat.S_IFDIR and not item.is_dir()) or (kind == stat.S_IFREG and item.is_dir()):
             raise ValueError("inconsistent ZIP directory type")
         if item.is_dir():
+            if item.file_size:
+                raise ValueError("ZIP directory member must be empty")
             if normalized.lower() in ("provenance/bundle-v1.json", "provenance.parquet"):
                 raise ValueError("provenance proof member must be a file")
             continue

@@ -681,6 +681,22 @@ mod test {
     use super::*;
 
     #[tokio::test]
+    async fn index_cannot_assign_measurements_to_directory_entries() -> io::Result<()> {
+        use crate::archive::sync::test::{directory_measurement_archive, spectrum_index};
+
+        let directory = tempfile::tempdir()?;
+        let name = "replacement.parquet/";
+        std::fs::write(directory.path().join("directory.mzpeak"), directory_measurement_archive(
+            Some(&spectrum_index(&[name])), &[(name, 999)],
+        ))?;
+        let store = Arc::new(object_store::local::LocalFileSystem::new_with_prefix(directory.path())?);
+        let archive = AsyncZipArchiveSource::new(store, "directory.mzpeak".into()).await?;
+        let error = AsyncArchiveReader::init_from_archive(archive).await.err().unwrap();
+        assert!(error.to_string().contains("measurement members cannot be directories"));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn unindexed_suffix_cannot_replace_indexed_measurements() -> io::Result<()> {
         use crate::archive::sync::test::{measurement_archive, spectrum_index};
         use futures::StreamExt;

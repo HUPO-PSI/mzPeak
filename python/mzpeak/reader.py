@@ -1177,6 +1177,8 @@ class _MzPeakFileBase:
             role = (entity.tag, kind.tag)
             if kind.tag not in measurement_kinds.get(entity.tag, set()):
                 continue
+            if entry.name.endswith("/"):
+                raise ValueError("measurement members cannot be directories")
             if (entry.name.split("/", 1)[0].lower() == "provenance"
                     or entry.name.lower() == "provenance.parquet"):
                 raise ValueError("provenance members cannot supply measurement data")

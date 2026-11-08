@@ -112,6 +112,9 @@ pub(crate) fn inventory<R: Read + Seek>(
             return Err(invalid("inconsistent ZIP directory type"));
         }
         if item.is_dir() {
+            if item.size() != 0 {
+                return Err(invalid("ZIP directory member must be empty"));
+            }
             if normalized.eq_ignore_ascii_case("provenance/bundle-v1.json")
                 || normalized.eq_ignore_ascii_case("provenance.parquet")
             {
@@ -387,6 +390,33 @@ mod tests {
             .downcast_ref::<arrow::array::Int64Array>()
             .unwrap();
         assert_eq!(values.value(0), 1);
+    }
+
+    #[test]
+    fn directory_parquet_payloads_cannot_escape_coverage() {
+        use crate::archive::test::{directory_measurement_archive, measurement_archive, spectrum_index};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.mzpeak");
+        for name in ["replacement.parquet/", "provenance/hidden/", "data/"] {
+            let index = spectrum_index(&[name]);
+            std::fs::write(&path, measurement_archive(
+                Some(&index), &[("spectra_data.parquet", 1)],
+            )).unwrap();
+            let manifest = capture_archive(&path, "run-1", "stage-1", None).unwrap();
+            assert!(verify_archive(&path, &manifest).unwrap().complete());
+            // A directory payload used to be omitted even though an indexed
+            // reader could consume it as Parquet. Keep all covered bytes intact.
+            std::fs::write(&path, directory_measurement_archive(
+                Some(&index), &[("spectra_data.parquet", 1), (name, 999)],
+            )).unwrap();
+            for error in [
+                verify_archive(&path, &manifest).unwrap_err(),
+                capture_archive(&path, "run-1", "stage-1", None).unwrap_err(),
+            ] {
+                assert!(error.to_string().contains("directory member must be empty"));
+            }
+        }
     }
 
     #[test]

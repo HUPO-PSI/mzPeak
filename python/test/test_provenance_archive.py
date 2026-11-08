@@ -63,6 +63,19 @@ def test_provenance_namespace_cannot_hide_unverified_content(tmp_path, name):
         capture_archive(path, "run-1", "stage-1")
 
 
+@pytest.mark.parametrize("name", ["data/", "spectra_data.parquet/", "provenance/hidden/"])
+def test_directory_entries_cannot_hide_nonempty_payloads(tmp_path, name):
+    path = tmp_path / "data.mzpeak"
+    write_archive(path, [("covered", b"original")])
+    manifest = capture_archive(path, "run-1", "stage-1")
+    with zipfile.ZipFile(path, "a") as archive:
+        archive.writestr(name, b"hidden directory payload")
+    with pytest.raises(ValueError, match="directory member must be empty"):
+        verify_archive(path, manifest)
+    with pytest.raises(ValueError, match="directory member must be empty"):
+        capture_archive(path, "run-1", "stage-1")
+
+
 @pytest.mark.parametrize("members", [[("a", b"a"), ("a", b"b")], [("a", b"a"), ("A", b"b")], [("../escape", b"a")]])
 def test_ambiguous_and_unsafe_inventory_rejected(tmp_path, members):
     path = tmp_path / "data.mzpeak"
@@ -115,7 +128,8 @@ def test_local_central_filename_disagreement_rejected(tmp_path):
 def test_normalized_zip_filename_rejected(tmp_path, raw_name, operation):
     path = tmp_path / "data.mzpeak"
     normalized = raw_name.split("\x00", 1)[0]
-    write_archive(path, [("spectra.parquet", b"data"), (normalized, b"proof")])
+    payload = b"" if normalized.endswith("/") else b"proof"
+    write_archive(path, [("spectra.parquet", b"data"), (normalized, payload)])
     manifest = capture_archive(path, "run-1", "stage-1")
 
     # ZipInfo truncates NULs even when writing, so patch both on-disk headers.

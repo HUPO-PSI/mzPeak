@@ -905,6 +905,12 @@ pub(crate) fn classify_archive_members(
                 | MzPeakArchiveType::Proprietary
                 | MzPeakArchiveType::ProvenanceSignature
         ) {
+            if entry.name.ends_with('/') {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "measurement members cannot be directories",
+                ));
+            }
             if reserved_provenance_member(&entry.name) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -1697,6 +1703,38 @@ pub(crate) mod test {
                 .collect::<Vec<_>>(),
         ))
         .unwrap()
+    }
+
+    pub(crate) fn directory_measurement_archive(
+        index: Option<&[u8]>,
+        members: &[(&str, i64)],
+    ) -> Vec<u8> {
+        let mut bytes = measurement_archive(index, members);
+        let mut archive = ZipArchive::new(io::Cursor::new(bytes.as_slice())).unwrap();
+        let mut offsets = Vec::new();
+        for i in 0..archive.len() {
+            let member = archive.by_index(i).unwrap();
+            if member.is_dir() {
+                offsets.push(member.central_header_start() as usize);
+            }
+        }
+        drop(archive);
+        // ZipWriter normally marks start_file payloads as regular files. Model
+        // a real Unix ZIP directory carrying bytes, as Python's writestr allows.
+        for offset in offsets {
+            bytes[offset + 5] = 3; // Unix creator platform.
+            let attributes = (0o040755_u32 << 16) | 0x10;
+            bytes[offset + 38..offset + 42].copy_from_slice(&attributes.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn index_cannot_assign_measurements_to_directory_entries() {
+        let name = "replacement.parquet/";
+        let bytes = directory_measurement_archive(Some(&spectrum_index(&[name])), &[(name, 999)]);
+        let error = MemoryMapZipArchiveReader::from_buf(Bytes::from(bytes)).err().unwrap();
+        assert!(error.to_string().contains("measurement members cannot be directories"));
     }
 
     #[test]

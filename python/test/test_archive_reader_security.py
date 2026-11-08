@@ -8,6 +8,7 @@ import pytest
 
 from mzpeak import MzPeakFile
 from mzpeak.file_index import FileIndex
+from mzpeak.provenance_archive import capture_archive, verify_archive
 
 
 def _modified_archive(tmp_path, edit_index, added_members):
@@ -66,3 +67,33 @@ def test_unindexed_suffix_cannot_replace_indexed_measurements(tmp_path, name):
     path = _modified_archive(tmp_path, lambda index: None, [(name, "spectra_peaks.parquet")])
     with MzPeakFile("small.mzpeak") as original, MzPeakFile(path) as reader:
         np.testing.assert_array_equal(reader[0]["m/z array"], original[0]["m/z array"])
+
+
+@pytest.mark.parametrize("payload", ["spectra_data.parquet", "spectra_peaks.parquet"])
+def test_directory_measurement_payload_is_never_uncovered(tmp_path, payload):
+    name = "replacement.parquet/"
+
+    def edit_index(index):
+        index["files"][0]["name"] = name
+
+    path = _modified_archive(tmp_path, edit_index, [])
+    manifest = capture_archive(path, "run-1", "stage-1")
+    with zipfile.ZipFile("small.mzpeak") as source, zipfile.ZipFile(path, "a") as archive:
+        archive.writestr(name, source.read(payload))
+    # Previously this claimed complete coverage while the ordinary reader
+    # consumed the unverified Parquet directory payload as measurement data.
+    with pytest.raises(ValueError, match="directory member must be empty"):
+        verify_archive(path, manifest)
+    with pytest.raises(ValueError, match="directory member must be empty"):
+        capture_archive(path, "run-1", "stage-1")
+
+
+def test_index_cannot_assign_measurements_to_directory_entries(tmp_path):
+    name = "replacement.parquet/"
+
+    def edit_index(index):
+        index["files"][0]["name"] = name
+
+    path = _modified_archive(tmp_path, edit_index, [(name, "spectra_data.parquet")])
+    with pytest.raises(ValueError, match="measurement members cannot be directories"):
+        MzPeakFile(path)

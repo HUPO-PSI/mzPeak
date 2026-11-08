@@ -73,6 +73,14 @@ does not change the represented measurement content. Optional Parquet chunk
 ranges refer to bytes of that decompressed member (the Parquet page bytes may
 still be compressed internally).
 
+ZIP directory markers must be empty and cannot be assigned measurement roles in
+the root index. A directory entry carrying bytes is rejected, so directory syntax
+cannot hide unsigned measurement data.
+
+Only empty directory records are transport metadata. Directory entries carrying
+payload bytes are rejected, including entries under the reserved namespace.
+Indexed measurement references must name files, never directory entries.
+
 `verify_chunk` intentionally checks only a selected range. A successful result
 must be presented as a range check, never as whole-file or whole-archive coverage.
 The whole-file check also verifies the chunk descriptors when they are present.
