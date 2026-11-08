@@ -87,7 +87,7 @@ pub fn create_timestamp_query_with(
         ObjectIdentifier::new(oid).map_err(invalid)?;
         command.arg("-tspolicy").arg(oid);
     }
-    if !command.output()?.status.success() {
+    if !super::openssl_process::run(&mut command)?.status.success() {
         return Err(invalid("OpenSSL could not create a timestamp query"));
     }
     Ok(fs::read(query)?)
@@ -392,7 +392,7 @@ pub fn verify_timestamp_with(
         if crls {
             command.arg("-crl_check_all");
         }
-        Ok(command.output()?.status.success())
+        Ok(super::openssl_process::run(&mut command)?.status.success())
     };
     if !run(false)? {
         report
