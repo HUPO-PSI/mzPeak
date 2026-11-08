@@ -3,3 +3,5 @@ pub mod manifest;
 pub mod archive;
 #[cfg(feature = "verification")]
 pub mod trust;
+#[cfg(feature = "verification")]
+mod openssl_process;

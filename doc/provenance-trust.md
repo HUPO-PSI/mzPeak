@@ -33,11 +33,25 @@ authorization without suppressing the independent path and CRL checks. Thus a
 valid, unrevoked certificate can still be unauthorized for the requested role;
 its report preserves all three results and remains unaccepted.
 
-`require_pqc_chain` conservatively requires every supplied certificate public key
-and certificate signature, including configured roots, to use standardized
-ML-DSA. This is the strict PQC-only identity profile. Supply a separate PQC root
-bundle for this check. The default ECDSA or dual-signature demo does not imply
+Required issuer/anchor EKUs constrain the path OpenSSL actually validates.
+The verifier builds an eligible candidate pool rather than rejecting a signer
+because an unrelated configured root or unused intermediate has a different EKU.
+It passes only that pool to both path and full-chain CRL validation. If no
+authorized path validates, an unrestricted path may still supply diagnostic
+path/revocation results, but authorization remains invalid. A revoked authorized
+path can never borrow the unrevoked result of an unauthorized alternative.
+
+`require_pqc_chain` requires every certificate public key and certificate
+signature in the validated path, including its trust anchor, to use standardized
+ML-DSA. Classical candidates are excluded before path building; unrelated
+classical roots do not invalidate an otherwise eligible path. This is the strict
+PQC-only identity profile. The default ECDSA or dual-signature demo does not imply
 PQC certificate-chain assurance merely because an ML-DSA data signature passes.
+
+Certificate and timestamp OpenSSL operations have a 30-second per-child deadline.
+The Rust backend terminates and reaps a stalled child, bounds diagnostic output,
+and reports execution failures without including command arguments. No child
+process uses a shell or performs certificate-directed network discovery.
 
 This code supports a regulatory evidence architecture. It does not by itself
 establish Part 11 / GMP / GLP / anti-doping compliance, human electronic signature

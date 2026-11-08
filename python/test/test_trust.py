@@ -109,6 +109,39 @@ def test_issuer_and_anchor_eku_constrain_software_release():
     assert not denied.accepted
 
 
+@pytest.mark.parametrize('reverse', [False, True])
+def test_unused_restrictive_issuers_and_roots_do_not_deny_valid_path(reverse):
+    roots = [pem('eku-root-server.pem'), pem('eku-root.pem')]
+    issuers = [pem('eku-issuer-server.pem'), pem('eku-issuer-code.pem')]
+    if reverse:
+        roots.reverse()
+        issuers.reverse()
+    configured = TrustPolicy(roots, [Authorization(
+        certificate_fingerprint(pem('eku-leaf.pem')),
+        SignerRole.SOFTWARE_RELEASE, 'publisher-1')], 1893456000,
+        [pem('eku-root.crl.pem'), pem('eku-issuer.crl.pem')])
+    report = verify_certificate(pem('eku-leaf.pem'), issuers, configured,
+                                SignerRole.SOFTWARE_RELEASE, 'publisher-1')
+    assert report.accepted, report
+
+
+def test_revocation_cannot_be_borrowed_from_an_unauthorized_path():
+    def public(name):
+        return (FIXTURES / 'path-selection' / (name + '.pem')).read_text()
+    configured = TrustPolicy(
+        [public('root-a'), public('root-b')],
+        [Authorization(certificate_fingerprint(public('leaf')),
+                       SignerRole.SOFTWARE_RELEASE, 'publisher-1')],
+        1893456000,
+        [public('root-a.crl'), public('root-b.crl'), public('issuer.crl')])
+    report = verify_certificate(public('leaf'),
+                                [public('issuer-a'), public('issuer-b')],
+                                configured, SignerRole.SOFTWARE_RELEASE, 'publisher-1')
+    assert (report.path, report.authorization, report.revocation) == (
+        CheckStatus.VALID, CheckStatus.VALID, CheckStatus.INVALID)
+    assert not report.accepted
+
+
 def _require_pqc_backend():
     import os
     import subprocess
@@ -174,6 +207,18 @@ def test_complete_pqc_certificate_and_crl_path():
         CheckStatus.VALID,
         CheckStatus.VALID,
     )
+    # Classical candidates not used by the validated path must not invalidate
+    # the PQC-only trust domain. Exercise both candidate orderings.
+    for reverse in (False, True):
+        roots = [pem('classical-root.pem'), *strict.roots_pem]
+        issuers = [pem('classical-issuer.pem'), pem('issuer.pem')]
+        if reverse:
+            roots.reverse()
+            issuers.reverse()
+        selected = verify_certificate(
+            pem('leaf.pem'), issuers, replace(strict, roots_pem=roots),
+            SignerRole.ACQUISITION, 'pqc-instrument-1')
+        assert selected.accepted, selected
     absent = verify_certificate(
         pem("leaf.pem"),
         [pem("issuer.pem")],

@@ -41,9 +41,8 @@ class Authorization:
 class TrustPolicy:
     """External policy for one signer.
 
-    ``require_pqc_chain`` selects the strict PQC-only profile: the leaf and all
-    supplied intermediates/anchors must use ML-DSA keys and signatures. Use a
-    separate PQC trust domain; a mixed ECDSA/PQC signature envelope alone does
+    ``require_pqc_chain`` selects a path using only ML-DSA certificate keys
+    and signatures. Unused classical candidates do not constrain that path; a mixed ECDSA/PQC signature envelope alone does
     not make a classically issued certificate quantum resistant.
     """
     roots_pem: list[str]
@@ -117,15 +116,22 @@ def verify_certificate(leaf_pem: str, intermediates_pem: list[str],
         ku = leaf.extensions.get_extension_for_class(x509.KeyUsage).value
         if bc.ca or not ku.digital_signature or ku.key_cert_sign:
             raise ValueError("signer must be an end entity with digitalSignature key usage")
-        if policy.require_pqc_chain:
-            for cert in [leaf, *chain, *roots]:
-                if (cert.public_key_algorithm_oid.dotted_string not in _PQ_OIDS or
-                        cert.signature_algorithm_oid.dotted_string not in _PQ_OIDS):
-                    raise ValueError("PQC identity policy rejects a classical certificate path")
+        def pq(cert):
+            return (cert.public_key_algorithm_oid.dotted_string in _PQ_OIDS and
+                    cert.signature_algorithm_oid.dotted_string in _PQ_OIDS)
+        if policy.require_pqc_chain and not pq(leaf):
+            raise ValueError("PQC identity policy rejects a classical certificate path")
+        roots = [(cert, pem) for cert, pem in zip(roots, policy.roots_pem)
+                 if not policy.require_pqc_chain or pq(cert)]
+        chain = [(cert, pem) for cert, pem in zip(chain, intermediates_pem)
+                 if not policy.require_pqc_chain or pq(cert)]
+        if not roots:
+            raise ValueError("PQC identity policy rejects all configured anchors")
     except (ValueError, x509.ExtensionNotFound, x509.DuplicateExtension) as exc:
         result.details.append(str(exc))
         return result
     # A role or EKU denial must not suppress independent path and CRL checks.
+    required_oid = None
     try:
         grants = [a for a in policy.authorizations if
                   a.certificate_sha256 == result.certificate_sha256 and
@@ -142,41 +148,64 @@ def verify_certificate(leaf_pem: str, intermediates_pem: list[str],
                 eku = leaf.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
                 if required_oid not in eku:
                     raise ValueError("certificate lacks the locally required extended key usage")
-                # OpenSSL's purpose=any checks the general path but cannot
-                # express arbitrary instrument/software application EKUs.
-                # Constrain every supplied issuer/anchor carrying EKU; this is
-                # conservative if unrelated path-building inputs are supplied.
-                for issuer in [*chain, *roots]:
-                    try:
-                        issuer_eku = issuer.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
-                    except x509.ExtensionNotFound:
-                        continue
-                    if (required_oid not in issuer_eku and
-                            ObjectIdentifier("2.5.29.37.0") not in issuer_eku):
-                        raise ValueError("issuer extended key usage excludes the locally required purpose")
             result.authorization = CheckStatus.VALID
     except (ValueError, x509.ExtensionNotFound, x509.DuplicateExtension) as exc:
         result.details.append(str(exc))
     with tempfile.TemporaryDirectory(prefix="mzpeak-trust-") as temp:
         directory = Path(temp)
         (directory / "leaf.pem").write_text(leaf_pem, encoding="ascii")
-        (directory / "roots.pem").write_text("\n".join(policy.roots_pem), encoding="ascii")
-        args = ["verify", "-no-CApath", "-no-CAstore", "-CAfile", str(directory / "roots.pem"),
-                "-x509_strict", "-check_ss_sig", "-purpose", "any", "-attime", str(policy.validation_time)]
-        if intermediates_pem:
-            (directory / "chain.pem").write_text("\n".join(intermediates_pem), encoding="ascii")
-            args.extend(["-untrusted", str(directory / "chain.pem")])
-        checked = _run(openssl, [*args, str(directory / "leaf.pem")])
-        if checked.returncode:
-            result.details.append(checked.stderr.decode("utf-8", "replace")[:4096])
-            return result
+        if policy.crls_pem:
+            (directory / "crls.pem").write_text("\n".join(policy.crls_pem), encoding="ascii")
+
+        def check_path(selected_roots, selected_chain, *, revocation=False):
+            if not selected_roots:
+                return None
+            (directory / "roots.pem").write_text(
+                "\n".join(pem for _, pem in selected_roots), encoding="ascii")
+            args = ["verify", "-no-CApath", "-no-CAstore", "-CAfile", str(directory / "roots.pem"),
+                    "-x509_strict", "-check_ss_sig", "-purpose", "any", "-attime", str(policy.validation_time)]
+            if selected_chain:
+                (directory / "chain.pem").write_text(
+                    "\n".join(pem for _, pem in selected_chain), encoding="ascii")
+                args.extend(["-untrusted", str(directory / "chain.pem")])
+            if revocation:
+                args.extend(["-CRLfile", str(directory / "crls.pem"), "-crl_check_all"])
+            return _run(openssl, [*args, str(directory / "leaf.pem")])
+
+        selected_roots, selected_chain = roots, chain
+        if result.authorization == CheckStatus.VALID and required_oid is not None:
+            def permits_eku(item):
+                try:
+                    eku = item[0].extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
+                except x509.ExtensionNotFound:
+                    return True
+                except (ValueError, x509.DuplicateExtension):
+                    return False
+                return required_oid in eku or ObjectIdentifier("2.5.29.37.0") in eku
+
+            selected_roots = [item for item in roots if permits_eku(item)]
+            selected_chain = [item for item in chain if permits_eku(item)]
+        checked = check_path(selected_roots, selected_chain)
+        if checked is None or checked.returncode:
+            if len(selected_roots) != len(roots) or len(selected_chain) != len(chain):
+                # This fallback is diagnostic only: an unauthorized path can
+                # never supply revocation evidence for an authorized one.
+                result.authorization = CheckStatus.INVALID
+                result.details.append("issuer extended key usage excludes the locally required purpose")
+                selected_roots, selected_chain = roots, chain
+                checked = check_path(selected_roots, selected_chain)
+            if checked is None or checked.returncode:
+                if policy.require_pqc_chain:
+                    result.details.append("PQC identity policy rejects paths using classical certificates; no eligible path validates")
+                if checked is not None:
+                    result.details.append(checked.stderr.decode("utf-8", "replace")[:4096])
+                return result
         result.path = CheckStatus.VALID
         if not policy.crls_pem:
             result.details.append("revocation evidence not supplied")
             return result
-        (directory / "crls.pem").write_text("\n".join(policy.crls_pem), encoding="ascii")
-        checked = _run(openssl, [*args, "-CRLfile", str(directory / "crls.pem"),
-                                 "-crl_check_all", str(directory / "leaf.pem")])
+        # Use exactly the same eligible candidate pool for path and CRL checks.
+        checked = check_path(selected_roots, selected_chain, revocation=True)
         result.revocation = CheckStatus.VALID if checked.returncode == 0 else CheckStatus.INVALID
         if checked.returncode:
             result.details.append(checked.stderr.decode("utf-8", "replace")[:4096])
