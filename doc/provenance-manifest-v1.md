@@ -14,11 +14,11 @@ bytes. Optional chunk records bind each selected byte range to a digest and,
 where applicable, the Parquet row group, column number and column path. Those
 coordinates are part of the signed payload, not unsigned lookup hints.
 
-The manifest is detached from its content. Manifests, signature envelopes and
-archival evidence reside in a reserved `provenance/` namespace or outside the
-archive; they do not hash themselves. The legacy `provenance.parquet` filename is
-also reserved. Data consumers must not interpret arbitrary files in these
-reserved namespaces as certified measurement content.
+The manifest is detached from its content. Only the exact proof-storage names
+`provenance/bundle-v1.json` and legacy `provenance.parquet` are exempt from
+content hashing; detached proofs may also live outside the archive. Other names
+under `provenance/` are reserved and rejected. Data consumers must not interpret
+proof-storage members as measurement content.
 
 ## Schema and canonical bytes
 
@@ -63,9 +63,12 @@ it does not establish signature validity, certificate trust, role authorization,
 trusted time, or regulatory compliance.
 
 An archive adapter must enumerate every content entry, reject duplicate ZIP
-member names before constructing a map, and exclude only the explicit provenance
-namespace. File lengths and hashes refer to decompressed ZIP member bytes, not
-ZIP container headers or compression choices. Changing ZIP compression alone
+member names before constructing a map, and exclude only the exact proof-storage
+filenames `provenance/bundle-v1.json` and `provenance.parquet`. Other files under
+the reserved `provenance/` namespace, case aliases, and directories masquerading
+as either proof filename are rejected; a namespace prefix never exempts arbitrary
+content from verification. File lengths and hashes refer to decompressed ZIP
+member bytes, not ZIP container headers or compression choices. Changing ZIP compression alone
 does not change the represented measurement content. Optional Parquet chunk
 ranges refer to bytes of that decompressed member (the Parquet page bytes may
 still be compressed internally).
@@ -80,6 +83,12 @@ using its covered metadata. The current capture API also covers the original
 root `mzpeak_index.json`: changing that file invalidates its acquisition evidence.
 Processing may append new outputs and snapshots while preserving this root
 index. Existing readers are not automatically redirected to a later snapshot.
+When a root index exists, its exact member references are authoritative: an
+unindexed member with a measurement-like suffix cannot override them. Readers
+reject multiple files assigned to the same measurement role and reject indexes
+that use proof storage as measurement data. Rust retains suffix discovery for
+legacy archives with no index, while still rejecting ambiguous roles and ignoring
+the reserved proof namespace during that discovery.
 A mutable latest-index projection and certified-reader integration require a
 separate specification and implementation; ordinary index-rewriting append
 operations are deliberately rejected by this profile.

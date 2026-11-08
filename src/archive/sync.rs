@@ -732,7 +732,10 @@ fn zip_archive_to_config<R: io::Read + io::Seek>(
         .iter()
         .position(|s| s == FileIndex::index_file_name())
     {
-        serde_json::from_reader(arch.by_index(i)?).ok()
+        Some(
+            serde_json::from_reader(arch.by_index(i)?)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
+        )
     } else {
         None
     };
@@ -882,48 +885,112 @@ impl SchemaMetadataManager {
     }
 }
 
+// An existing index is authoritative. Suffix discovery is only a legacy
+// fallback when no index exists, never a way to replace indexed measurements.
+pub(crate) fn classify_archive_members(
+    names: &[String],
+    index: &FileIndex,
+) -> io::Result<Vec<MzPeakArchiveType>> {
+    let indexed = !index.is_empty()
+        || names
+            .iter()
+            .any(|name| name == FileIndex::index_file_name());
+    let mut entries = HashMap::new();
+    let mut roles = HashMap::new();
+    for entry in index.iter() {
+        let kind = entry.archive_type();
+        if !matches!(
+            kind,
+            MzPeakArchiveType::Other
+                | MzPeakArchiveType::Proprietary
+                | MzPeakArchiveType::ProvenanceSignature
+        ) {
+            if reserved_provenance_member(&entry.name) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "provenance members cannot supply measurement data",
+                ));
+            }
+            if let Some(previous) = roles.insert(kind, entry.name.as_str()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "ambiguous measurement role {kind:?}: {previous} and {}",
+                        entry.name
+                    ),
+                ));
+            }
+        }
+        if entries.insert(entry.name.as_str(), kind).is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "duplicate indexed member name",
+            ));
+        }
+    }
+    names
+        .iter()
+        .map(|name| {
+            if let Some(&kind) = entries.get(name.as_str()) {
+                Ok(kind)
+            } else if indexed || reserved_provenance_member(name) {
+                Ok(MzPeakArchiveType::Other)
+            } else {
+                Ok(MzPeakArchiveType::classify_from_suffix(name))
+            }
+        })
+        .collect()
+}
+
+fn reserved_provenance_member(name: &str) -> bool {
+    name.split('/')
+        .next()
+        .is_some_and(|part| part.eq_ignore_ascii_case("provenance"))
+        || name.eq_ignore_ascii_case("provenance.parquet")
+}
+
 impl SchemaMetadataManager {
-    pub(crate) fn add_entry(&mut self, entry: MzPeakArchiveEntry) {
-        match entry.entry_type {
-            MzPeakArchiveType::SpectrumMetadata => {
-                self.spectrum_metadata = Some(entry);
-            }
-            MzPeakArchiveType::SpectrumDataArrays => {
-                self.spectrum_data_arrays = Some(entry);
-            }
-            MzPeakArchiveType::SpectrumPeakDataArrays => self.peaks_data_arrays = Some(entry),
-            MzPeakArchiveType::ChromatogramMetadata => self.chromatogram_metadata = Some(entry),
-            MzPeakArchiveType::ChromatogramDataArrays => {
-                self.chromatogram_data_arrays = Some(entry)
-            }
-            MzPeakArchiveType::WavelengthSpectrumMetadata => {
-                self.wavelength_metadata = Some(entry);
-            }
-            MzPeakArchiveType::WavelengthSpectrumDataArrays => {
-                self.wavelength_data_arrays = Some(entry);
-            }
-            MzPeakArchiveType::Other | MzPeakArchiveType::Proprietary => {}
-            MzPeakArchiveType::SpectrumMetadataScans => self.spectrum_scan_metadata = Some(entry),
-            MzPeakArchiveType::SpectrumMetadataPrecursors => {
-                self.spectrum_precursor_metadata = Some(entry)
-            }
+    pub(crate) fn add_entry(&mut self, entry: MzPeakArchiveEntry) -> io::Result<()> {
+        let slot = match entry.entry_type {
+            MzPeakArchiveType::SpectrumMetadata => &mut self.spectrum_metadata,
+            MzPeakArchiveType::SpectrumDataArrays => &mut self.spectrum_data_arrays,
+            MzPeakArchiveType::SpectrumPeakDataArrays => &mut self.peaks_data_arrays,
+            MzPeakArchiveType::ChromatogramMetadata => &mut self.chromatogram_metadata,
+            MzPeakArchiveType::ChromatogramDataArrays => &mut self.chromatogram_data_arrays,
+            MzPeakArchiveType::WavelengthSpectrumMetadata => &mut self.wavelength_metadata,
+            MzPeakArchiveType::WavelengthSpectrumDataArrays => &mut self.wavelength_data_arrays,
+            MzPeakArchiveType::SpectrumMetadataScans => &mut self.spectrum_scan_metadata,
+            MzPeakArchiveType::SpectrumMetadataPrecursors => &mut self.spectrum_precursor_metadata,
             MzPeakArchiveType::SpectrumMetadataSelectedIons => {
-                self.spectrum_selected_ion_metadata = Some(entry)
+                &mut self.spectrum_selected_ion_metadata
             }
             MzPeakArchiveType::ChromatogramMetadataPrecursors => {
-                self.chromatogram_precursor_metadata = Some(entry)
+                &mut self.chromatogram_precursor_metadata
             }
             MzPeakArchiveType::ChromatogramMetadataSelectedIons => {
-                self.chromatogram_selected_ion_metadata = Some(entry)
+                &mut self.chromatogram_selected_ion_metadata
             }
             MzPeakArchiveType::ChromatogramMetadataProducts => {
-                self.chromatogram_product_metadata = Some(entry)
+                &mut self.chromatogram_product_metadata
             }
             MzPeakArchiveType::WavelengthSpectrumMetadataScans => {
-                self.wavelength_scan_metadata = Some(entry)
+                &mut self.wavelength_scan_metadata
             }
-            MzPeakArchiveType::ProvenanceSignature => {}
+            MzPeakArchiveType::Other
+            | MzPeakArchiveType::Proprietary
+            | MzPeakArchiveType::ProvenanceSignature => return Ok(()),
+        };
+        if let Some(previous) = slot {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "ambiguous measurement role {:?}: {} and {}",
+                    entry.entry_type, previous.name, entry.name
+                ),
+            ));
         }
+        *slot = Some(entry);
+        Ok(())
     }
 }
 
@@ -1071,7 +1138,10 @@ impl DirectorySource {
 
         let index_path = archive_path.join(FileIndex::index_file_name());
         let file_index = if index_path.exists() {
-            serde_json::from_reader(io::BufReader::new(fs::File::open(index_path)?)).ok()
+            Some(
+                serde_json::from_reader(io::BufReader::new(fs::File::open(index_path)?))
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
+            )
         } else {
             None
         };
@@ -1144,16 +1214,16 @@ pub struct ArchiveReader<T: ArchiveSource + 'static> {
 impl<T: ArchiveSource + 'static> ArchiveReader<T> {
     pub fn from_archive(archive: T) -> io::Result<Self> {
         let mut members = SchemaMetadataManager::default();
-        for (i, name) in archive.file_names().iter().enumerate() {
-            let tp = archive
-                .file_index()
-                .iter()
-                .find(|s| s.name == *name)
-                .map(|s| s.archive_type());
-
-            let tp = tp.unwrap_or_else(|| MzPeakArchiveType::classify_from_suffix(&name));
-
-            let metadata = archive.metadata_for_index(i).ok();
+        let types = classify_archive_members(archive.file_names(), archive.file_index())?;
+        for (i, (name, tp)) in archive.file_names().iter().zip(types).enumerate() {
+            let metadata = if matches!(
+                tp,
+                MzPeakArchiveType::Other | MzPeakArchiveType::Proprietary
+            ) {
+                None
+            } else {
+                archive.metadata_for_index(i).ok()
+            };
             if !matches!(
                 tp,
                 MzPeakArchiveType::Other | MzPeakArchiveType::Proprietary
@@ -1173,7 +1243,7 @@ impl<T: ArchiveSource + 'static> ArchiveReader<T> {
                 name: name.clone(),
                 entry_type: tp,
             };
-            members.add_entry(entry);
+            members.add_entry(entry)?;
         }
         Ok(Self { archive, members })
     }
@@ -1579,8 +1649,158 @@ impl MemoryMapZipArchiveReader {
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use super::*;
+
+    pub(crate) fn measurement_archive(index: Option<&[u8]>, members: &[(&str, i64)]) -> Vec<u8> {
+        use arrow::array::Int64Array;
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::record_batch::RecordBatch;
+        use parquet::arrow::ArrowWriter;
+
+        let mut archive = ZipWriter::new(io::Cursor::new(Vec::new()));
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        if let Some(index) = index {
+            archive
+                .start_file(FileIndex::index_file_name(), options)
+                .unwrap();
+            archive.write_all(index).unwrap();
+        }
+        for &(name, value) in members {
+            let schema = Arc::new(Schema::new(vec![Field::new(
+                "measurement",
+                DataType::Int64,
+                false,
+            )]));
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int64Array::from(vec![value]))],
+            )
+            .unwrap();
+            let mut bytes = Vec::new();
+            let mut writer = ArrowWriter::try_new(&mut bytes, schema, None).unwrap();
+            writer.write(&batch).unwrap();
+            writer.close().unwrap();
+            archive.start_file(name, options).unwrap();
+            archive.write_all(&bytes).unwrap();
+        }
+        archive.finish().unwrap().into_inner()
+    }
+
+    pub(crate) fn spectrum_index(names: &[&str]) -> Vec<u8> {
+        serde_json::to_vec(&FileIndex::from(
+            names
+                .iter()
+                .map(|name| {
+                    FileEntry::new((*name).into(), EntityType::Spectrum, DataKind::DataArray)
+                })
+                .collect::<Vec<_>>(),
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn unindexed_suffix_cannot_replace_indexed_measurements() -> io::Result<()> {
+        for injected in [
+            "provenance/spectra_data.parquet",
+            "Provenance/spectra_data.parquet",
+            "processing/spectra_data.parquet",
+        ] {
+            let bytes = measurement_archive(
+                Some(&spectrum_index(&["spectra_data.parquet"])),
+                &[("spectra_data.parquet", 1), (injected, 999)],
+            );
+            let reader = MemoryMapZipArchiveReader::from_buf(Bytes::from(bytes))?;
+            let batch = reader.spectrum_data()?.build()?.next().unwrap().unwrap();
+            let values = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<arrow::array::Int64Array>()
+                .unwrap();
+            assert_eq!(
+                values.value(0),
+                1,
+                "injected member {injected} replaced indexed data"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_suffix_discovery_rejects_ambiguous_roles() -> io::Result<()> {
+        let bytes = measurement_archive(
+            None,
+            &[
+                ("spectra_data.parquet", 1),
+                ("provenance/spectra_data.parquet", 999),
+            ],
+        );
+        let reader = MemoryMapZipArchiveReader::from_buf(Bytes::from(bytes))?;
+        assert_eq!(
+            reader.members.spectrum_data_arrays.as_ref().unwrap().name,
+            "spectra_data.parquet"
+        );
+        let bytes = measurement_archive(
+            None,
+            &[
+                ("spectra_data.parquet", 1),
+                ("other/spectra_data.parquet", 999),
+            ],
+        );
+        assert!(MemoryMapZipArchiveReader::from_buf(Bytes::from(bytes)).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn indexed_duplicate_roles_or_names_are_rejected() {
+        for names in [
+            vec!["spectra_data.parquet", "other/spectra_data.parquet"],
+            vec!["spectra_data.parquet", "spectra_data.parquet"],
+        ] {
+            let bytes = measurement_archive(
+                Some(&spectrum_index(&names)),
+                &[
+                    ("spectra_data.parquet", 1),
+                    ("other/spectra_data.parquet", 999),
+                ],
+            );
+            assert!(MemoryMapZipArchiveReader::from_buf(Bytes::from(bytes)).is_err());
+        }
+    }
+
+    #[test]
+    fn index_cannot_assign_measurements_to_proof_storage() {
+        for name in [
+            "provenance/bundle-v1.json",
+            "provenance.parquet",
+            "Provenance/bundle-v1.json",
+            "Provenance.parquet",
+            "provenance/spectra_data.parquet",
+        ] {
+            let bytes = measurement_archive(Some(&spectrum_index(&[name])), &[(name, 999)]);
+            assert!(
+                MemoryMapZipArchiveReader::from_buf(Bytes::from(bytes.clone())).is_err(),
+                "accepted proof storage as measurement: {name}"
+            );
+            let directory = tempfile::tempdir().unwrap();
+            ZipArchive::new(io::Cursor::new(bytes))
+                .unwrap()
+                .extract(directory.path())
+                .unwrap();
+            assert!(DirectoryArchiveReader::from_path(directory.path().into()).is_err());
+        }
+    }
+
+    #[test]
+    fn malformed_or_empty_index_does_not_enable_suffix_fallback() -> io::Result<()> {
+        let bytes = measurement_archive(Some(b"{malformed"), &[("spectra_data.parquet", 999)]);
+        assert!(MemoryMapZipArchiveReader::from_buf(Bytes::from(bytes)).is_err());
+        let bytes =
+            measurement_archive(Some(&spectrum_index(&[])), &[("spectra_data.parquet", 999)]);
+        let reader = MemoryMapZipArchiveReader::from_buf(Bytes::from(bytes))?;
+        assert!(reader.spectrum_data().is_err());
+        Ok(())
+    }
 
     fn test_archive_inner<T: ArchiveSource>(arch: &ArchiveReader<T>) -> io::Result<()>
     where

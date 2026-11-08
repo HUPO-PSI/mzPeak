@@ -1152,6 +1152,40 @@ class _MzPeakFileBase:
         """Open a :class:`zipfile.ZipExtFile` file-like object"""
         return pq.ParquetFile(pa.PythonFile(f))
 
+    def _validate_reader_index(self):
+        """Reject ambiguous roles and measurement references into exempt proof storage."""
+        measurement_kinds = {
+            EntityType.Spectrum: {
+                DataKind.DataArrays, DataKind.Metadata, DataKind.Scans,
+                DataKind.Precursors, DataKind.SelectedIons, DataKind.Peaks,
+            },
+            EntityType.Chromatogram: {
+                DataKind.DataArrays, DataKind.Metadata, DataKind.Precursors,
+                DataKind.SelectedIons, DataKind.Products,
+            },
+            EntityType.WavelengthSpectrum: {
+                DataKind.DataArrays, DataKind.Metadata, DataKind.Scans,
+            },
+        }
+        names = set()
+        roles = {}
+        for entry in self.file_index:
+            if entry.name in names:
+                raise ValueError(f"duplicate indexed member name: {entry.name}")
+            names.add(entry.name)
+            entity, kind = entry.entry_type()
+            role = (entity.tag, kind.tag)
+            if kind.tag not in measurement_kinds.get(entity.tag, set()):
+                continue
+            if (entry.name.split("/", 1)[0].lower() == "provenance"
+                    or entry.name.lower() == "provenance.parquet"):
+                raise ValueError("provenance members cannot supply measurement data")
+            if role in roles:
+                raise ValueError(
+                    f"ambiguous measurement role {role}: {roles[role]} and {entry.name}"
+                )
+            roles[role] = entry.name
+
     def _from_directory(self, path: Path):
         self._archive_storage = ArchiveStorage.Directory
         self._archive = path
@@ -1163,6 +1197,7 @@ class _MzPeakFileBase:
             opener = self._path_opener
         if index_path.exists():
             self.file_index = FileIndex.from_json(json.load(index_path.open()))
+            self._validate_reader_index()
             for e in self.file_index:
                 f = path / e.name
                 if f in visited:
@@ -1236,6 +1271,7 @@ class _MzPeakFileBase:
             ) from err
 
         self.file_index = FileIndex.from_json(json.load(archive.open(f)))
+        self._validate_reader_index()
         for e in self.file_index:
             if e.name in visited:
                 continue

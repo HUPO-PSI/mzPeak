@@ -19,7 +19,7 @@ def write_archive(path, members, compression=zipfile.ZIP_STORED):
 
 def test_capture_covers_metadata_and_transport_independent(tmp_path):
     path = tmp_path / "data.mzpeak"
-    members = [("mzpeak_index.json", b"{}"), ("spectra.parquet", b"abcdef"), ("provenance/envelope.json", b"untrusted")]
+    members = [("mzpeak_index.json", b"{}"), ("spectra.parquet", b"abcdef"), ("provenance/bundle-v1.json", b"untrusted"), ("provenance.parquet", b"legacy")]
     write_archive(path, members)
     manifest = capture_archive(path, "run-1", "stage-1")
     assert len(manifest.files) == 2
@@ -42,6 +42,25 @@ def test_selected_output_never_claims_complete_archive(tmp_path):
         capture_archive(path, "run-1", "stage-1", ["missing"])
     with pytest.raises(ValueError):
         capture_archive(path, "run-1", "stage-1", ["a", "a"])
+
+
+@pytest.mark.parametrize("name", [
+    "provenance/spectra_data.parquet", "Provenance/spectra_metadata.parquet",
+    "provenance/envelope.json", "Provenance/bundle-v1.json", "Provenance.parquet",
+    "provenance/bundle-v1.json/", "provenance.parquet/",
+])
+def test_provenance_namespace_cannot_hide_unverified_content(tmp_path, name):
+    path = tmp_path / "data.mzpeak"
+    write_archive(path, [("spectra.parquet", b"original")])
+    manifest = capture_archive(path, "run-1", "stage-1")
+    with zipfile.ZipFile(path, "a") as archive:
+        archive.writestr(name, b"injected")
+    # Both capturing and verifying must reject unknown/aliased proof entries,
+    # never claim complete coverage while silently ignoring their bytes.
+    with pytest.raises(ValueError):
+        verify_archive(path, manifest)
+    with pytest.raises(ValueError):
+        capture_archive(path, "run-1", "stage-1")
 
 
 @pytest.mark.parametrize("members", [[("a", b"a"), ("a", b"b")], [("a", b"a"), ("A", b"b")], [("../escape", b"a")]])
@@ -89,7 +108,7 @@ def test_local_central_filename_disagreement_rejected(tmp_path):
 
 
 @pytest.mark.parametrize("raw_name", [
-    "a\x00bad", "provenance/envelope.json\x00bad",
+    "a\x00bad", "provenance/bundle-v1.json\x00bad",
     "provenance.parquet\x00bad", "provenance/\x00bad",
 ])
 @pytest.mark.parametrize("operation", ["capture", "verify"])

@@ -266,9 +266,10 @@ class Manifest:
     def verify_files(self, files: Mapping[str, bytes | BinaryIO]) -> CoverageReport:
         """Compare the complete caller-supplied *content* inventory to this stage.
 
-        The archive adapter must provide every non-provenance entry, reject
-        duplicate ZIP names, and provide immutable index snapshots. Unlisted
-        content is reported, never silently certified. Streams remain open.
+        The archive adapter must provide every entry except the exact reserved
+        proof-storage filenames, reject duplicate ZIP names, and provide immutable
+        index snapshots. Unlisted content is reported, never silently certified.
+        Streams remain open.
         """
         self.validate()
         expected = {f.path: f for f in self.files}

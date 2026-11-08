@@ -18,7 +18,9 @@ use url::Url;
 use crate::archive::{DataKind, EntityType, FileEntry, FileIndex};
 use crate::validation::checksum_stream_async;
 
-use super::sync::{MzPeakArchiveEntry, MzPeakArchiveType, SchemaMetadataManager};
+use super::sync::{
+    MzPeakArchiveEntry, MzPeakArchiveType, SchemaMetadataManager, classify_archive_members,
+};
 
 pub trait AsyncArchiveSource: Clone + 'static {
     type File: parquet::arrow::async_reader::AsyncFileReader + AsyncRead + Unpin + Send;
@@ -372,14 +374,16 @@ impl<T: AsyncArchiveSource + 'static> AsyncArchiveReader<T> {
 
     async fn init_from_archive(archive: T) -> io::Result<Self> {
         let mut members = SchemaMetadataManager::default();
-        for (i, name) in archive.file_names().iter().enumerate() {
-            let tp = archive
-                .file_index()
-                .iter()
-                .find(|s| s.name == *name)
-                .map(|s| s.archive_type());
-            let metadata = archive.metadata_for_index(i).await.ok();
-            let tp = tp.unwrap_or_else(|| MzPeakArchiveType::classify_from_suffix(&name));
+        let types = classify_archive_members(archive.file_names(), archive.file_index())?;
+        for (i, (name, tp)) in archive.file_names().iter().zip(types).enumerate() {
+            let metadata = if matches!(
+                tp,
+                MzPeakArchiveType::Other | MzPeakArchiveType::Proprietary
+            ) {
+                None
+            } else {
+                archive.metadata_for_index(i).await.ok()
+            };
 
             if !matches!(
                 tp,
@@ -400,7 +404,7 @@ impl<T: AsyncArchiveSource + 'static> AsyncArchiveReader<T> {
                 name: name.clone(),
                 entry_type: tp,
             };
-            members.add_entry(entry);
+            members.add_entry(entry)?;
         }
         Ok(Self {
             archive,
@@ -675,6 +679,100 @@ mod test {
     use crate::archive::MzPeakArchiveType;
 
     use super::*;
+
+    #[tokio::test]
+    async fn unindexed_suffix_cannot_replace_indexed_measurements() -> io::Result<()> {
+        use crate::archive::sync::test::{measurement_archive, spectrum_index};
+        use futures::StreamExt;
+
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(object_store::local::LocalFileSystem::new_with_prefix(
+            directory.path(),
+        )?);
+        for injected in [
+            "provenance/spectra_data.parquet",
+            "Provenance/spectra_data.parquet",
+            "processing/spectra_data.parquet",
+        ] {
+            let bytes = measurement_archive(
+                Some(&spectrum_index(&["spectra_data.parquet"])),
+                &[("spectra_data.parquet", 1), (injected, 999)],
+            );
+            std::fs::write(directory.path().join("injected.mzpeak"), bytes)?;
+            let archive =
+                AsyncZipArchiveSource::new(store.clone(), "injected.mzpeak".into()).await?;
+            let reader = AsyncArchiveReader::init_from_archive(archive).await?;
+            let batch = reader
+                .spectra_data()
+                .await?
+                .build()?
+                .next()
+                .await
+                .unwrap()
+                .unwrap();
+            let values = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<arrow::array::Int64Array>()
+                .unwrap();
+            assert_eq!(
+                values.value(0),
+                1,
+                "injected member {injected} replaced indexed data"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ambiguous_or_proof_measurement_roles_are_rejected() -> io::Result<()> {
+        use crate::archive::sync::test::{measurement_archive, spectrum_index};
+
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(object_store::local::LocalFileSystem::new_with_prefix(
+            directory.path(),
+        )?);
+        for (index, members) in [
+            (
+                Some(spectrum_index(&["provenance.parquet"])),
+                vec![("provenance.parquet", 999)],
+            ),
+            (
+                Some(spectrum_index(&["provenance/bundle-v1.json"])),
+                vec![("provenance/bundle-v1.json", 999)],
+            ),
+            (
+                Some(spectrum_index(&[
+                    "spectra_data.parquet",
+                    "other/spectra_data.parquet",
+                ])),
+                vec![
+                    ("spectra_data.parquet", 1),
+                    ("other/spectra_data.parquet", 999),
+                ],
+            ),
+            (
+                None,
+                vec![
+                    ("spectra_data.parquet", 1),
+                    ("other/spectra_data.parquet", 999),
+                ],
+            ),
+        ] {
+            std::fs::write(
+                directory.path().join("ambiguous.mzpeak"),
+                measurement_archive(index.as_deref(), &members),
+            )?;
+            let archive =
+                AsyncZipArchiveSource::new(store.clone(), "ambiguous.mzpeak".into()).await?;
+            assert!(
+                AsyncArchiveReader::init_from_archive(archive)
+                    .await
+                    .is_err()
+            );
+        }
+        Ok(())
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[test_log::test]

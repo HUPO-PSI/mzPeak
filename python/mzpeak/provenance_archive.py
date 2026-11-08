@@ -38,8 +38,12 @@ def _inventory(archive: zipfile.ZipFile):
         if (kind == stat.S_IFDIR and not item.is_dir()) or (kind == stat.S_IFREG and item.is_dir()):
             raise ValueError("inconsistent ZIP directory type")
         if item.is_dir():
+            if normalized.lower() in ("provenance/bundle-v1.json", "provenance.parquet"):
+                raise ValueError("provenance proof member must be a file")
             continue
-        if name.lower().startswith("provenance/") or name.lower() == "provenance.parquet":
+        # Only these exact proof members are outside signed content coverage.
+        # Other reserved paths and case aliases fail the content-path check.
+        if name in ("provenance/bundle-v1.json", "provenance.parquet"):
             continue
         _path(name)
         _integer(item.file_size, "ZIP member size")

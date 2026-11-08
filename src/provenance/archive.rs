@@ -21,8 +21,11 @@ fn zip_error(error: zip::result::ZipError) -> ManifestError {
 // duplicates. Inspect central-directory records before relying on that map. The
 // library still performs decompression, CRC and ZIP64 handling; this small guard
 // only preserves inventory/name identity that would otherwise be lost.
-fn open_archive(path: impl AsRef<Path>) -> Result<ZipArchive<File>, ManifestError> {
-    let mut file = File::open(path)?;
+pub(crate) fn open_archive(path: impl AsRef<Path>) -> Result<ZipArchive<File>, ManifestError> {
+    open_archive_file(File::open(path)?)
+}
+
+pub(crate) fn open_archive_file(mut file: File) -> Result<ZipArchive<File>, ManifestError> {
     let mut archive = ZipArchive::new(file.try_clone()?).map_err(zip_error)?;
     let file_size = file.metadata()?.len();
     file.seek(SeekFrom::Start(archive.central_directory_start()))?;
@@ -84,7 +87,7 @@ fn open_archive(path: impl AsRef<Path>) -> Result<ZipArchive<File>, ManifestErro
     Ok(archive)
 }
 
-fn inventory<R: Read + Seek>(
+pub(crate) fn inventory<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
 ) -> Result<BTreeMap<String, (usize, u64)>, ManifestError> {
     let mut names = BTreeSet::new();
@@ -109,11 +112,16 @@ fn inventory<R: Read + Seek>(
             return Err(invalid("inconsistent ZIP directory type"));
         }
         if item.is_dir() {
+            if normalized.eq_ignore_ascii_case("provenance/bundle-v1.json")
+                || normalized.eq_ignore_ascii_case("provenance.parquet")
+            {
+                return Err(invalid("provenance proof member must be a file"));
+            }
             continue;
         }
-        if name.to_ascii_lowercase().starts_with("provenance/")
-            || name.eq_ignore_ascii_case("provenance.parquet")
-        {
+        // Exempt exact proof members only. Other reserved paths and case
+        // aliases fail the content-path check instead of hiding unsigned bytes.
+        if matches!(name, "provenance/bundle-v1.json" | "provenance.parquet") {
             continue;
         }
         validate_path(name)?;
@@ -285,7 +293,8 @@ mod tests {
             &[
                 ("mzpeak_index.json", b"{}"),
                 ("spectra.parquet", b"abcdef"),
-                ("provenance/envelope.json", b"untrusted"),
+                ("provenance/bundle-v1.json", b"untrusted"),
+                ("provenance.parquet", b"legacy"),
             ],
         );
         let manifest = capture_archive(&path, "run-1", "stage-1", None).unwrap();
@@ -309,6 +318,75 @@ mod tests {
         let manifest = capture_archive(&path, "run-1", "stage-1", Some(&["a".into()])).unwrap();
         assert_eq!(verify_archive(&path, &manifest).unwrap().uncovered, ["b"]);
         assert!(capture_archive(&path, "run-1", "stage-1", Some(&["missing".into()])).is_err());
+    }
+
+    #[test]
+    fn provenance_namespace_cannot_hide_unverified_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.mzpeak");
+        fixture(&path, &[("spectra.parquet", b"original")]);
+        let manifest = capture_archive(&path, "run-1", "stage-1", None).unwrap();
+        for name in [
+            "provenance/spectra_data.parquet",
+            "Provenance/spectra_metadata.parquet",
+            "provenance/envelope.json",
+            "Provenance/bundle-v1.json",
+            "Provenance.parquet",
+            "provenance/bundle-v1.json/",
+            "provenance.parquet/",
+        ] {
+            fixture(
+                &path,
+                &[("spectra.parquet", b"original"), (name, b"injected")],
+            );
+            assert!(verify_archive(&path, &manifest).is_err(), "{name}");
+            assert!(
+                capture_archive(&path, "run-1", "stage-1", None).is_err(),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn injected_parquet_cannot_hide_from_coverage_or_replace_reader_data() {
+        use crate::archive::MemoryMapZipArchiveReader;
+        use crate::archive::test::{measurement_archive, spectrum_index};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.mzpeak");
+        let index = spectrum_index(&["spectra_data.parquet"]);
+        std::fs::write(
+            &path,
+            measurement_archive(Some(&index), &[("spectra_data.parquet", 1)]),
+        )
+        .unwrap();
+        let manifest = capture_archive(&path, "run-1", "stage-1", None).unwrap();
+        assert!(verify_archive(&path, &manifest).unwrap().complete());
+
+        let injected = measurement_archive(
+            Some(&index),
+            &[
+                ("spectra_data.parquet", 1),
+                ("provenance/spectra_data.parquet", 999),
+            ],
+        );
+        std::fs::write(&path, &injected).unwrap();
+        assert!(verify_archive(&path, &manifest).is_err());
+        let reader = MemoryMapZipArchiveReader::from_buf(bytes::Bytes::from(injected)).unwrap();
+        let batch = reader
+            .spectrum_data()
+            .unwrap()
+            .build()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        let values = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .unwrap();
+        assert_eq!(values.value(0), 1);
     }
 
     #[test]
