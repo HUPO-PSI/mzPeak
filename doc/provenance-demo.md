@@ -25,10 +25,11 @@ python -m mzpeak.provenance_cli sign acquisition-stage.json acquisition-record.j
   --signers instrument-signers.json --policy ecdsa
 ```
 
-`capture` covers every non-provenance member, including JSON metadata, the index,
-and complete Parquet files. Repeat `--select path` to capture just one processing
-stage's output inventory. The complete-history verifier checks the union of stage
-inventories and reports any other content as uncovered.
+`capture` covers JSON metadata, the index, and complete Parquet files. Supported
+proof members are excluded; other reserved provenance names are rejected. Repeat
+`--select path` to capture just one processing stage's output inventory. The
+complete-history verifier checks the union of stage inventories and reports any
+other content as uncovered.
 
 `init-acquisition` only constructs the stage object. Trust policy must explicitly
 authorize the certificate and instrument identity before verification accepts its
@@ -118,7 +119,8 @@ python -m mzpeak.provenance_cli verify measurement.mzpeak records.json \
 - `authorizations`: certificate SHA-256 fingerprints with explicit `role`,
   `identity` and optional `required_eku` grants. Roles are `acquisition`,
   `processing`, or `software_release`; software release defaults to codeSigning.
-- `validation_time`: nonnegative Unix seconds chosen by the relying party.
+- `validation_time`: optional in CLI policy files. This legacy field does not
+  select the CLI verification time; explicit-time library APIs still require it.
 - `crls_pem`: PEM CRLs covering the full path. Missing revocation evidence remains
   unknown and is not accepted.
 - `require_pqc_chain`: optional boolean requiring PQC certificate paths as well
@@ -130,6 +132,13 @@ for example `{"acquisition":"instrument-1","processing":"installation-1"}`.
 identity. `heads.json` is an array of expected final stage digests obtained from a
 trusted independent record. Do not derive trust configuration or expected heads
 from the file being checked and then treat them as independent evidence.
+
+By default, verification samples the system clock once and uses that time for all
+current certificate and CRL checks. A copied policy file cannot freeze those
+checks at an earlier date. For a reproducible test, explicitly pass
+`--validation-time UNIX_SECONDS`; ordinary verification then reports
+`verification: "fixed-time"`, not `"current"`. Both modes report `validation_time`
+and `time_source` (`"current"` or `"explicit"`).
 
 The result is JSON with `accepted` and a structured `report` containing coverage,
 lineage, signature, certificate authorization/revocation and release results.
@@ -166,11 +175,12 @@ python -m mzpeak.provenance_cli verify fixture.mzpeak \
   --identities fixture-identities.json \
   --releases test/data/provenance/history/releases.json \
   --publishers fixture-publishers.json \
-  --heads test/data/provenance/history/heads.json --policy ecdsa
+  --heads test/data/provenance/history/heads.json --policy ecdsa \
+  --validation-time 1893456000
 ```
 
-This fixture policy uses an artificial validation time within its test certificate
-and CRL validity periods. It is a reproducible test, not deployment trust policy.
+This explicit fixture time is within its test certificate and CRL validity periods.
+It is a reproducible test, not a current-time or deployment trust-policy check.
 Running the same arguments with Rust produces the same acceptance and report.
 
 The signing profile uses version-2 CMS envelopes. Old experimental raw envelopes

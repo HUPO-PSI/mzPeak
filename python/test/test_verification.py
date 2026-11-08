@@ -117,7 +117,6 @@ def test_streaming_zip_verification(tmp_path):
     with zipfile.ZipFile(path, "w") as z:
         for name, data in files.items():
             z.writestr(name, data)
-        z.writestr("provenance/stages.json", (P / "records.json").read_bytes())
     report = verify_archive_history(
         path,
         records,
@@ -127,6 +126,17 @@ def test_streaming_zip_verification(tmp_path):
         **kwargs,
     )
     assert report.accepted
+
+    # Unknown files in the reserved namespace cannot disappear from coverage,
+    # even when their contents look like plausible detached proof records.
+    with zipfile.ZipFile(path, "a") as z:
+        z.writestr("provenance/stages.json", (P / "records.json").read_bytes())
+    with pytest.raises(ValueError):
+        verify_archive_history(
+            path, records, trust, SignaturePolicy.ECDSA,
+            {"acquisition": "instrument-1", "processing": "installation-1"},
+            **kwargs,
+        )
 
 
 def test_repeated_file_cannot_replace_previously_signed_chunk_descriptors():

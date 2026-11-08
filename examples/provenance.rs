@@ -6,6 +6,7 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use clap::{Parser, Subcommand};
@@ -83,6 +84,9 @@ enum Commands {
         releases: Option<PathBuf>,
         #[arg(long)]
         publishers: Option<PathBuf>,
+        /// Explicit fixed Unix second; by default use the current clock once.
+        #[arg(long, value_parser = clap::value_parser!(i64).range(0..))]
+        validation_time: Option<i64>,
         /// Trusted head digest array; absent means no rollback assurance.
         #[arg(long)]
         heads: Option<PathBuf>,
@@ -151,6 +155,31 @@ impl<'de> Deserialize<'de> for StrictJson {
 
 fn read_json<T: DeserializeOwned>(path: impl AsRef<Path>) -> CliResult<T> {
     let StrictJson(value) = serde_json::from_slice(&read(path)?)?;
+    Ok(serde_json::from_value(value)?)
+}
+
+fn verification_time(explicit: Option<i64>) -> CliResult<i64> {
+    match explicit {
+        Some(value) if value >= 0 => Ok(value),
+        Some(_) => Err("validation time must be nonnegative".into()),
+        None => Ok(SystemTime::now()
+            .duration_since(UNIX_EPOCH)?
+            .as_secs()
+            .try_into()?),
+    }
+}
+
+fn read_policy_at<T: DeserializeOwned>(path: impl AsRef<Path>, time: i64) -> CliResult<T> {
+    let mut value: Value = read_json(path)?;
+    let policy = value.as_object_mut().ok_or("policy must be an object")?;
+    // Old files remain readable, but only the explicit CLI option selects time.
+    if policy
+        .get("validation_time")
+        .is_some_and(|v| v.as_i64().is_none_or(|t| t < 0))
+    {
+        return Err("validation_time must be a nonnegative signed-64-bit Unix second".into());
+    }
+    policy.insert("validation_time".into(), time.into());
     Ok(serde_json::from_value(value)?)
 }
 
@@ -362,11 +391,23 @@ fn run(cli: Cli) -> CliResult<bool> {
             identities,
             releases,
             publishers,
+            validation_time,
             heads,
             policy,
         } => {
+            let time_source = if validation_time.is_some() {
+                "explicit"
+            } else {
+                "current"
+            };
+            let verification = if validation_time.is_some() {
+                "fixed-time"
+            } else {
+                "current"
+            };
+            let validation_time = verification_time(validation_time)?;
             let records = records(&record_path)?;
-            let trust: TrustPolicy = read_json(trust)?;
+            let trust: TrustPolicy = read_policy_at(trust, validation_time)?;
             let identities = string_map(Some(&identities))?;
             let publishers = string_map(publishers.as_deref())?;
             let heads: Option<Vec<String>> = heads.map(read_json).transpose()?;
@@ -389,7 +430,7 @@ fn run(cli: Cli) -> CliResult<bool> {
             println!(
                 "{}",
                 serde_json::to_string_pretty(
-                    &serde_json::json!({"accepted":accepted,"report":report})
+                    &serde_json::json!({"accepted":accepted,"verification":verification,"validation_time":validation_time,"time_source":time_source,"report":report})
                 )?
             );
             return Ok(accepted);

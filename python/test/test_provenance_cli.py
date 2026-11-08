@@ -5,7 +5,9 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 import zipfile
+from datetime import datetime, timezone
 
 import pytest
 
@@ -45,6 +47,191 @@ def write_json(path, value):
     return path
 
 
+@pytest.fixture(params=["expired-certificate", "stale-crl"])
+def stale_policy_history(tmp_path, request):
+    """A real signature whose copied 2000-era policy used to bypass current time."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+    from mzpeak.provenance_archive import capture_archive
+    from mzpeak.signing import (
+        Algorithm,
+        OpenSslBackend,
+        SignaturePolicy,
+        SigningIdentity,
+        SoftwareKey,
+    )
+    from mzpeak.trust import certificate_fingerprint
+
+    beginning = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    old_expiry = datetime(2001, 1, 1, tzinfo=timezone.utc)
+    future_expiry = datetime(2100, 1, 1, tzinfo=timezone.utc)
+    fixed_time = int(datetime(2000, 6, 1, tzinfo=timezone.utc).timestamp())
+    root_key, leaf_key = (ec.generate_private_key(ec.SECP256R1()) for _ in range(2))
+    root_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "CLI time test CA")])
+    leaf_name = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, "CLI time test signer")]
+    )
+
+    def certificate(subject, public_key, serial, ca, expires):
+        return (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(root_name)
+            .public_key(public_key)
+            .serial_number(serial)
+            .not_valid_before(beginning)
+            .not_valid_after(expires)
+            .add_extension(
+                x509.BasicConstraints(ca=ca, path_length=0 if ca else None), True
+            )
+            .add_extension(
+                x509.KeyUsage(
+                    digital_signature=not ca,
+                    content_commitment=False,
+                    key_encipherment=False,
+                    data_encipherment=False,
+                    key_agreement=False,
+                    key_cert_sign=ca,
+                    crl_sign=ca,
+                    encipher_only=None,
+                    decipher_only=None,
+                ),
+                True,
+            )
+            .add_extension(x509.SubjectKeyIdentifier.from_public_key(public_key), False)
+            .add_extension(
+                x509.AuthorityKeyIdentifier.from_issuer_public_key(
+                    root_key.public_key()
+                ),
+                False,
+            )
+            .sign(root_key, hashes.SHA256())
+        )
+
+    root = certificate(root_name, root_key.public_key(), 1, True, future_expiry)
+    leaf = certificate(
+        leaf_name,
+        leaf_key.public_key(),
+        2,
+        False,
+        old_expiry if request.param == "expired-certificate" else future_expiry,
+    )
+    crl = (
+        x509.CertificateRevocationListBuilder()
+        .issuer_name(root_name)
+        .last_update(beginning)
+        .next_update(old_expiry if request.param == "stale-crl" else future_expiry)
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(root_key.public_key()),
+            False,
+        )
+        .sign(root_key, hashes.SHA256())
+    )
+    pem = lambda value: value.public_bytes(serialization.Encoding.PEM).decode("ascii")
+    key = tmp_path / "expired-key.pem"
+    key.write_bytes(
+        leaf_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    path = tmp_path / "stale-policy.mzpeak"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("measurement.bin", b"original measurement")
+    stage = Stage(capture_archive(path, "time-test", "acquisition"), "acquisition")
+    envelope = OpenSslBackend().sign(
+        stage.canonical_bytes(),
+        [SigningIdentity(Algorithm.ECDSA_P256_SHA256, SoftwareKey(key), pem(leaf))],
+        SignaturePolicy.ECDSA,
+    )
+    record = write_json(
+        tmp_path / "record.json",
+        {
+            "stage": stage.to_dict(),
+            "envelope": json.loads(envelope.to_json()),
+        },
+    )
+    trust = write_json(
+        tmp_path / "trust.json",
+        {
+            "roots_pem": [pem(root)],
+            "crls_pem": [pem(crl)],
+            "validation_time": fixed_time,
+            "authorizations": [
+                {
+                    "certificate_sha256": certificate_fingerprint(pem(leaf)),
+                    "role": "acquisition",
+                    "identity": "instrument-1",
+                }
+            ],
+        },
+    )
+    identities = write_json(
+        tmp_path / "identities.json", {"acquisition": "instrument-1"}
+    )
+    args = [
+        "verify",
+        path,
+        record,
+        "--trust",
+        trust,
+        "--identities",
+        identities,
+        "--policy",
+        "ecdsa",
+    ]
+    return args, fixed_time, request.param
+
+
+@pytest.mark.parametrize("language", ["python", "rust"])
+def test_current_ignores_stale_policy_time(language, stale_policy_history):
+    args, _, failure = stale_policy_history
+    started = int(time.time())
+    result = invoke(command(language), *args)
+    ended = int(time.time())
+    assert result.returncode == 1, result.stderr
+    report = json.loads(result.stdout)
+    assert not report["accepted"]
+    assert report["verification"] == "current" and report["time_source"] == "current"
+    assert started <= report["validation_time"] <= ended
+    certificate = report["report"]["stages"][0]["certificates"][0]
+    assert certificate["validation_time"] == report["validation_time"]
+    if failure == "expired-certificate":
+        assert certificate["path"] == "invalid"
+    else:
+        assert certificate["path"] == "valid" and certificate["revocation"] == "invalid"
+
+
+@pytest.mark.parametrize("language", ["python", "rust"])
+def test_fixed_time_requires_explicit_opt_in(language, stale_policy_history):
+    args, fixed_time, _ = stale_policy_history
+    report = success(command(language), *args, "--validation-time", fixed_time)
+    assert report["accepted"] and report["verification"] == "fixed-time"
+    assert (
+        report["time_source"] == "explicit" and report["validation_time"] == fixed_time
+    )
+    # Current-mode policy files need not carry any frozen reference time.
+    trust_path = args[args.index("--trust") + 1]
+    policy = json.loads(trust_path.read_text())
+    policy.pop("validation_time")
+    write_json(trust_path, policy)
+    assert success(command(language), *args, "--validation-time", fixed_time)[
+        "accepted"
+    ]
+
+
+@pytest.mark.parametrize("language", ["python", "rust"])
+@pytest.mark.parametrize("value", ["-1", "1.5", "9223372036854775808"])
+def test_cli_rejects_invalid_explicit_time(language, archive, value):
+    _, _, args = archive
+    args = args[:-2]  # Remove the fixture's valid explicit test time.
+    result = invoke(command(language), *args, "--validation-time", value)
+    assert result.returncode == 2
+
+
 @pytest.fixture
 def archive(tmp_path):
     files = {
@@ -79,6 +266,8 @@ def archive(tmp_path):
         HISTORY / "heads.json",
         "--policy",
         "ecdsa",
+        "--validation-time",
+        json.loads((HISTORY / "trust.json").read_text())["validation_time"],
     ]
     return archive, files, args
 
@@ -89,6 +278,9 @@ def test_cli_accepts_complete_history_and_rejects_changed_bytes(language, archiv
     path, files, args = archive
     report = success(cli, *args)
     assert report["accepted"] is True
+    assert (
+        report["verification"] == "fixed-time" and report["time_source"] == "explicit"
+    )
     assert report["report"]["lineage"]["checkpoint_checked"] is True
     with zipfile.ZipFile(path, "w") as writer:
         for name, content in files.items():

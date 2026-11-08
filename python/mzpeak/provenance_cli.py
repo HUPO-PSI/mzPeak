@@ -11,6 +11,7 @@ from dataclasses import asdict
 import json
 from pathlib import Path
 import sys
+import time
 
 from .manifest import Manifest, _keys, _load_json
 from .provenance_archive import capture_archive
@@ -116,8 +117,35 @@ def _signers(path):
     return result
 
 
-def _trust(path):
+def _unix_second(value):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("expected a nonnegative Unix second") from None
+    if not 0 <= parsed <= 2**63 - 1:
+        raise argparse.ArgumentTypeError(
+            "expected a nonnegative signed-64-bit Unix second"
+        )
+    return parsed
+
+
+def _policy_at(path, validation_time):
     value = _json(path)
+    if not isinstance(value, dict):
+        raise ValueError("policy must be an object")
+    # Keep old policy files readable, but a stored date cannot select CLI time.
+    if "validation_time" in value and (
+        type(value["validation_time"]) is not int
+        or not 0 <= value["validation_time"] <= 2**63 - 1
+    ):
+        raise ValueError(
+            "validation_time must be a nonnegative signed-64-bit Unix second"
+        )
+    return {**value, "validation_time": validation_time}
+
+
+def _trust(path, validation_time):
+    value = _policy_at(path, validation_time)
     if (
         not isinstance(value, dict)
         or set(value)
@@ -253,6 +281,11 @@ def parser():
     verify.add_argument("--releases")
     verify.add_argument("--publishers")
     verify.add_argument(
+        "--validation-time",
+        type=_unix_second,
+        help="explicit fixed Unix second for reproducible verification; default is the current clock",
+    )
+    verify.add_argument(
         "--heads",
         help="external trusted head digest array; absent means no rollback assurance",
     )
@@ -307,6 +340,15 @@ def main(argv=None):
             _write(args.output, value)
             print(json.dumps({"output": str(args.output)}))
         else:
+            # Sample the wall clock once for all current checks in this invocation.
+            validation_time = (
+                int(time.time())
+                if args.validation_time is None
+                else args.validation_time
+            )
+            if not 0 <= validation_time <= 2**63 - 1:
+                raise ValueError("current time is outside supported Unix seconds")
+            time_source = "current" if args.validation_time is None else "explicit"
             heads = None if args.heads is None else _json(args.heads)
             if heads is not None and (
                 not isinstance(heads, list)
@@ -316,7 +358,7 @@ def main(argv=None):
             report = verify_archive_history(
                 args.archive,
                 _records(args.records),
-                _trust(args.trust),
+                _trust(args.trust, validation_time),
                 SignaturePolicy(args.policy),
                 _string_map(args.identities),
                 releases=_releases(args.releases),
@@ -326,7 +368,15 @@ def main(argv=None):
             )
             print(
                 json.dumps(
-                    {"accepted": report.accepted, "report": asdict(report)},
+                    {
+                        "accepted": report.accepted,
+                        "verification": "current"
+                        if args.validation_time is None
+                        else "fixed-time",
+                        "validation_time": validation_time,
+                        "time_source": time_source,
+                        "report": asdict(report),
+                    },
                     sort_keys=True,
                     indent=2,
                 )
