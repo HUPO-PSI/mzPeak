@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import tempfile
 import zipfile
 
@@ -218,6 +219,17 @@ def _merge(existing, additions):
     return ProvenanceBundle.from_json(_json(old))
 
 
+def _sync_directory(path):
+    # POSIX rename durability needs a directory sync as well as a file sync.
+    # Windows does not expose an equivalent through the Python filesystem API.
+    if os.name == "posix":
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
 def embed_provenance(path, additions, *, max_bytes=None):
     """Atomically add public proofs, preserving all existing records and content.
 
@@ -227,49 +239,61 @@ def embed_provenance(path, additions, *, max_bytes=None):
     """
     _budget(max_bytes)
     path = Path(path).absolute()
-    if path.is_symlink():
+    initial_path = path.lstat()
+    if stat.S_ISLNK(initial_path.st_mode):
         raise ValueError("refusing to rewrite an archive through a symbolic link")
-    initial = path.stat()
+    if not stat.S_ISREG(initial_path.st_mode):
+        raise ValueError("archive must be a regular file")
     temporary = None
     try:
-        with zipfile.ZipFile(path) as source:
-            bundle = _merge(_read_bundle(source, max_bytes), additions)
-            encoded = bundle.to_json()
-            if max_bytes is not None and len(encoded) > max_bytes:
-                raise ValueError("embedded provenance exceeds caller byte budget")
-            with tempfile.NamedTemporaryFile(
-                dir=path.parent,
-                prefix=".mzpeak-provenance-",
-                suffix=".zip",
-                delete=False,
-            ) as output:
-                temporary = Path(output.name)
-                with zipfile.ZipFile(output, "w", allowZip64=True) as target:
-                    target.comment = source.comment
-                    for item in source.infolist():
-                        if item.filename == BUNDLE_PATH:
-                            continue
-                        with (
-                            source.open(item) as reader,
-                            target.open(item, "w", force_zip64=True) as writer,
-                        ):
-                            shutil.copyfileobj(reader, writer, 65536)
-                    target.writestr(
-                        BUNDLE_PATH, encoded, compress_type=zipfile.ZIP_STORED
-                    )
-                output.flush()
-                os.fsync(output.fileno())
-        current = path.stat()
-        if path.is_symlink() or (
-            current.st_dev,
-            current.st_ino,
-            current.st_size,
-            current.st_mtime_ns,
-        ) != (initial.st_dev, initial.st_ino, initial.st_size, initial.st_mtime_ns):
-            raise ValueError("archive changed while embedding provenance")
-        os.chmod(temporary, initial.st_mode & 0o777)
+        # Snapshot and read the same open file, keeping its identity live through
+        # the final check. The check supplements exclusive writer access.
+        with path.open("rb") as original:
+            initial = os.fstat(original.fileno())
+            with zipfile.ZipFile(original) as source:
+                bundle = _merge(_read_bundle(source, max_bytes), additions)
+                encoded = bundle.to_json()
+                if max_bytes is not None and len(encoded) > max_bytes:
+                    raise ValueError("embedded provenance exceeds caller byte budget")
+                with tempfile.NamedTemporaryFile(
+                    dir=path.parent,
+                    prefix=".mzpeak-provenance-",
+                    suffix=".zip",
+                    delete=False,
+                ) as output:
+                    temporary = Path(output.name)
+                    with zipfile.ZipFile(output, "w", allowZip64=True) as target:
+                        target.comment = source.comment
+                        for item in source.infolist():
+                            if item.filename == BUNDLE_PATH:
+                                continue
+                            with (
+                                source.open(item) as reader,
+                                target.open(item, "w", force_zip64=True) as writer,
+                            ):
+                                shutil.copyfileobj(reader, writer, 65536)
+                        target.writestr(
+                            BUNDLE_PATH, encoded, compress_type=zipfile.ZIP_STORED
+                        )
+                    os.chmod(temporary, initial.st_mode & 0o777)
+                    output.flush()
+                    os.fsync(output.fileno())
+            current = path.stat()
+            if path.is_symlink() or (
+                current.st_dev,
+                current.st_ino,
+                current.st_size,
+                current.st_mtime_ns,
+            ) != (initial.st_dev, initial.st_ino, initial.st_size, initial.st_mtime_ns):
+                raise ValueError("archive changed while embedding provenance")
         os.replace(temporary, path)
         temporary = None
+        try:
+            _sync_directory(path.parent)
+        except OSError as error:
+            raise OSError(
+                "archive was replaced but parent directory synchronization failed"
+            ) from error
         return bundle
     finally:
         if temporary is not None:

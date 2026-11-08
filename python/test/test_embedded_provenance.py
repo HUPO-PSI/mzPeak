@@ -111,12 +111,13 @@ def test_missing_duplicate_and_aliased_bundle_never_verifies(archive, alias):
     with zipfile.ZipFile(archive, "a") as output:
         output.writestr(alias, b"" if alias.endswith("/") else bundle().to_json())
     original = archive.read_bytes()
-    with pytest.raises(ValueError, match="noncanonical"):
+    # Inventory can reject reserved aliases before bundle-specific parsing.
+    with pytest.raises(ValueError):
         embed_provenance(archive, bundle())
     assert archive.read_bytes() == original
     with zipfile.ZipFile(archive, "a") as output:
         output.writestr(BUNDLE_PATH, bundle().to_json())
-    with pytest.raises(ValueError, match="duplicate or case-colliding"):
+    with pytest.raises(ValueError):
         read_embedded_provenance(archive)
 
 
@@ -421,7 +422,7 @@ def test_crc_failure_during_embedding_keeps_original_bytes(language, archive):
 
 
 @pytest.mark.parametrize("language", ["python", "rust"])
-def test_default_current_verification_discovers_embedded_history(language, tmp_path):
+def test_explicit_time_verification_discovers_embedded_history(language, tmp_path):
     cli = command(language)
     data = ROOT / "test/data/provenance/history"
     archive = tmp_path / "current.mzpeak"
@@ -462,9 +463,12 @@ def test_default_current_verification_discovers_embedded_history(language, tmp_p
         data / "heads.json",
         "--policy",
         "ecdsa",
+        "--validation-time",
+        json.loads((data / "trust.json").read_bytes())["validation_time"],
     ]
     report = success(cli, *args)
-    assert report["accepted"] and report["verification"] == "current"
+    assert report["accepted"] and report["verification"] == "fixed-time"
+    assert report["time_source"] == "explicit"
     with zipfile.ZipFile(archive) as source:
         saved = source.read(BUNDLE_PATH)
     with zipfile.ZipFile(archive, "w") as output:
@@ -528,9 +532,12 @@ def test_move_only_archive_and_verify_historical_proof_across_languages(
         "historical-demo-v1",
         "--evidence-policy",
         DATA / "policy.json",
+        "--validation-time",
+        read("tsa-policy.json")["validation_time"],
     ]
     report = success(reader, *args)
     assert report["accepted"] and report["verification"] == "historical"
+    assert report["time_source"] == "explicit"
     assert len(report["report"]["stage_timestamps"]) == 2
     assert len(report["report"]["release_timestamps"]) == 1
     # Configuration still comes from the recipient, even with complete embedded certificates.
@@ -549,6 +556,90 @@ def test_move_only_archive_and_verify_historical_proof_across_languages(
         for name, content in files.items():
             output.writestr(name, content)
     assert invoke(reader, *args).returncode != 0
+
+
+def test_historical_current_clock_rejects_future_timestamp_despite_policy(
+    archive, tmp_path, monkeypatch, capsys
+):
+    from types import SimpleNamespace
+    from mzpeak import provenance_cli
+    from mzpeak.evidence import TsaPolicy, verify_timestamp
+
+    full = bundle()
+    embed_provenance(archive, full)
+    first = full.records[0]
+    evidence = full.stage_evidence[first.stage.manifest.stage_id]
+    timestamp = verify_timestamp(
+        first.envelope.canonical_bytes(),
+        bytes.fromhex(evidence.timestamp_response_hex),
+        bytes.fromhex(evidence.timestamp_query_hex),
+        TsaPolicy(**read("tsa-policy.json")),
+    )
+    assert timestamp.accepted
+    current = timestamp.trusted_time - 1
+    sampled = []
+
+    def now():
+        sampled.append(current)
+        return current
+
+    # Patch only this CLI's wall-clock source. The actual signature/timestamp
+    # validation still runs, and the policy file continues to contain a later date.
+    monkeypatch.setattr(
+        provenance_cli, "time", SimpleNamespace(time=now), raising=False
+    )
+    identities = write_json(
+        tmp_path / "identities.json",
+        {"acquisition": "instrument-1", "processing": "installation-1"},
+    )
+    publishers = write_json(
+        tmp_path / "publishers.json", {key: "publisher-1" for key in full.releases}
+    )
+    args = [
+        "verify",
+        archive,
+        "--trust",
+        DATA / "trust.json",
+        "--identities",
+        identities,
+        "--publishers",
+        publishers,
+        "--policy",
+        "ecdsa",
+        "--tsa-policy",
+        DATA / "tsa-policy.json",
+        "--evidence-policy-id",
+        "historical-demo-v1",
+        "--evidence-policy",
+        DATA / "policy.json",
+    ]
+    assert provenance_cli.main(list(map(str, args))) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert not report["accepted"] and report["verification"] == "historical"
+    assert report["validation_time"] == current and report["time_source"] == "current"
+    assert sampled == [current]
+    assert all(
+        value["status"] == "invalid"
+        for value in report["report"]["stage_timestamps"].values()
+    )
+    assert "future" in json.dumps(report["report"]["stage_timestamps"]).lower()
+
+    # An explicit fixed reference time is opt-in and is reported distinctly.
+    assert (
+        provenance_cli.main(
+            list(
+                map(
+                    str,
+                    args
+                    + ["--validation-time", read("tsa-policy.json")["validation_time"]],
+                )
+            )
+        )
+        == 0
+    )
+    fixed = json.loads(capsys.readouterr().out)
+    assert fixed["accepted"] and fixed["time_source"] == "explicit"
+    assert sampled == [current]
 
 
 def test_large_embedded_input_and_explicit_resource_budget(archive):

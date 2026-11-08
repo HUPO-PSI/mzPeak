@@ -43,11 +43,11 @@ python -m mzpeak.provenance_cli sign acquisition-stage.json acquisition-record.j
   --signers instrument-signers.json --policy ecdsa
 ```
 
-`capture` covers JSON metadata, the index, and complete Parquet files. Supported
-proof members are excluded; other reserved provenance names are rejected. Repeat
-`--select path` to capture just one processing stage's output inventory. The
-complete-history verifier checks the union of stage inventories and reports any
-other content as uncovered.
+`capture` covers JSON metadata, the index, and complete Parquet files. Only the
+exact proof members `provenance/bundle-v1.json` and `provenance.parquet` are excluded;
+other reserved provenance names are rejected. Repeat `--select path` to capture
+just one processing stage's output inventory. The complete-history verifier checks
+the union of stage inventories and reports any other content as uncovered.
 
 `init-acquisition` only constructs the stage object. Trust policy must explicitly
 authorize the certificate and instrument identity before verification accepts its
@@ -158,14 +158,21 @@ checks at an earlier date. For a reproducible test, explicitly pass
 `verification: "fixed-time"`, not `"current"`. Both modes report `validation_time`
 and `time_source` (`"current"` or `"explicit"`).
 
+Historical verification uses the same chosen time as its upper bound for timestamp
+`genTime`, ignoring any frozen `validation_time` in the TSA policy file. It keeps
+checking timestamp certificates and archived CRLs at the authenticated timestamp
+time, and data-signing certificates at that trusted time. This does not change the
+documented historical revocation policy or make a caller-selected time trusted
+timestamp evidence.
+
 The result is JSON with `accepted` and a structured `report` containing coverage,
 lineage, signature, certificate authorization/revocation and release results.
 Exit status is 0 for acceptance, 1 for a completed but unaccepted verification,
 and 2 for malformed input or an operational error. Errors are JSON on stderr.
 Missing `--heads` leaves `checkpoint_checked` false: internal consistency alone
 cannot detect removal of an entire final stage. The command performs current or
-explicit-time validation; RFC 3161 historical validation uses the separate
-`evidence` APIs, not a caller-chosen time asserted to be a trusted timestamp.
+explicit-time validation; the embedded historical mode additionally requires
+RFC 3161 evidence and all three external evidence-policy options.
 
 ## Reproduce the public interoperability fixture
 

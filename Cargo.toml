@@ -118,6 +118,9 @@ const-oid = { version = "0.9.6", optional = true, features = ["db"] }
 x509-cert = { version = "0.2.5", optional = true, default-features = false, features = ["pem"] }
 
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 clap = { version = "4.5.38", features = ["derive"] }
 test-log = { version = "0.2.19", features = ["unstable"] }

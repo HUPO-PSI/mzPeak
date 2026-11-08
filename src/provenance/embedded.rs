@@ -1,6 +1,6 @@
 //! Portable public proofs stored inside the ZIP. Trust policy stays external.
 use super::{
-    archive::{inventory, open_archive},
+    archive::{inventory, open_archive, open_archive_file},
     evidence::EvidenceBundle,
     manifest::{ManifestError, validate_digest},
     verification::{SignedRelease, SignedStage},
@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::{Read, Write},
+    io::{self, Read, Write},
     path::Path,
 };
 
@@ -29,6 +29,8 @@ pub enum EmbeddedError {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error("archive was replaced but parent directory synchronization failed: {0}")]
+    PostCommitSync(#[source] std::io::Error),
     #[error(transparent)]
     Zip(#[from] zip::result::ZipError),
 }
@@ -286,11 +288,19 @@ fn embed_with_budget(
     additions: &ProvenanceBundle,
     max_bytes: Option<u64>,
 ) -> Result<ProvenanceBundle, EmbeddedError> {
-    let initial = fs::symlink_metadata(path)?;
-    if initial.file_type().is_symlink() {
+    let initial_path = fs::symlink_metadata(path)?;
+    if initial_path.file_type().is_symlink() {
         return Err(invalid("refusing to rewrite through a symbolic link"));
     }
-    let mut archive = open_archive(path)?;
+    if !initial_path.is_file() {
+        return Err(invalid("archive must be a regular file"));
+    }
+    // Keep the actual source open until the identity check. Reopening the path
+    // independently for the reader would leave a gap between stat and reading.
+    let source = fs::File::open(path)?;
+    let initial = source.metadata()?;
+    let identity = file_identity(&source)?;
+    let mut archive = open_archive_file(source.try_clone()?)?;
     let bundle = read_bundle(&mut archive, max_bytes)?
         .unwrap_or_default()
         .merge(additions)?;
@@ -325,18 +335,94 @@ fn embed_with_budget(
         output.write_all(&encoded)?;
         output.finish()?;
     }
-    drop(archive); // Windows replacement requires the source handle closed.
-    temporary.as_file().sync_all()?;
+    drop(archive);
+    persist_archive(temporary, source, &identity, &initial, path, parent)?;
+    Ok(bundle)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct FileIdentity {
+    volume: u64,
+    id: u128,
+}
+
+#[cfg(unix)]
+fn file_identity(file: &fs::File) -> io::Result<FileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    Ok(FileIdentity {
+        volume: metadata.dev(),
+        id: metadata.ino().into(),
+    })
+}
+
+#[cfg(windows)]
+fn file_identity(file: &fs::File) -> io::Result<FileIdentity> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
+    };
+    let mut info = std::mem::MaybeUninit::<FILE_ID_INFO>::uninit();
+    // The live File owns this valid handle; the buffer has the exact requested
+    // layout/size and is read only after Windows reports successful completion.
+    let success = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileIdInfo,
+            info.as_mut_ptr().cast(),
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
+    if success == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let info = unsafe { info.assume_init() };
+    Ok(FileIdentity {
+        volume: info.VolumeSerialNumber,
+        id: u128::from_le_bytes(info.FileId.Identifier),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn file_identity(_file: &fs::File) -> io::Result<FileIdentity> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "archive file identity unavailable",
+    ))
+}
+
+fn persist_archive(
+    temporary: tempfile::NamedTempFile,
+    source: fs::File,
+    identity: &FileIdentity,
+    initial: &fs::Metadata,
+    path: &Path,
+    parent: &Path,
+) -> Result<(), EmbeddedError> {
     let current = fs::symlink_metadata(path)?;
     if current.file_type().is_symlink()
         || current.len() != initial.len()
         || current.modified()? != initial.modified()?
+        || file_identity(&fs::File::open(path)?)? != *identity
     {
         return Err(invalid("archive changed while embedding provenance"));
     }
+    // The handle keeps the original file ID live through the check. It must be
+    // closed before replacement on Windows. This check does not replace the
+    // documented exclusive-writer requirement.
+    drop(source);
     fs::set_permissions(temporary.path(), initial.permissions())?;
+    temporary.as_file().sync_all()?;
+    #[cfg(unix)]
+    let directory = fs::File::open(parent)?;
+    #[cfg(not(unix))]
+    let _ = parent; // Windows has no portable directory-fsync operation.
     temporary.persist(path).map_err(|error| error.error)?;
-    Ok(bundle)
+    #[cfg(unix)]
+    directory
+        .sync_all()
+        .map_err(EmbeddedError::PostCommitSync)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -379,6 +465,49 @@ mod tests {
         }
         zip.finish().unwrap();
     }
+
+    #[test]
+    fn replacement_with_identical_size_and_time_has_a_distinct_file_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.mzpeak");
+        let replacement = directory.path().join("replacement.mzpeak");
+        archive(&first);
+        fs::copy(&first, &replacement).unwrap();
+        let source = fs::File::open(&first).unwrap();
+        let initial = source.metadata().unwrap();
+        let other = fs::File::options().write(true).open(&replacement).unwrap();
+        other
+            .set_times(fs::FileTimes::new().set_modified(initial.modified().unwrap()))
+            .unwrap();
+        let other_metadata = other.metadata().unwrap();
+        assert_eq!(initial.len(), other_metadata.len());
+        assert_eq!(
+            initial.modified().unwrap(),
+            other_metadata.modified().unwrap()
+        );
+        let identity = file_identity(&source).unwrap();
+        assert_ne!(identity, file_identity(&other).unwrap());
+        drop(other);
+        let before = fs::read(&replacement).unwrap();
+        let mut temporary = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
+        temporary
+            .write_all(b"must not replace a different file")
+            .unwrap();
+        let temporary_path = temporary.path().to_path_buf();
+        let error = persist_archive(
+            temporary,
+            source,
+            &identity,
+            &initial,
+            &replacement,
+            directory.path(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("archive changed"));
+        assert_eq!(fs::read(replacement).unwrap(), before);
+        assert!(!temporary_path.exists());
+    }
+
     #[test]
     fn embedded_bundle_uses_zip64_local_header() {
         let temp = tempfile::tempdir().unwrap();

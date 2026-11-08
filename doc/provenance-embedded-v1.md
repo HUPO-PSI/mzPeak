@@ -58,22 +58,40 @@ use a temporary sibling ZIP, bounded content copying and atomic replacement.
 Measurement member names and decompressed bytes, including the original root
 index, remain unchanged. Rust preserves compressed member bytes; Python may
 recompress them. ZIP transport bytes are not the signed content identity.
-CRC/read/write failures abort and preserve the original archive. Updates require
-exclusive writer access and enough free space for a second archive; detected
-concurrent changes abort before replacement. Writing through a symlink is refused.
+Failures before replacement preserve the original archive. Updates require
+exclusive writer access and enough free space for a second archive. Both writers
+read and snapshot the same open source file, then compare file identity, size and
+modification time before replacement. Rust uses device/inode IDs on Unix and
+128-bit file IDs plus volume IDs on Windows; inability to obtain an identity is
+an error. These checks detect replacement even when size and timestamp match,
+but do not provide a writer lock. Writing through a symlink is refused.
+
+Writers synchronize the completed temporary file (including its permissions)
+before replacement. On POSIX/Unix they also synchronize the parent directory
+after replacement. A directory-sync failure explicitly reports that replacement
+already happened, with uncertain crash durability; callers must not interpret it
+as a rollback. Windows has no portable directory-fsync equivalent in these APIs,
+so the durability of the final name binding there remains OS/filesystem-dependent.
 
 The CLI's `verify archive.mzpeak` discovers the embedded member automatically.
 Missing, ambiguous or malformed embedded proof is an error. There is
 no implicit fallback to adjacent files or to an integrity-only success. An
 explicit records-file argument selects the older detached workflow instead.
-Unknown files elsewhere in the reserved provenance namespace are not measurement
-content and are not accepted as proof by this profile.
+Only the exact proof names `provenance/bundle-v1.json` and `provenance.parquet`
+are excluded from measurement coverage. Unknown files elsewhere in the reserved
+provenance namespace and case/directory aliases are rejected, rather than silently
+left unverified. Readers cannot assign proof storage a measurement role.
 
 Ordinary verification validates signatures, complete measurement coverage,
 lineage and current certificate eligibility. Historical verification additionally
 requires an independently selected TSA policy and the policy identifier/bytes
-bound by archived evidence. The CLI identifies its mode as `current` or
-`historical`; merely carrying a timestamp does not establish historical validity.
+bound by archived evidence. The CLI samples the wall clock once per verification;
+saved `validation_time` fields in policy files do not choose the time. Supplying
+`--validation-time UNIX_SECONDS` explicitly selects a fixed-time check, reported
+as `fixed-time` instead of `current`. Historical mode remains `historical` and
+reports its selected reference time. That reference time rejects future tokens;
+certificate/CRL checks for historical evidence still use authenticated token
+times. Merely carrying a timestamp does not establish historical validity.
 Publisher approvals need their own timestamp evidence, as before.
 
 Removing proofs makes default verification fail. Detecting replacement with an
