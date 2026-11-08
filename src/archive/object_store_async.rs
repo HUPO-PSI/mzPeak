@@ -702,38 +702,156 @@ mod test {
         Ok(())
     }
 
+    struct HttpTestServer<'a> {
+        child: &'a mut std::process::Child,
+        diagnostics: std::fs::File,
+    }
+
+    impl Drop for HttpTestServer<'_> {
+        fn drop(&mut self) {
+            // An early reader error must not leave a server holding the CI
+            // runner's output handles after the test process exits.
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            use std::io::{Read, Seek};
+            let mut diagnostic = String::new();
+            if self.diagnostics.rewind().is_ok()
+                && Read::take(&mut self.diagnostics, 4096)
+                    .read_to_string(&mut diagnostic)
+                    .is_ok()
+                && !diagnostic.is_empty()
+            {
+                eprintln!("HTTP test server: {diagnostic}");
+            }
+        }
+    }
+
+    impl HttpTestServer<'_> {
+        async fn wait_ready(
+            &mut self,
+            address: std::net::SocketAddr,
+            budget: std::time::Duration,
+        ) -> io::Result<()> {
+            tokio::time::timeout(budget, async {
+                loop {
+                    if let Some(status) = self.child.try_wait()? {
+                        return Err(io::Error::other(format!(
+                            "HTTP test server exited before listening: {status}"
+                        )));
+                    }
+                    if tokio::net::TcpStream::connect(address).await.is_ok() {
+                        return Ok(());
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "HTTP test server did not become ready",
+                )
+            })?
+        }
+    }
+
+    fn spawn_http_test_server()
+    -> io::Result<Option<(std::process::Child, std::net::SocketAddr, std::fs::File)>> {
+        let reservation = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+        let address = reservation.local_addr()?;
+        let diagnostics = tempfile::tempfile()?;
+        let mut command = std::process::Command::new("miniserve");
+        command
+            .args([
+                ".",
+                "--interfaces",
+                "127.0.0.1",
+                "--port",
+                &address.port().to_string(),
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::from(diagnostics.try_clone()?));
+        drop(reservation);
+        match command.spawn() {
+            Ok(child) => Ok(Some((child, address, diagnostics))),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                log::warn!("miniserve not installed, http client tests not run, {e}");
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    #[tokio::test]
+    async fn http_test_server_timeout_reaps_child() -> io::Result<()> {
+        let Some((mut child, address, diagnostics)) = spawn_http_test_server()? else {
+            return Ok(());
+        };
+        let result: io::Result<()> = async {
+            let mut server = HttpTestServer {
+                child: &mut child,
+                diagnostics,
+            };
+            server
+                .wait_ready(address, std::time::Duration::from_secs(60))
+                .await?;
+            // Port zero cannot be a listening endpoint. Exercise timeout and
+            // cleanup after the server really has started, on every platform.
+            server
+                .wait_ready(
+                    (std::net::Ipv4Addr::LOCALHOST, 0).into(),
+                    std::time::Duration::from_millis(100),
+                )
+                .await
+        }
+        .await;
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert!(
+            child.try_wait()?.is_some(),
+            "server outlived the failed test operation"
+        );
+        Ok(())
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[test_log::test]
     async fn test_local_opendal() -> io::Result<()> {
-        let mut cmd = match std::process::Command::new("miniserve").args([ ".", "--port", "8030"]).spawn() {
-            Ok(cmd) => cmd,
-            Err(e) => {
-                log::warn!("miniserve not installed, http client tests not run, {e}");
-                return Ok(())
-            }
+        let Some((mut child, address, diagnostics)) = spawn_http_test_server()? else {
+            return Ok(());
         };
-        let handle = AsyncArchiveReader::<AsyncZipArchiveSource>::from_url("http://127.0.0.1:8030/small.mzpeak").await?;
-        let handle  = handle.archive;
-        // let op = opendal::Operator::from_uri("http://127.0.0.1:8030/").unwrap();
-        // let store = Arc::new(object_store_opendal::OpendalStore::new(op));
-        // let handle = AsyncZipArchiveSource::new(store, "/small.mzpeak".into()).await?;
+        let mut server = HttpTestServer {
+            child: &mut child,
+            diagnostics,
+        };
+        server
+            .wait_ready(address, std::time::Duration::from_secs(60))
+            .await?;
+        tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            let handle = AsyncArchiveReader::<AsyncZipArchiveSource>::from_url(format!(
+                "http://{address}/small.mzpeak"
+            ))
+            .await?;
+            let handle = handle.archive;
 
-        for (i, f) in handle.file_names().iter().enumerate() {
-            if f.ends_with(MzPeakArchiveType::SpectrumMetadata.tag_file_suffix()) {
-                let dataset = handle.read_index(i, None).await?;
-                let meta = dataset.metadata();
-                let kv_data = meta.file_metadata().key_value_metadata().unwrap();
-                assert!(!kv_data.is_empty())
+            for (i, f) in handle.file_names().iter().enumerate() {
+                if f.ends_with(MzPeakArchiveType::SpectrumMetadata.tag_file_suffix()) {
+                    let dataset = handle.read_index(i, None).await?;
+                    let meta = dataset.metadata();
+                    let kv_data = meta.file_metadata().key_value_metadata().unwrap();
+                    assert!(!kv_data.is_empty())
+                }
             }
-        }
 
-        assert_eq!(handle.file_index().len(), 10);
+            assert_eq!(handle.file_index().len(), 10);
 
-        let mut buf = String::new();
-        let mut reader = handle.open_stream("mzpeak_index.json").await?;
-        reader.read_to_string(&mut buf).await?;
-        assert!(buf.len() > 0);
-        cmd.kill()?;
-        Ok(())
+            let mut buf = String::new();
+            let mut reader = handle.open_stream("mzpeak_index.json").await?;
+            reader.read_to_string(&mut buf).await?;
+            assert!(buf.len() > 0);
+            Ok(())
+        })
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "HTTP archive test timed out"))?
     }
 }
