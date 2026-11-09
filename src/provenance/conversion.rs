@@ -240,7 +240,10 @@ fn linked(metadata: &fs::Metadata) -> bool {
 #[cfg(unix)]
 fn same_file(a: &fs::Metadata, b: &fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
-    a.dev() == b.dev() && a.ino() == b.ino()
+    a.dev() == b.dev()
+        && a.ino() == b.ino()
+        && a.ctime() == b.ctime()
+        && a.ctime_nsec() == b.ctime_nsec()
 }
 #[cfg(not(unix))]
 fn same_file(a: &fs::Metadata, b: &fs::Metadata) -> bool {
@@ -312,12 +315,14 @@ fn matches_snapshot(
     let file = fs::File::open(path)?;
     let opened = file.metadata()?;
     Ok(file_identity(&file)? == identity
+        && same_file(before, &opened)
         && opened.len() == before.len()
         && opened.modified()? == before.modified()?)
 }
 fn hash_file(
     name: String,
     path: &Path,
+    after_read: &mut impl FnMut(&Path),
 ) -> Result<(SourceFile, fs::Metadata, FileIdentity), ManifestError> {
     let before = fs::symlink_metadata(path)?;
     if !before.is_file() || linked(&before) {
@@ -348,12 +353,14 @@ fn hash_file(
             .checked_add(count as u64)
             .ok_or_else(|| invalid("source length overflow"))?;
         hash.update(&buffer[..count]);
+        after_read(path);
     }
     let after = fs::symlink_metadata(path)?;
     let retained = file.metadata()?;
     if !after.is_file()
         || linked(&after)
         || !same_file(&opened, &after)
+        || !same_file(&opened, &retained)
         || read != opened.len()
         || after.len() != opened.len()
         || retained.len() != opened.len()
@@ -374,11 +381,19 @@ fn hash_file(
     ))
 }
 fn capture_files(path: &Path) -> Result<Vec<SourceFile>, ManifestError> {
+    capture_files_with_read_observer(path, &mut |_| {})
+}
+// The no-op observer above optimizes away; tests can deterministically rewrite
+// a source during hashing without depending on concurrent filesystem timing.
+fn capture_files_with_read_observer(
+    path: &Path,
+    after_read: &mut impl FnMut(&Path),
+) -> Result<Vec<SourceFile>, ManifestError> {
     let paths = inventory(path)?;
     let mut files = Vec::new();
     let mut snapshots = Vec::new();
     for (name, full) in &paths {
-        let (file, metadata, identity) = hash_file(name.clone(), full)?;
+        let (file, metadata, identity) = hash_file(name.clone(), full, after_read)?;
         files.push(file);
         snapshots.push((full, metadata, identity));
     }
@@ -476,6 +491,85 @@ mod tests {
         assert_ne!(identity, file_identity(&other).unwrap());
         assert!(!matches_snapshot(&replacement, &metadata, identity).unwrap());
         assert!(matches_snapshot(&original, &metadata, identity).unwrap());
+    }
+
+    #[cfg(unix)]
+    fn rewrite_preserving_size_mtime_and_identity(path: &Path, before: &fs::Metadata) {
+        use std::os::unix::fs::MetadataExt;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            fs::write(path, b"new").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(before.modified().unwrap()))
+                .unwrap();
+            let after = fs::symlink_metadata(path).unwrap();
+            assert_eq!(after.len(), before.len());
+            assert_eq!(after.modified().unwrap(), before.modified().unwrap());
+            assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
+            if (after.ctime(), after.ctime_nsec()) != (before.ctime(), before.ctime_nsec()) {
+                break;
+            }
+            // Accommodate coarse filesystem timestamps without a racing writer.
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_rewrite_during_hash_is_rejected_with_restored_mtime() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("source.raw");
+        fs::write(&path, b"raw").unwrap();
+        let opened = fs::File::open(&path).unwrap();
+        let before = opened.metadata().unwrap();
+        let identity = file_identity(&opened).unwrap();
+        let mut rewritten = false;
+        let result = capture_files_with_read_observer(&path, &mut |_| {
+            if !rewritten {
+                rewrite_preserving_size_mtime_and_identity(&path, &before);
+                rewritten = true;
+            }
+        });
+        assert!(rewritten);
+        assert!(
+            result.is_err(),
+            "accepted a source rewritten during its hash"
+        );
+        assert!(!same_file(&before, &opened.metadata().unwrap()));
+        assert!(!matches_snapshot(&path, &before, identity).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn earlier_source_rewrite_during_later_hash_is_rejected_with_restored_mtime() {
+        let directory = tempfile::tempdir().unwrap();
+        let earlier = directory.path().join("a.raw");
+        let later = directory.path().join("b.raw");
+        fs::write(&earlier, b"raw").unwrap();
+        fs::write(&later, b"raw").unwrap();
+        let expected = capture_source(directory.path(), "vendor.raw").unwrap();
+        let opened = fs::File::open(&earlier).unwrap();
+        let before = opened.metadata().unwrap();
+        let identity = file_identity(&opened).unwrap();
+        let mut rewritten = false;
+        let result = capture_files_with_read_observer(directory.path(), &mut |path| {
+            if path == later && !rewritten {
+                rewrite_preserving_size_mtime_and_identity(&earlier, &before);
+                rewritten = true;
+            }
+        });
+        assert!(rewritten);
+        assert!(result.is_err(), "accepted an earlier source's stale digest");
+        assert!(!same_file(&before, &opened.metadata().unwrap()));
+        assert!(!matches_snapshot(&earlier, &before, identity).unwrap());
+        let actual = capture_source(directory.path(), "vendor.raw").unwrap();
+        assert_ne!(actual.files[0].sha256, expected.files[0].sha256);
+        let report = verify_source(directory.path(), &expected).unwrap();
+        assert_eq!(report.changed, ["a.raw"]);
     }
 
     #[test]
