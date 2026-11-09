@@ -12,6 +12,7 @@ use std::{
 use clap::{Parser, Subcommand};
 use mzpeak_prototyping::provenance::{
     archive::capture_archive,
+    conversion::{ConversionClaim, SourceManifest, VendorVerification, capture_source},
     embedded::{ProvenanceBundle, embed_provenance, read_embedded_provenance},
     evidence::TsaPolicy,
     historical::{HistoricalPolicy, verify_historical_archive_history},
@@ -19,10 +20,11 @@ use mzpeak_prototyping::provenance::{
     signing::{
         Algorithm, KeyProvider, OpenSslBackend, SignatureEnvelope, SignaturePolicy, SigningIdentity,
     },
-    stages::{Stage, StageKind},
+    stages::{SoftwareIdentity, Stage, StageKind},
     trust::TrustPolicy,
     verification::{
-        HistoryPolicy, ReleaseStatement, SignedRelease, SignedStage, verify_archive_history,
+        ConversionPolicy, HistoryPolicy, ReleaseStatement, SignedRelease, SignedStage,
+        verify_archive_history,
     },
 };
 use serde::{
@@ -81,6 +83,26 @@ enum Commands {
     },
     /// Wrap a manifest as an acquisition stage, without asserting trust.
     InitAcquisition { manifest: PathBuf, output: PathBuf },
+    /// Hash an external RAW file or directory without adding it to archive coverage.
+    CaptureSource {
+        source: PathBuf,
+        output: PathBuf,
+        #[arg(long)]
+        format: String,
+    },
+    /// Bind vendor verification of an external source to converted mzPeak outputs.
+    InitConversion {
+        manifest: PathBuf,
+        source: PathBuf,
+        output: PathBuf,
+        #[arg(long)]
+        vendor_verification: PathBuf,
+        #[arg(long)]
+        software: PathBuf,
+        /// Claimed acquisition time; never used as certificate validation time.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(0..=9007199254740991))]
+        claimed_acquisition_time: Option<u64>,
+    },
     /// Sign a stage with one or both configured algorithms.
     Sign {
         input: PathBuf,
@@ -115,6 +137,9 @@ enum Commands {
         releases: Option<PathBuf>,
         #[arg(long)]
         publishers: Option<PathBuf>,
+        /// External vendor-verification grants and optional caller-supplied RAW paths.
+        #[arg(long)]
+        conversion_policy: Option<PathBuf>,
         /// Explicit fixed Unix second; by default use the current clock once.
         #[arg(long, value_parser = clap::value_parser!(i64).range(0..))]
         validation_time: Option<i64>,
@@ -229,6 +254,21 @@ fn write_new<T: Serialize>(path: &Path, item: &T) -> CliResult<()> {
         .open(path)?;
     file.write_all(&encoded)?;
     Ok(())
+}
+
+fn load_conversion_policy(path: &Path) -> CliResult<ConversionPolicy> {
+    let mut policy: ConversionPolicy = read_json(path)?;
+    let base = path.parent().unwrap_or_else(|| Path::new("."));
+    for source in policy.sources.values_mut() {
+        if source.as_os_str().is_empty() {
+            return Err("RAW source path must be nonempty".into());
+        }
+        if source.is_relative() {
+            *source = base.join(&*source);
+        }
+    }
+    policy.validate()?;
+    Ok(policy)
 }
 
 fn required_option<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
@@ -368,6 +408,7 @@ fn run(cli: Cli) -> CliResult<bool> {
                 parents: vec![],
                 inputs: vec![],
                 software: None,
+                conversion: None,
             };
             let envelope = backend.sign(
                 &stage.canonical_bytes()?,
@@ -442,6 +483,47 @@ fn run(cli: Cli) -> CliResult<bool> {
                 parents: vec![],
                 inputs: vec![],
                 software: None,
+                conversion: None,
+            };
+            stage.validate()?;
+            write_new(&output, &stage)?;
+            println!(
+                "{}",
+                serde_json::json!({"output":output,"stage_sha256":stage.digest()?})
+            );
+        }
+        Commands::CaptureSource {
+            source,
+            output,
+            format,
+        } => {
+            let source = capture_source(source, &format)?;
+            write_new(&output, &source)?;
+            println!(
+                "{}",
+                serde_json::json!({"output":output,"source_sha256":source.digest()?})
+            );
+        }
+        Commands::InitConversion {
+            manifest,
+            source,
+            output,
+            vendor_verification,
+            software,
+            claimed_acquisition_time,
+        } => {
+            let stage = Stage {
+                version: 2,
+                kind: StageKind::Conversion,
+                manifest: read_json(manifest)?,
+                parents: vec![],
+                inputs: vec![],
+                software: Some(read_json::<SoftwareIdentity>(software)?),
+                conversion: Some(ConversionClaim {
+                    source: read_json::<SourceManifest>(source)?,
+                    verification: read_json::<VendorVerification>(vendor_verification)?,
+                    claimed_acquisition_time,
+                }),
             };
             stage.validate()?;
             write_new(&output, &stage)?;
@@ -525,6 +607,7 @@ fn run(cli: Cli) -> CliResult<bool> {
             identities,
             releases,
             publishers,
+            conversion_policy,
             validation_time,
             tsa_policy,
             evidence_policy_id,
@@ -562,6 +645,9 @@ fn run(cli: Cli) -> CliResult<bool> {
             let identities = string_map(Some(&identities))?;
             let publishers = string_map(publishers.as_deref())?;
             let heads: Option<Vec<String>> = heads.map(read_json).transpose()?;
+            let conversion_policy = conversion_policy
+                .map(|path| load_conversion_policy(&path))
+                .transpose()?;
             let releases: BTreeMap<String, SignedRelease> = match &bundle {
                 Some(bundle) => bundle.releases.clone(),
                 None => releases.map(read_json).transpose()?.unwrap_or_default(),
@@ -577,6 +663,7 @@ fn run(cli: Cli) -> CliResult<bool> {
                 identities: &identities,
                 publishers: &publishers,
                 expected_heads: heads.as_deref(),
+                conversion: conversion_policy.as_ref(),
             };
             if tsa_policy.is_some() || evidence_policy_id.is_some() || evidence_policy.is_some() {
                 let (Some(tsa_path), Some(policy_id), Some(policy_path), Some(bundle)) =

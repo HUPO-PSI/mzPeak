@@ -5,7 +5,6 @@ use super::{
     },
     manifest::ManifestError,
     signing::{OpenSslBackend, SignatureEnvelope},
-    stages::StageKind,
     trust::{CertificateReport, CheckStatus, SignerRole},
     verification::{
         HistoryError, HistoryPolicy, HistoryReport, SignedRelease, SignedStage,
@@ -153,11 +152,7 @@ fn historical(
             stage_report.certificates.clear();
             continue;
         };
-        let role = if stage.kind == StageKind::Acquisition {
-            SignerRole::Acquisition
-        } else {
-            SignerRole::Processing
-        };
+        let role = SignerRole::for_stage_kind(&stage.kind);
         let (stamp, certs) = bound_signers(
             &stage.canonical_bytes()?,
             &record.envelope,
@@ -314,6 +309,7 @@ mod tests {
                 identities: &identities,
                 publishers: &publishers,
                 expected_heads: Some(&self.heads),
+                conversion: None,
             };
             let policy_bytes = read("policy.json");
             let evidence = HistoricalPolicy {
@@ -373,6 +369,7 @@ mod tests {
             identities: &identities,
             publishers: &publishers,
             expected_heads: Some(&fixture.heads),
+            conversion: None,
         };
         assert!(
             !verify_history(

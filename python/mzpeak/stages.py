@@ -10,6 +10,8 @@ from dataclasses import dataclass
 import hashlib
 from typing import Iterable, Optional
 
+from .conversion import ConversionClaim
+
 from .manifest import (
     Manifest,
     _canonical_json,
@@ -96,12 +98,22 @@ class Stage:
     inputs: tuple[InputReference, ...] = ()
     software: Optional[SoftwareIdentity] = None
     version: int = 1
+    conversion: Optional[ConversionClaim] = None
 
     def validate(self):
-        if type(self.version) is not int or self.version != 1:
+        if type(self.version) is not int or self.version not in (1, 2):
             raise ValueError("unsupported stage version")
         self.manifest.validate()
-        if self.kind not in ("acquisition", "processing"):
+        if self.version == 1 and (
+            self.kind not in ("acquisition", "processing")
+            or self.conversion is not None
+        ):
+            raise ValueError(
+                "version 1 supports acquisition/processing without conversion"
+            )
+        if self.version == 2 and (self.kind != "conversion" or self.conversion is None):
+            raise ValueError("version 2 requires a conversion claim")
+        if self.kind not in ("acquisition", "processing", "conversion"):
             raise ValueError("unsupported stage kind")
         for parent in self.parents:
             _digest(parent, "parent")
@@ -119,19 +131,33 @@ class Stage:
         if self.kind == "acquisition":
             if self.parents or self.inputs:
                 raise ValueError("an acquisition cannot claim parent processing stages")
-        else:
+        elif self.kind == "processing":
             if not self.parents or not self.inputs or self.software is None:
                 raise ValueError(
                     "processing requires parents, exact inputs and a software identity"
                 )
             if used_parents != set(self.parents):
                 raise ValueError("inputs must reference every and only declared parent")
+        else:
+            if self.parents or self.inputs or self.software is None:
+                raise ValueError(
+                    "conversion requires external source, software, and no internal parents or inputs"
+                )
+            self.conversion.validate()
+            report = self.conversion.verification.report
+            if report is not None and not any(
+                f.path == report.path and f.sha256 == report.sha256
+                for f in self.manifest.files
+            ):
+                raise ValueError(
+                    "vendor report is not covered by this conversion stage"
+                )
         if self.software is not None:
             self.software.validate()
 
     def to_dict(self):
         self.validate()
-        return {
+        value = {
             "version": self.version,
             "kind": self.kind,
             "manifest": self.manifest.to_dict(),
@@ -142,6 +168,9 @@ class Stage:
             ],
             "software": None if self.software is None else self.software.to_dict(),
         }
+        if self.version == 2:
+            value["conversion"] = self.conversion.to_dict()
+        return value
 
     def canonical_bytes(self):
         return _canonical_json(self.to_dict())
@@ -151,7 +180,14 @@ class Stage:
 
     @classmethod
     def from_dict(cls, value):
-        _keys(value, ("version", "kind", "manifest", "parents", "inputs", "software"))
+        if not isinstance(value, dict) or type(value.get("version")) is not int:
+            raise ValueError("unsupported stage version")
+        fields = ("version", "kind", "manifest", "parents", "inputs", "software")
+        if value["version"] == 2:
+            fields += ("conversion",)
+        elif value["version"] != 1:
+            raise ValueError("unsupported stage version")
+        _keys(value, fields)
         if not isinstance(value["parents"], list) or not isinstance(
             value["inputs"], list
         ):
@@ -165,6 +201,9 @@ class Stage:
             if value["software"] is None
             else SoftwareIdentity.from_dict(value["software"]),
             value["version"],
+            ConversionClaim.from_dict(value["conversion"])
+            if value["version"] == 2
+            else None,
         )
         item.validate()
         return item
@@ -180,6 +219,7 @@ class LineageReport:
     acquisitions: tuple[str, ...]
     stage_count: int
     checkpoint_checked: bool
+    conversions: tuple[str, ...] = ()
 
 
 def verify_lineage(
@@ -215,9 +255,12 @@ def verify_lineage(
         raise ValueError("empty lineage")
     referenced = set()
     acquisitions = []
+    conversions = []
     for digest, stage in records.items():
         if stage.kind == "acquisition":
             acquisitions.append(digest)
+        elif stage.kind == "conversion":
+            conversions.append(digest)
         for parent in stage.parents:
             if parent not in records:
                 raise ValueError("missing parent stage")
@@ -251,8 +294,8 @@ def verify_lineage(
     if visited != len(records):
         raise ValueError("cyclic lineage")
     heads = tuple(sorted(set(records) - referenced))
-    if not acquisitions:
-        raise ValueError("lineage contains no acquisition stage")
+    if not acquisitions and not conversions:
+        raise ValueError("lineage contains no acquisition or conversion root")
     if expected_heads is not None:
         expected = tuple(expected_heads)
         for digest in expected:
@@ -264,5 +307,9 @@ def verify_lineage(
         ):
             raise ValueError("lineage does not match the external head checkpoint")
     return LineageReport(
-        heads, tuple(sorted(acquisitions)), len(records), expected_heads is not None
+        heads,
+        tuple(sorted(acquisitions)),
+        len(records),
+        expected_heads is not None,
+        tuple(sorted(conversions)),
     )

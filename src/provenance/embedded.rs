@@ -668,6 +668,7 @@ mod tests {
             identities: &identities,
             publishers: &publishers,
             expected_heads: Some(&heads),
+            conversion: None,
         };
         let historical = HistoricalPolicy {
             tsa: &tsa,

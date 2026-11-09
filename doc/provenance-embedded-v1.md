@@ -36,7 +36,9 @@ They are deployment resource controls, not format validity rules. Default APIs
 and CLIs have no fixed aggregate ceiling and materialize the bundle in memory;
 untrusted-input services should select a budget appropriate to their workload.
 
-Stage, release and evidence formats are unchanged. Signatures use the version-2
+The carrier supports existing v1 stages and the versioned
+[v2 vendor-conversion extension](provenance-vendor-conversion-v2.md); releases and
+evidence retain their existing formats. Signatures use the version-2
 CMS envelope specified in `provenance-signing-v1.md`; the bundle remains version 1.
 Complete detached CMS objects and certificate chains live in the signature envelopes; archived certificates, CRLs
 and RFC 3161 responses/requests live in evidence bundles. Private keys, HSM access

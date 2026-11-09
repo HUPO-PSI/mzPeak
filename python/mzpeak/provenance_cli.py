@@ -15,6 +15,12 @@ import time
 
 from .manifest import Manifest, _keys, _load_json
 from .provenance_archive import capture_archive
+from .conversion import (
+    ConversionClaim,
+    SourceManifest,
+    VendorVerification,
+    capture_source,
+)
 from .embedded import ProvenanceBundle, embed_provenance, read_embedded_provenance
 from .evidence import EvidenceBundle, TsaPolicy
 from .historical import verify_historical_archive_history
@@ -27,9 +33,10 @@ from .signing import (
     SigningIdentity,
     SoftwareKey,
 )
-from .stages import Stage
+from .stages import SoftwareIdentity, Stage
 from .trust import Authorization, SignerRole, TrustPolicy
 from .verification import (
+    ConversionPolicy,
     ReleaseStatement,
     SignedRelease,
     SignedStage,
@@ -130,6 +137,30 @@ def _unix_second(value):
             "expected a nonnegative signed-64-bit Unix second"
         )
     return parsed
+
+
+def _claimed_second(value):
+    parsed = _unix_second(value)
+    if parsed > 2**53 - 1:
+        raise argparse.ArgumentTypeError("claimed acquisition time exceeds 2^53-1")
+    return parsed
+
+
+def _conversion_policy(path):
+    if path is None:
+        return None
+    policy = ConversionPolicy.from_dict(_json(path))
+    base = Path(path).parent
+    sources = {}
+    for stage_id, source in policy.sources.items():
+        if not str(source):
+            raise ValueError("RAW source path must be nonempty")
+        source = Path(source)
+        sources[stage_id] = source if source.is_absolute() else base / source
+    # Policy objects may be frozen, so rebuild rather than mutating fields.
+    return ConversionPolicy(
+        policy.allowed_verifications, policy.require_source_bytes, sources
+    )
 
 
 def _policy_at(path, validation_time):
@@ -287,6 +318,21 @@ def parser():
     )
     acquisition.add_argument("manifest")
     acquisition.add_argument("output")
+    source = sub.add_parser(
+        "capture-source", help="hash an external RAW file or directory"
+    )
+    source.add_argument("source")
+    source.add_argument("output")
+    source.add_argument("--format", required=True)
+    conversion = sub.add_parser(
+        "init-conversion", help="bind vendor source verification to mzPeak outputs"
+    )
+    conversion.add_argument("manifest")
+    conversion.add_argument("source")
+    conversion.add_argument("output")
+    conversion.add_argument("--vendor-verification", required=True)
+    conversion.add_argument("--software", required=True)
+    conversion.add_argument("--claimed-acquisition-time", type=_claimed_second)
     for name in ("sign", "sign-release"):
         command = sub.add_parser(
             name,
@@ -321,6 +367,10 @@ def parser():
     verify.add_argument("--identities", required=True)
     verify.add_argument("--releases")
     verify.add_argument("--publishers")
+    verify.add_argument(
+        "--conversion-policy",
+        help="external vendor-verification grants and caller-supplied RAW paths",
+    )
     verify.add_argument(
         "--validation-time",
         type=_unix_second,
@@ -404,6 +454,24 @@ def main(argv=None):
             print(
                 json.dumps({"output": str(args.output), "stage_sha256": stage.digest()})
             )
+        elif args.command == "capture-source":
+            source = capture_source(args.source, args.format)
+            _write(args.output, source.to_dict())
+            print(json.dumps({"output": args.output, "source_sha256": source.digest()}))
+        elif args.command == "init-conversion":
+            stage = Stage(
+                Manifest.from_bytes(_read(args.manifest)),
+                "conversion",
+                software=SoftwareIdentity.from_dict(_json(args.software)),
+                version=2,
+                conversion=ConversionClaim(
+                    SourceManifest.from_dict(_json(args.source)),
+                    VendorVerification.from_dict(_json(args.vendor_verification)),
+                    args.claimed_acquisition_time,
+                ),
+            )
+            _write(args.output, stage.to_dict())
+            print(json.dumps({"output": args.output, "stage_sha256": stage.digest()}))
         elif args.command in ("sign", "sign-release"):
             if bool(args.output) == bool(args.archive):
                 raise ValueError(
@@ -498,6 +566,7 @@ def main(argv=None):
                 releases=releases,
                 publishers=_string_map(args.publishers),
                 expected_heads=heads,
+                conversion_policy=_conversion_policy(args.conversion_policy),
                 backend=backend,
                 **extra,
             )

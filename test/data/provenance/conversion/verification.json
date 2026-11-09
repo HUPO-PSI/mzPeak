@@ -1,0 +1,12 @@
+{
+  "vendor": "vendor-1",
+  "method": "vendor-integrity-v1",
+  "verifier_name": "Vendor Verifier",
+  "verifier_version": "1.0",
+  "source_sha256": "b44f4ab459237e91e3c2c5a836419b683560badb49407b8fc9b39778bbeadee7",
+  "result": "passed",
+  "report": {
+    "path": "validation/vendor-report.json",
+    "sha256": "bf1e28504c87845d9320697f94dd9235eb65752b75bc480c9ee8151d871de918"
+  }
+}

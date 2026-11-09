@@ -11,6 +11,171 @@ use super::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VendorVerificationGrant {
+    pub vendor: String,
+    pub format: String,
+    pub method: String,
+    pub verifier_name: String,
+    pub verifier_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConversionPolicy {
+    pub allowed_verifications: Vec<VendorVerificationGrant>,
+    pub require_source_bytes: bool,
+    #[serde(deserialize_with = "unique_sources")]
+    pub sources: BTreeMap<String, PathBuf>,
+}
+fn unique_sources<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, PathBuf>, D::Error> {
+    struct Unique;
+    impl<'de> serde::de::Visitor<'de> for Unique {
+        type Value = BTreeMap<String, PathBuf>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("unique source stage IDs")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut sources = BTreeMap::new();
+            while let Some((key, value)) = map.next_entry::<String, PathBuf>()? {
+                if sources.insert(key, value).is_some() {
+                    return Err(serde::de::Error::custom("duplicate source stage ID"));
+                }
+            }
+            Ok(sources)
+        }
+    }
+    deserializer.deserialize_map(Unique)
+}
+impl ConversionPolicy {
+    pub fn validate(&self) -> Result<(), ManifestError> {
+        let mut unique = std::collections::BTreeSet::new();
+        for grant in &self.allowed_verifications {
+            for (value, label) in [
+                (&grant.vendor, "vendor"),
+                (&grant.format, "source format"),
+                (&grant.method, "verification method"),
+                (&grant.verifier_name, "verifier name"),
+                (&grant.verifier_version, "verifier version"),
+            ] {
+                super::conversion::text(value, label)?;
+            }
+            if !unique.insert((
+                &grant.vendor,
+                &grant.format,
+                &grant.method,
+                &grant.verifier_name,
+                &grant.verifier_version,
+            )) {
+                return Err(ManifestError::Invalid(
+                    "duplicate vendor verification grant".into(),
+                ));
+            }
+        }
+        for (stage, path) in &self.sources {
+            super::manifest::validate_identifier(stage, "source stage ID")?;
+            if path
+                .to_str()
+                .is_none_or(|value| value.is_empty() || value.contains('\0'))
+            {
+                return Err(ManifestError::Invalid("empty local source path".into()));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversionReport {
+    pub vendor_attestation: CheckStatus,
+    pub source_integrity: CheckStatus,
+    pub source_required: bool,
+    pub source_manifest_sha256: String,
+    pub claimed_acquisition_time: Option<u64>,
+    pub details: Vec<String>,
+}
+impl ConversionReport {
+    pub fn accepted(&self) -> bool {
+        self.vendor_attestation == CheckStatus::Valid
+            && (self.source_integrity == CheckStatus::Valid
+                || self.source_integrity == CheckStatus::Unknown && !self.source_required)
+    }
+}
+
+fn conversion_report(
+    stage: &Stage,
+    identity: Option<&str>,
+    policy: Option<&ConversionPolicy>,
+    check_source: bool,
+) -> Result<ConversionReport, ManifestError> {
+    let claim = stage
+        .conversion
+        .as_ref()
+        .ok_or_else(|| ManifestError::Invalid("conversion claim missing".into()))?;
+    let mut report = ConversionReport {
+        vendor_attestation: CheckStatus::Invalid,
+        source_integrity: CheckStatus::Unknown,
+        source_required: policy.is_some_and(|p| p.require_source_bytes),
+        source_manifest_sha256: claim.source.digest()?,
+        claimed_acquisition_time: claim.claimed_acquisition_time,
+        details: vec![],
+    };
+    let Some(policy) = policy else {
+        report
+            .details
+            .push("vendor conversion is not enabled by recipient policy".into());
+        return Ok(report);
+    };
+    let verification = &claim.verification;
+    let allowed = policy.allowed_verifications.iter().any(|grant| {
+        grant.vendor == verification.vendor
+            && grant.format == claim.source.format
+            && grant.method == verification.method
+            && grant.verifier_name == verification.verifier_name
+            && grant.verifier_version == verification.verifier_version
+    });
+    if identity == Some(verification.vendor.as_str())
+        && allowed
+        && verification.result == super::conversion::VerificationResult::Passed
+        && check_source
+    {
+        report.vendor_attestation = CheckStatus::Valid;
+    } else {
+        report.details.push("vendor identity, verification method, result or cryptographic stage signature did not qualify".into());
+    }
+    if !check_source {
+        return Ok(report);
+    }
+    match policy.sources.get(&stage.manifest.stage_id) {
+        None => report
+            .details
+            .push("original RAW source bytes were not supplied for independent checking".into()),
+        Some(path) => match super::conversion::verify_source(path, &claim.source) {
+            Ok(coverage) if coverage.complete() => report.source_integrity = CheckStatus::Valid,
+            Ok(_) => {
+                report.source_integrity = CheckStatus::Invalid;
+                report
+                    .details
+                    .push("source inventory differs from supplied RAW bytes".into());
+            }
+            Err(error) => {
+                report.source_integrity = CheckStatus::Invalid;
+                report.details.push(format!(
+                    "supplied RAW source could not be verified: {error}"
+                ));
+            }
+        },
+    }
+    Ok(report)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -51,6 +216,8 @@ pub struct SignedStage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StageReport {
     pub stage_id: String,
+    pub kind: StageKind,
+    pub conversion: Option<ConversionReport>,
     pub signature: CheckStatus,
     pub certificates: Vec<CertificateReport>,
     pub software_release: Option<CheckStatus>,
@@ -65,6 +232,11 @@ impl StageReport {
             && self
                 .software_release
                 .is_none_or(|s| s == CheckStatus::Valid)
+            && self
+                .conversion
+                .as_ref()
+                .is_none_or(ConversionReport::accepted)
+            && (self.kind != StageKind::Conversion || self.conversion.is_some())
     }
 }
 #[derive(Debug, Clone, Serialize)]
@@ -87,6 +259,7 @@ pub struct HistoryPolicy<'a> {
     pub identities: &'a BTreeMap<String, String>,
     pub publishers: &'a BTreeMap<String, String>,
     pub expected_heads: Option<&'a [String]>,
+    pub conversion: Option<&'a ConversionPolicy>,
 }
 #[derive(Debug, thiserror::Error)]
 pub enum HistoryError {
@@ -136,6 +309,12 @@ fn check_stages(
         let stage = &record.stage;
         let mut report = StageReport {
             stage_id: stage.manifest.stage_id.clone(),
+            kind: stage.kind.clone(),
+            conversion: if stage.kind == StageKind::Conversion {
+                Some(conversion_report(stage, None, policy.conversion, false)?)
+            } else {
+                None
+            },
             signature: CheckStatus::Invalid,
             certificates: vec![],
             software_release: None,
@@ -166,11 +345,15 @@ fn check_stages(
             }
         };
         report.signature = CheckStatus::Valid;
-        let role = if stage.kind == StageKind::Acquisition {
-            SignerRole::Acquisition
-        } else {
-            SignerRole::Processing
-        };
+        if stage.kind == StageKind::Conversion {
+            report.conversion = Some(conversion_report(
+                stage,
+                Some(identity),
+                policy.conversion,
+                true,
+            )?);
+        }
+        let role = SignerRole::for_stage_kind(&stage.kind);
         for signer in signers {
             report.certificates.push(verify_certificate_with(
                 &backend.executable,
@@ -227,6 +410,25 @@ fn check_stages(
     Ok(reports)
 }
 
+fn validate_conversion_sources(
+    records: &[SignedStage],
+    policy: &HistoryPolicy<'_>,
+) -> Result<(), ManifestError> {
+    if let Some(conversion) = policy.conversion {
+        conversion.validate()?;
+        for key in conversion.sources.keys() {
+            if !records.iter().any(|record| {
+                record.stage.manifest.stage_id == *key && record.stage.kind == StageKind::Conversion
+            }) {
+                return Err(ManifestError::Invalid(
+                    "source mapping must reference a conversion stage in this history".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn verify_history(
     records: &[SignedStage],
     files: &BTreeMap<String, Vec<u8>>,
@@ -234,6 +436,7 @@ pub fn verify_history(
     releases: &BTreeMap<String, SignedRelease>,
     backend: &OpenSslBackend,
 ) -> Result<HistoryReport, HistoryError> {
+    validate_conversion_sources(records, policy)?;
     let stages: Vec<_> = records.iter().map(|r| r.stage.clone()).collect();
     let lineage = verify_lineage(&stages, policy.expected_heads)?;
     let coverage = union_manifest(records)?.verify_files(files)?;
@@ -252,6 +455,7 @@ pub fn verify_archive_history(
     releases: &BTreeMap<String, SignedRelease>,
     backend: &OpenSslBackend,
 ) -> Result<HistoryReport, HistoryError> {
+    validate_conversion_sources(records, policy)?;
     let stages: Vec<_> = records.iter().map(|r| r.stage.clone()).collect();
     let lineage = verify_lineage(&stages, policy.expected_heads)?;
     let coverage = super::archive::verify_archive(archive, &union_manifest(records)?)?;
@@ -275,6 +479,116 @@ mod tests {
         )
         .unwrap()
     }
+    fn conversion_policy() -> ConversionPolicy {
+        ConversionPolicy {
+            allowed_verifications: vec![VendorVerificationGrant {
+                vendor: "vendor-1".into(),
+                format: "vendor.raw".into(),
+                method: "vendor-check-v1".into(),
+                verifier_name: "Verifier".into(),
+                verifier_version: "1.0".into(),
+            }],
+            require_source_bytes: false,
+            sources: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn conversion_policy_separates_vendor_claim_and_original_source_bytes() {
+        let mut stage = super::super::stages::tests::conversion_stage();
+        let mut policy = conversion_policy();
+        let denied = conversion_report(&stage, Some("vendor-1"), None, true).unwrap();
+        assert!(!denied.accepted());
+        let absent = conversion_report(&stage, Some("vendor-1"), Some(&policy), true).unwrap();
+        assert!(absent.accepted());
+        assert_eq!(absent.source_integrity, CheckStatus::Unknown);
+        policy.require_source_bytes = true;
+        assert!(
+            !conversion_report(&stage, Some("vendor-1"), Some(&policy), true)
+                .unwrap()
+                .accepted()
+        );
+        let source = tempfile::tempdir().unwrap();
+        std::fs::write(source.path().join("sample.raw"), b"raw").unwrap();
+        std::fs::write(source.path().join("b.raw"), b"b").unwrap();
+        policy
+            .sources
+            .insert(stage.manifest.stage_id.clone(), source.path().to_owned());
+        let present = conversion_report(&stage, Some("vendor-1"), Some(&policy), true).unwrap();
+        assert!(present.accepted());
+        assert_eq!(present.source_integrity, CheckStatus::Valid);
+        assert_eq!(present.claimed_acquisition_time, Some(1));
+        assert!(
+            !conversion_report(&stage, Some("different-vendor"), Some(&policy), true)
+                .unwrap()
+                .accepted()
+        );
+        stage.conversion.as_mut().unwrap().verification.result =
+            super::super::conversion::VerificationResult::Failed;
+        assert!(
+            !conversion_report(&stage, Some("vendor-1"), Some(&policy), true)
+                .unwrap()
+                .accepted()
+        );
+        stage.conversion.as_mut().unwrap().verification.result =
+            super::super::conversion::VerificationResult::Passed;
+        policy.allowed_verifications[0].verifier_version = "unsupported".into();
+        assert!(
+            !conversion_report(&stage, Some("vendor-1"), Some(&policy), true)
+                .unwrap()
+                .accepted()
+        );
+        policy.allowed_verifications[0].verifier_version = "1.0".into();
+        policy.require_source_bytes = false;
+        std::fs::write(source.path().join("sample.raw"), b"tampered").unwrap();
+        let changed = conversion_report(&stage, Some("vendor-1"), Some(&policy), true).unwrap();
+        assert_eq!(changed.source_integrity, CheckStatus::Invalid);
+        assert!(!changed.accepted());
+        policy.sources.insert(
+            stage.manifest.stage_id.clone(),
+            source.path().join("not-present"),
+        );
+        assert_eq!(
+            conversion_report(&stage, Some("vendor-1"), Some(&policy), true)
+                .unwrap()
+                .source_integrity,
+            CheckStatus::Invalid
+        );
+        assert!(serde_json::from_str::<ConversionPolicy>(r#"{"allowed_verifications":[],"require_source_bytes":false,"sources":{"a":"x","a":"y"}}"#).is_err());
+    }
+
+    #[test]
+    fn acquisition_grant_does_not_authorize_vendor_conversion() {
+        let records: Vec<SignedStage> = serde_json::from_slice(&read("records.json")).unwrap();
+        let mut trust: TrustPolicy = serde_json::from_slice(&read("trust.json")).unwrap();
+        let signer = &records[0].envelope.signatures[0];
+        let check = |trust: &TrustPolicy| {
+            super::super::trust::verify_certificate(
+                &signer.certificate_pem,
+                &signer.intermediates_pem,
+                trust,
+                SignerRole::VendorConversion,
+                "vendor-1",
+            )
+            .unwrap()
+        };
+        assert!(!check(&trust).accepted());
+        let fingerprint =
+            super::super::trust::certificate_fingerprint(&signer.certificate_pem).unwrap();
+        let grant = trust
+            .authorizations
+            .iter_mut()
+            .find(|g| g.certificate_sha256 == fingerprint)
+            .unwrap();
+        grant.role = SignerRole::VendorConversion;
+        grant.identity = "vendor-1".into();
+        assert!(check(&trust).accepted());
+        assert_eq!(
+            SignerRole::for_stage_kind(&StageKind::Conversion),
+            SignerRole::VendorConversion
+        );
+    }
+
     #[test]
     fn shared_full_history_and_security_failures() {
         let mut records: Vec<SignedStage> = serde_json::from_slice(&read("records.json")).unwrap();
@@ -302,6 +616,7 @@ mod tests {
             identities: &identities,
             publishers: &publishers,
             expected_heads: Some(&heads),
+            conversion: None,
         };
         let backend = OpenSslBackend::default();
         let report = verify_history(&records, &files, &p, &releases, &backend).unwrap();
@@ -334,6 +649,7 @@ mod tests {
             identities: &identities,
             publishers: &publishers,
             expected_heads: Some(&heads),
+            conversion: None,
         };
         assert!(
             !verify_history(&records, &files, &p, &releases, &backend)
@@ -370,6 +686,7 @@ mod tests {
             identities: &identities,
             publishers: &publishers,
             expected_heads: Some(&heads),
+            conversion: None,
         };
         let backend = OpenSslBackend::default();
         let original = verify_history(&records, &files, &policy, &releases, &backend).unwrap();

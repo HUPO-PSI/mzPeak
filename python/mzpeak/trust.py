@@ -27,6 +27,17 @@ class SignerRole(str, Enum):
     ACQUISITION = "acquisition"
     PROCESSING = "processing"
     SOFTWARE_RELEASE = "software_release"
+    VENDOR_CONVERSION = "vendor_conversion"
+
+
+def role_for_stage(kind):
+    """Exhaustive stage role mapping shared by current and historical checks."""
+    try:
+        return {"acquisition": SignerRole.ACQUISITION,
+                "processing": SignerRole.PROCESSING,
+                "conversion": SignerRole.VENDOR_CONVERSION}[kind]
+    except (KeyError, TypeError):
+        raise ValueError("unsupported stage kind") from None
 
 
 @dataclass(frozen=True)
