@@ -234,7 +234,15 @@ class ConversionClaim:
 
 
 def _identity(info):
-    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    # Windows lstat() and fstat() can expose different meanings for st_ctime_ns
+    # during CPython's creation-time deprecation period. Birth time is stable
+    # across those APIs; Unix ctime continues to detect metadata changes.
+    stable_time = (
+        getattr(info, "st_birthtime_ns", info.st_ctime_ns)
+        if hasattr(info, "st_file_attributes")
+        else info.st_ctime_ns
+    )
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, stable_time)
 
 
 def _is_link(info):
@@ -288,22 +296,45 @@ def _source_inventory(path):
 def _capture_files(path):
     files, directories = _source_inventory(path)
     digests = []
+    descriptor_times = {}
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     for name, (member, initial) in sorted(files.items()):
-        descriptor = os.open(
-            member,
-            os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
-        )
+        descriptor = os.open(member, flags)
         with os.fdopen(descriptor, "rb") as stream:
             before = os.fstat(stream.fileno())
-            if not stat.S_ISREG(before.st_mode) or _identity(before) != initial:
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or _is_link(before)
+                or _identity(before) != initial
+            ):
                 raise ValueError("source changed during capture")
             _integer(before.st_size, "source size")
             digest = sha256_stream(stream, before.st_size)
-            if stream.read(1) or _identity(os.fstat(stream.fileno())) != initial:
+            extra = stream.read(1)
+            after = os.fstat(stream.fileno())
+            if (
+                extra
+                or _identity(after) != initial
+                or after.st_ctime_ns != before.st_ctime_ns
+            ):
                 raise ValueError("source changed during capture")
+            descriptor_times[name] = after.st_ctime_ns
         digests.append(SourceFile(name, before.st_size, digest))
     if _source_inventory(path) != (files, directories):
         raise ValueError("source changed during capture")
+    # Compare descriptor timestamps with the same API after all hashing. This
+    # also catches an earlier file changing while a later file was being read.
+    for name, (member, initial) in sorted(files.items()):
+        descriptor = os.open(member, flags)
+        with os.fdopen(descriptor, "rb") as stream:
+            current = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(current.st_mode)
+                or _is_link(current)
+                or _identity(current) != initial
+                or current.st_ctime_ns != descriptor_times[name]
+            ):
+                raise ValueError("source changed during capture")
     return tuple(digests)
 
 

@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -46,7 +47,52 @@ def model():
     return source, claim, stage
 
 
-def test_source_capture_file_directory_and_complete_inventory(tmp_path):
+def test_source_capture_file_directory_and_complete_inventory(tmp_path, monkeypatch):
+    # Model CPython's Windows compatibility skew: path stat reports creation
+    # time as ctime, while descriptor stat reports native metadata-change time.
+    # Both APIs expose the same birth time and file identity.
+    original_lstat, original_fstat = Path.lstat, conversion.os.fstat
+    births = {}
+    descriptor_change = [0]
+
+    class WindowsTimes:
+        def __init__(self, info, *, descriptor=False):
+            self.info = info
+            self.st_file_attributes = getattr(info, "st_file_attributes", 0)
+            self.st_birthtime_ns = births.setdefault(
+                (info.st_dev, info.st_ino),
+                getattr(info, "st_birthtime_ns", info.st_ctime_ns),
+            )
+            self.st_ctime_ns = (
+                info.st_ctime_ns + 100_000_000 + descriptor_change[0]
+                if descriptor
+                else self.st_birthtime_ns
+            )
+
+        def __getattr__(self, name):
+            return getattr(self.info, name)
+
+    monkeypatch.setattr(Path, "lstat", lambda path: WindowsTimes(original_lstat(path)))
+    monkeypatch.setattr(
+        conversion,
+        "os",
+        SimpleNamespace(
+            **(
+                vars(conversion.os)
+                | {
+                    "fstat": lambda descriptor: WindowsTimes(
+                        original_fstat(descriptor), descriptor=True
+                    )
+                }
+            )
+        ),
+    )
+    unix = SimpleNamespace(
+        st_dev=1, st_ino=2, st_size=3, st_mtime_ns=4, st_ctime_ns=5, st_birthtime_ns=6
+    )
+    assert conversion._identity(unix) != conversion._identity(
+        SimpleNamespace(**(vars(unix) | {"st_ctime_ns": 7}))
+    )
     root = tmp_path / "sample.d"
     root.mkdir()
     (root / "nested").mkdir()
@@ -56,6 +102,43 @@ def test_source_capture_file_directory_and_complete_inventory(tmp_path):
     assert [f.path for f in source.files] == ["a.bin", "nested/b.bin"]
     assert SourceManifest.from_bytes(source.canonical_bytes()) == source
     assert verify_source(root, source).complete
+    original_hash = conversion.sha256_stream
+
+    def metadata_changes_while_hashing(stream, length):
+        result = original_hash(stream, length)
+        # Only the descriptor's native ChangeTime changes: file identity,
+        # length, last-write time and birth time stay the same.
+        descriptor_change[0] += 100
+        return result
+
+    with monkeypatch.context() as capture:
+        capture.setattr(conversion, "sha256_stream", metadata_changes_while_hashing)
+        with pytest.raises(ValueError, match="source changed"):
+            capture_source(root, "vendor-raw-v1")
+    descriptor_change[0] = 0
+    earlier = root / "a.bin"
+    original_times = original_lstat(earlier)
+    hashed = [0]
+
+    def earlier_file_changes_while_hashing_later_file(stream, length):
+        result = original_hash(stream, length)
+        hashed[0] += 1
+        if hashed[0] == 2:
+            earlier.write_bytes(b"alter")  # Preserve its signed length.
+            conversion.os.utime(
+                earlier,
+                ns=(original_times.st_atime_ns, original_times.st_mtime_ns),
+            )
+        return result
+
+    with monkeypatch.context() as capture:
+        capture.setattr(
+            conversion, "sha256_stream", earlier_file_changes_while_hashing_later_file
+        )
+        with pytest.raises(ValueError, match="source changed"):
+            capture_source(root, "vendor-raw-v1")
+    assert hashed[0] == 2
+    earlier.write_bytes(b"first")
     single = capture_source(root / "a.bin", "vendor-raw-v1")
     assert single.files[0].path == "a.bin"
     (root / "a.bin").write_bytes(b"changed")
