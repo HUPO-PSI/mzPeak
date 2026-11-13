@@ -1,4 +1,4 @@
-"""Regenerate public interoperability fixtures using the legacy Python demo.
+"""Regenerate public interoperability fixtures using the self-signed Python demo.
 
 Run with the repository's Python package and provenance/test extras installed.
 The demo generates a fresh private key in memory; no private material is saved.
@@ -11,11 +11,10 @@ from types import SimpleNamespace
 import pyarrow as pa
 from pyarrow import parquet
 
-
 directory = Path(__file__).resolve().parent
 root = directory.parents[3]
 spec = importlib.util.spec_from_file_location(
-    "legacy_sign_archive_demo", root / "python/scripts/sign_archive.py"
+    "self_signed_archive_demo", root / "python/scripts/sign_archive.py"
 )
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
@@ -25,14 +24,14 @@ parquet.write_table(
     directory / "spectrum.parquet",
     compression="NONE",
 )
-(directory / "metadata.json").write_bytes(b'{"run":"legacy-interop"}\n')
+(directory / "metadata.json").write_bytes(b'{"run":"self-signed-interop"}\n')
 
 
 class Archive:
-    file_index = [
+    file_index = (
         SimpleNamespace(name="spectrum.parquet"),
         SimpleNamespace(name="metadata.json"),
-    ]
+    )
 
     def open_stream(self, entry):
         name = entry if isinstance(entry, str) else entry.name

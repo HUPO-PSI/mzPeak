@@ -6,7 +6,7 @@ use sha2::{self, Digest};
 
 use arrow::{
     array::{
-        Array, ArrayRef, BooleanArray, LargeBinaryArray, LargeStringArray, LargeStringBuilder,
+        Array, ArrayRef, LargeBinaryArray, LargeStringArray, LargeStringBuilder,
         RecordBatch, UInt64Array, UInt64Builder,
     },
     datatypes::{DataType, Field, Schema},
@@ -140,7 +140,7 @@ pub struct SegmentSignature {
     pub length: Option<u64>,
     /// The SHA-512 digest of the chunk, or its signed form
     pub signature: Vec<u8>,
-    /// Whether the segment has been signed yet, or just digested
+    /// In-memory completion state; never stored or used as a trust decision.
     pub signed: bool,
 }
 
@@ -426,7 +426,8 @@ where
     Ok(checksums)
 }
 
-/// The Arrow schema used to store [`SegmentSignature`] records
+/// The Arrow schema used to store completed [`SegmentSignature`] records.
+/// Schema revision 1 is documented in `doc/provenance-signatures.md`.
 pub fn segment_signature_schema() -> Arc<Schema> {
     Arc::new(
         Schema::new(vec![
@@ -437,18 +438,55 @@ pub fn segment_signature_schema() -> Arc<Schema> {
             Field::new("offset", DataType::UInt64, true),
             Field::new("length", DataType::UInt64, true),
             Field::new("signature", DataType::LargeBinary, false),
-            Field::new("signed", DataType::Boolean, false),
         ])
         .with_metadata(std::collections::HashMap::from([(
             "mzpeak.provenance".into(),
-            "2".into(),
+            "1".into(),
         )])),
     )
 }
 
-/// Convert a slice of [`SegmentSignature`] into a [`RecordBatch`] with the
-/// schema from [`segment_signature_schema`], suitable for writing to Parquet.
-pub fn segment_signature_to_record_batch(checksums: &[SegmentSignature]) -> RecordBatch {
+/// Parse a complete CMS SignedData payload without asserting validity or trust.
+fn parse_cms_signature(signature: &[u8]) -> io::Result<()> {
+    use cms::{
+        cert::x509::der::{Decode, asn1::ObjectIdentifier},
+        content_info::ContentInfo,
+        signed_data::SignedData,
+    };
+
+    let invalid = |error| io::Error::new(io::ErrorKind::InvalidData, error);
+    let content = ContentInfo::from_der(signature).map_err(invalid)?;
+    if content.content_type != ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.2") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected CMS SignedData",
+        ));
+    }
+    let signed_data = content.content.decode_as::<SignedData>().map_err(invalid)?;
+    if signed_data.signer_infos.as_ref().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected at least one CMS signer",
+        ));
+    }
+    Ok(())
+}
+
+/// Store completed signatures using [`segment_signature_schema`].
+/// Unsigned records and malformed CMS payloads return an error. Structural
+/// parsing does not establish cryptographic validity or trust.
+pub fn segment_signature_to_record_batch(
+    checksums: &[SegmentSignature],
+) -> io::Result<RecordBatch> {
+    for record in checksums {
+        if !record.signed {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "cannot serialize an unsigned segment",
+            ));
+        }
+        parse_cms_signature(&record.signature)?;
+    }
     let filenames =
         LargeStringArray::from_iter_values(checksums.iter().map(|c| c.filename.as_str()));
     let signatures =
@@ -476,21 +514,19 @@ pub fn segment_signature_to_record_batch(checksums: &[SegmentSignature]) -> Reco
             Arc::new(offsets.finish()),
             Arc::new(lengths.finish()),
             Arc::new(signatures),
-            Arc::new(BooleanArray::from(
-                checksums.iter().map(|seg| seg.signed).collect::<Vec<_>>(),
-            )),
         ],
     )
-    .unwrap()
+    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 /// Convert a [`RecordBatch`] produced by [`segment_signature_to_record_batch`]
 /// (or read back from a Parquet file holding it) into [`SegmentSignature`] records.
 ///
 /// Columns are looked up by name, and an error is returned if one is missing,
-/// has the wrong type, or a required field contains nulls. Legacy tables without
-/// `signed` classify 64-byte values as SHA-512 digests and other values as candidate
-/// CMS envelopes. This classification never establishes signature validity.
+/// has the wrong type, or a required field contains nulls. Every payload must parse
+/// as complete CMS SignedData before restoring its in-memory `signed` state.
+/// This does not establish cryptographic validity or trust. Unmarked tables are
+/// accepted under the same rules; unsupported explicit schema revisions are rejected.
 pub fn segment_signature_from_record_batch(
     batch: &RecordBatch,
 ) -> io::Result<Vec<SegmentSignature>> {
@@ -519,6 +555,14 @@ pub fn segment_signature_from_record_batch(
         })
     }
 
+    if let Some(revision) = batch.schema().metadata().get("mzpeak.provenance") {
+        if revision != "1" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unsupported provenance schema revision {revision:?}"),
+            ));
+        }
+    }
     let names = batch
         .schema()
         .fields()
@@ -550,25 +594,21 @@ pub fn segment_signature_from_record_batch(
             "coordinate does not fit this platform",
         ));
     }
-    let signed = if batch.column_by_name("signed").is_some() {
-        Some(column::<BooleanArray>(batch, "signed", false)?)
-    } else {
-        None
-    };
-
-    Ok((0..batch.num_rows())
-        .map(|i| SegmentSignature {
-            filename: filenames.value(i).to_string(),
-            row_group: row_groups.is_valid(i).then(|| row_groups.value(i) as usize),
-            column: columns.is_valid(i).then(|| columns.value(i) as usize),
-            path: paths.is_valid(i).then(|| paths.value(i).to_string()),
-            offset: offsets.is_valid(i).then(|| offsets.value(i)),
-            length: lengths.is_valid(i).then(|| lengths.value(i)),
-            signature: signatures.value(i).to_vec(),
-            signed: signed
-                .map_or_else(|| signatures.value(i).len() != 64, |values| values.value(i)),
+    (0..batch.num_rows())
+        .map(|i| {
+            parse_cms_signature(signatures.value(i))?;
+            Ok(SegmentSignature {
+                filename: filenames.value(i).to_string(),
+                row_group: row_groups.is_valid(i).then(|| row_groups.value(i) as usize),
+                column: columns.is_valid(i).then(|| columns.value(i) as usize),
+                path: paths.is_valid(i).then(|| paths.value(i).to_string()),
+                offset: offsets.is_valid(i).then(|| offsets.value(i)),
+                length: lengths.is_valid(i).then(|| lengths.value(i)),
+                signature: signatures.value(i).to_vec(),
+                signed: true,
+            })
         })
-        .collect())
+        .collect()
 }
 
 #[cfg(feature = "async")]

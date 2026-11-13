@@ -1,5 +1,5 @@
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import mzpeak
@@ -11,7 +11,7 @@ from pyarrow import parquet
 
 
 def sign_archive(archive: mzpeak.MzPeakFile, output_path: Path):
-    """Legacy self-signed demonstration; does not certify archive identity or coverage."""
+    """Self-signed archive signing demo; does not certify archive identity or coverage."""
     blocks: list[provenance.SegmentSignature] = []
     for entry in archive.file_index:
         with archive.open_stream(entry) as stream:
@@ -39,8 +39,8 @@ def sign_archive(archive: mzpeak.MzPeakFile, output_path: Path):
         issuer,
         public_key,
         x509.random_serial_number(),
-        datetime.now(timezone.utc),
-        datetime.now(timezone.utc) + timedelta(days=10),
+        datetime.now(UTC),
+        datetime.now(UTC) + timedelta(days=10),
     ).sign(private_key, None)
 
     for block in blocks:

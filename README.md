@@ -59,6 +59,9 @@ Components of an mzPeak archive:
 
 mzPeak file-level metadata, including descriptions of the file's contents, the instrumentation, software, and data transformation pipeline are stored in the Parquet metadata segment as JSON documents. Several of these concepts are already covered by controlled vocabulary terms. See `schema/` for JSONSchemas for these elements.
 
+The self-signed archive signing demo and its revision 1 signature-table schema are
+described in [Segment signature tables](doc/provenance-signatures.md).
+
 ### Packed Parallel Tables
 
 The `spectra_metadata.parquet` and `chromatograms_metadata.parquet` store multiple schemas in parallel. In these Parquet files, the root schema is made up of several branched "group" or "struct" (Parquet vs. Arrow nomenclature) that may be null at any level.
