@@ -10,3 +10,7 @@ mod openssl_process;
 pub mod signing;
 #[cfg(feature = "verification")]
 pub mod verification;
+#[cfg(feature = "verification")]
+pub mod evidence;
+#[cfg(feature = "verification")]
+pub mod historical;

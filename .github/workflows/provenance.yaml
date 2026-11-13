@@ -3,6 +3,23 @@ on: [push, pull_request]
 permissions:
   contents: read
 jobs:
+  openssl-3-0-timestamps:
+    # Keep timestamp compatibility covered when ubuntu-latest upgrades OpenSSL.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v6.1.0
+        with:
+          python-version: '3.12'
+      - name: Verify timestamps with system OpenSSL 3.0
+        run: |
+          openssl version | grep -E '^OpenSSL 3[.]0[.]'
+          cargo test --locked --lib provenance::evidence
+          cargo test --locked --lib provenance::historical
+          python -m pip install './python[test,provenance]'
+          python -m pytest python/test/test_evidence.py python/test/test_historical.py
   openssl-pqc:
     runs-on: ubuntu-24.04
     env:
