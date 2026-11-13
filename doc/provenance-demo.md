@@ -211,3 +211,12 @@ Running the same arguments with Rust produces the same acceptance and report.
 The signing profile uses version-2 CMS envelopes. Old experimental raw envelopes
 are rejected; regenerate signatures and their timestamp evidence when migrating.
 The independent legacy Ed25519/CMS archive verifier remains available.
+
+## Vendor RAW conversion
+
+Use `capture-source` and `init-conversion` for the explicitly authorized
+[vendor-attested conversion workflow](provenance-vendor-conversion-v2.md).
+`verify --conversion-policy` accepts independently configured vendor/method
+grants and optional caller-supplied RAW paths. A conversion history requires that
+policy in addition to ordinary certificate, publisher and content checks. The
+acquisition shortcut `sign-archive` does not construct vendor conversion records.

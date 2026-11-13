@@ -8,7 +8,7 @@ from .evidence import (
     verify_historical_signer,
 )
 from .signing import OpenSslBackend, SigningError
-from .trust import CheckStatus, SignerRole
+from .trust import CheckStatus, SignerRole, role_for_stage
 from .verification import verify_history, verify_archive_history, HistoryReport
 
 
@@ -99,11 +99,7 @@ def _historical(
                 "stage signature or local identity did not pass"
             )
             continue
-        role = (
-            SignerRole.ACQUISITION
-            if stage.kind == "acquisition"
-            else SignerRole.PROCESSING
-        )
+        role = role_for_stage(stage.kind)
         stamp, certs = _bound_signers(
             stage.canonical_bytes(),
             record.envelope,
@@ -183,6 +179,7 @@ def verify_historical_history(
     publishers=None,
     expected_heads=None,
     backend=None,
+    conversion_policy=None,
 ):
     """Require historical evidence for every stage and each publisher approval.
 
@@ -201,6 +198,7 @@ def verify_historical_history(
         publishers=publishers,
         expected_heads=expected_heads,
         backend=backend,
+        conversion_policy=conversion_policy,
     )
     return _historical(
         report,
@@ -235,6 +233,7 @@ def verify_historical_archive_history(
     publishers=None,
     expected_heads=None,
     backend=None,
+    conversion_policy=None,
 ):
     """Streaming archive variant with the same mandatory historical proof policy."""
     records, releases, publishers = list(records), releases or {}, publishers or {}
@@ -249,6 +248,7 @@ def verify_historical_archive_history(
         publishers=publishers,
         expected_heads=expected_heads,
         backend=backend,
+        conversion_policy=conversion_policy,
     )
     return _historical(
         report,

@@ -1,0 +1,13 @@
+{
+  "allowed_verifications": [
+    {
+      "vendor": "vendor-1",
+      "format": "vendor.raw",
+      "method": "vendor-integrity-v1",
+      "verifier_name": "Vendor Verifier",
+      "verifier_version": "1.0"
+    }
+  ],
+  "require_source_bytes": false,
+  "sources": {}
+}

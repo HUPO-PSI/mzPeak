@@ -1,5 +1,6 @@
 //! Experimental versioned provenance with optional embedded public proof storage.
 pub mod manifest;
+pub mod conversion;
 pub mod archive;
 pub mod stages;
 #[cfg(feature = "verification")]

@@ -18,13 +18,19 @@ The strict ML-DSA profile requires an ML-DSA-capable backend (OpenSSL 3.5+).
 
 A `TrustPolicy` contains public root certificates, a Unix validation time, CRLs,
 and explicit `Authorization` grants. Each grant pins a DER certificate SHA-256,
-role (`acquisition`, `processing`, or `software_release`), expected instrument /
+role (`acquisition`, `processing`, `software_release`, or `vendor_conversion`), expected instrument /
 installation / publisher identity, and optionally a required EKU OID. Software
 release approval requires codeSigning by default. These local grants are a
 conservative demo mechanism, not a proposed assignment of mzPeak certificate
 OIDs or an automated manufacturer enrollment service. Certificate renewal needs
 an explicit grant update. Establish interoperable role/identity profiles with
 the standard before removing these pins.
+
+Vendor conversion additionally requires explicit vendor/format/method grants;
+see the [conversion profile](provenance-vendor-conversion-v2.md). An ordinary
+processing grant or publisher software-release grant does not authorize a signer
+to attest vendor RAW verification. Claimed acquisition time is never used to
+backdate certificate eligibility.
 
 `CertificateReport` separates path validation, authorization and revocation.
 Only three valid results produce `accepted`; absent CRLs remain unknown. Bad,

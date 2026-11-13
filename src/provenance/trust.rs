@@ -30,7 +30,18 @@ pub enum SignerRole {
     Acquisition,
     Processing,
     SoftwareRelease,
+    VendorConversion,
 }
+impl SignerRole {
+    pub fn for_stage_kind(kind: &super::stages::StageKind) -> Self {
+        match kind {
+            super::stages::StageKind::Acquisition => Self::Acquisition,
+            super::stages::StageKind::Processing => Self::Processing,
+            super::stages::StageKind::Conversion => Self::VendorConversion,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Authorization {

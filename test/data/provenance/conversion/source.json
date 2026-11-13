@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "format": "vendor.raw",
+  "files": [
+    {
+      "path": "header.bin",
+      "size": 29,
+      "sha256": "3b3884afd948ccf9778b803118a46afa17bbc6ac1dc988f0a77584cecfc9cbaa"
+    },
+    {
+      "path": "segments/data.bin",
+      "size": 37,
+      "sha256": "90386d4a5dda559d91cf39f9082efa70d646d494ee4835bc0a96ff390cf63f8d"
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "roots_pem": [
+    "-----BEGIN CERTIFICATE-----\nMIIBnzCCAUWgAwIBAgIBATAKBggqhkjOPQQDAjAkMSIwIAYDVQQDDBlURVNUIE9O\nTFkgY29udmVyc2lvbiByb290MCAXDTIwMDEwMTAwMDAwMFoYDzIwNjAwMTAxMDAw\nMDAwWjAkMSIwIAYDVQQDDBlURVNUIE9OTFkgY29udmVyc2lvbiByb290MFkwEwYH\nKoZIzj0CAQYIKoZIzj0DAQcDQgAEPeoOSxnYRhn+idjdO7AVNx5TTSd/cCYTaMxk\nP1T48yxAyo+6LMdJCNWEbx2BrRJNxvUFnxqLWJ+h1uAKjyrDnqNmMGQwEgYDVR0T\nAQH/BAgwBgEB/wIBATAOBgNVHQ8BAf8EBAMCAQYwHQYDVR0OBBYEFBw3oEJ6KfqW\nwGrtrQmvOssBKHv6MB8GA1UdIwQYMBaAFBw3oEJ6KfqWwGrtrQmvOssBKHv6MAoG\nCCqGSM49BAMCA0gAMEUCIQDkj+ruEkDBBXmSeCL1w0VwdNAd+5L57OwciAhoMP63\nfQIgDAHz+WglkHxFQU4Rippd+4fZIHvlwElPnzD+jrjjg1Q=\n-----END CERTIFICATE-----\n"
+  ],
+  "authorizations": [
+    {
+      "certificate_sha256": "bb39a7c834d62cfa52bb6fde9447bd1311b272dc655a742767e1e3747adc583d",
+      "role": "vendor_conversion",
+      "identity": "vendor-1",
+      "required_eku": null
+    },
+    {
+      "certificate_sha256": "6b04b691ef5f37a2783c2db1cf1cd89d4a69a4b40e690a4422aab1d29c3aa3bf",
+      "role": "processing",
+      "identity": "installation-1",
+      "required_eku": null
+    },
+    {
+      "certificate_sha256": "b366b9b1fabaf36467747c5eb8c7e3a1ae4a13c5c3d5fdb1ac40c59240173b1b",
+      "role": "software_release",
+      "identity": "publisher-1",
+      "required_eku": null
+    }
+  ],
+  "validation_time": 1798761600,
+  "crls_pem": [
+    "-----BEGIN X509 CRL-----\nMIHdMIGGAgEBMAoGCCqGSM49BAMCMCYxJDAiBgNVBAMMG1RFU1QgT05MWSBjb252\nZXJzaW9uIGlzc3VlchcNMjAwMTAxMDAwMDAwWhcNMzUwMTAxMDAwMDAwWqAvMC0w\nHwYDVR0jBBgwFoAUFf0kaEbCkvSest6BQDzOgN/d/mowCgYDVR0UBAMCAQEwCgYI\nKoZIzj0EAwIDRgAwQwIgY56Nt0e1QegpBcld3iKCI2VrPwYfrpSNotRCxdifYhMC\nHwSrmk3+Nm7vyVxAouQoB/HanEm4CIfM2awIMWUOxB4=\n-----END X509 CRL-----\n",
+    "-----BEGIN X509 CRL-----\nMIHdMIGEAgEBMAoGCCqGSM49BAMCMCQxIjAgBgNVBAMMGVRFU1QgT05MWSBjb252\nZXJzaW9uIHJvb3QXDTIwMDEwMTAwMDAwMFoXDTM1MDEwMTAwMDAwMFqgLzAtMB8G\nA1UdIwQYMBaAFBw3oEJ6KfqWwGrtrQmvOssBKHv6MAoGA1UdFAQDAgEBMAoGCCqG\nSM49BAMCA0gAMEUCIQD/Et3SE4gAYiB0pvH62AIGuiWMoJmVWKc4S7P6SCR5qAIg\nS05gP2VZ4GOExwjImFbbLRe7cZyT68aYvqH4jzz8Z3w=\n-----END X509 CRL-----\n"
+  ],
+  "require_pqc_chain": false
+}

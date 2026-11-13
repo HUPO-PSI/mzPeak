@@ -15,6 +15,7 @@ use super::manifest::{
 pub enum StageKind {
     Acquisition,
     Processing,
+    Conversion,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,12 +70,22 @@ pub struct Stage {
     pub inputs: Vec<InputReference>,
     #[serde(deserialize_with = "required_option")]
     pub software: Option<SoftwareIdentity>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::conversion::present_conversion"
+    )]
+    pub conversion: Option<super::conversion::ConversionClaim>,
 }
 
 impl Stage {
     pub fn validate(&self) -> Result<(), ManifestError> {
-        if self.version != 1 {
-            return Err(invalid("unsupported stage version"));
+        if !matches!(
+            (&self.kind, self.version, &self.conversion),
+            (StageKind::Acquisition | StageKind::Processing, 1, None)
+                | (StageKind::Conversion, 2, Some(_))
+        ) {
+            return Err(invalid("unsupported stage version or conversion shape"));
         }
         self.manifest.validate()?;
         let mut parents = BTreeSet::new();
@@ -99,6 +110,27 @@ impl Stage {
                     return Err(invalid(
                         "an acquisition cannot claim parent processing stages",
                     ));
+                }
+            }
+            StageKind::Conversion => {
+                if !self.parents.is_empty() || !self.inputs.is_empty() || self.software.is_none() {
+                    return Err(invalid(
+                        "conversion requires an external source, software identity and no internal parents",
+                    ));
+                }
+                let claim = self.conversion.as_ref().unwrap();
+                claim.validate()?;
+                if let Some(report) = &claim.verification.report {
+                    if !self
+                        .manifest
+                        .files
+                        .iter()
+                        .any(|file| file.path == report.path && file.sha256 == report.sha256)
+                    {
+                        return Err(invalid(
+                            "vendor report must match this conversion stage output inventory",
+                        ));
+                    }
                 }
             }
             StageKind::Processing => {
@@ -130,6 +162,9 @@ impl Stage {
         // Reuse the manifest normalizer rather than maintaining a second set of
         // file/chunk ordering rules here.
         normalized.manifest = Manifest::from_bytes(&self.manifest.canonical_bytes()?)?;
+        if let Some(claim) = normalized.conversion.as_mut() {
+            claim.source.files.sort_by(|a, b| a.path.cmp(&b.path));
+        }
         canonical_json(&normalized)
     }
 
@@ -148,6 +183,8 @@ impl Stage {
 pub struct LineageReport {
     pub heads: Vec<String>,
     pub acquisitions: Vec<String>,
+    #[serde(default)]
+    pub conversions: Vec<String>,
     pub stage_count: usize,
     pub checkpoint_checked: bool,
 }
@@ -189,9 +226,13 @@ pub fn verify_lineage(
     }
     let mut referenced = BTreeSet::new();
     let mut acquisitions = Vec::new();
+    let mut conversions = Vec::new();
     for (digest, stage) in &records {
         if stage.kind == StageKind::Acquisition {
             acquisitions.push(digest.clone());
+        }
+        if stage.kind == StageKind::Conversion {
+            conversions.push(digest.clone());
         }
         for parent in &stage.parents {
             if !records.contains_key(parent) {
@@ -252,8 +293,10 @@ pub fn verify_lineage(
         .filter(|d| !referenced.contains(*d))
         .cloned()
         .collect();
-    if acquisitions.is_empty() {
-        return Err(invalid("lineage contains no acquisition stage"));
+    if acquisitions.is_empty() && conversions.is_empty() {
+        return Err(invalid(
+            "lineage contains no acquisition or conversion root",
+        ));
     }
     if let Some(expected) = expected_heads {
         let mut set = BTreeSet::new();
@@ -272,13 +315,14 @@ pub fn verify_lineage(
     Ok(LineageReport {
         heads,
         acquisitions,
+        conversions,
         stage_count: records.len(),
         checkpoint_checked: expected_heads.is_some(),
     })
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::provenance::manifest::FileDigest;
     use std::io::Cursor;
@@ -297,6 +341,7 @@ mod tests {
             },
             parents: vec![],
             inputs: vec![],
+            conversion: None,
             software: None,
         };
         let parent = first.digest().unwrap();
@@ -318,6 +363,7 @@ mod tests {
                 path: "raw.parquet".into(),
                 sha256: first.manifest.files[0].sha256.clone(),
             }],
+            conversion: None,
             software: Some(SoftwareIdentity {
                 name: "processor".into(),
                 version: "1.2.3".into(),
@@ -326,6 +372,107 @@ mod tests {
             }),
         };
         (first, second)
+    }
+
+    pub(crate) fn conversion_stage() -> Stage {
+        use crate::provenance::conversion::*;
+        let (mut stage, processing) = chain();
+        let source = SourceManifest {
+            version: 1,
+            format: "vendor.raw".into(),
+            files: vec![
+                SourceFile {
+                    path: "sample.raw".into(),
+                    size: 3,
+                    sha256: hex::encode(Sha256::digest(b"raw")),
+                },
+                SourceFile {
+                    path: "b.raw".into(),
+                    size: 1,
+                    sha256: hex::encode(Sha256::digest(b"b")),
+                },
+            ],
+        };
+        let verification = VendorVerification {
+            vendor: "vendor-1".into(),
+            method: "vendor-check-v1".into(),
+            verifier_name: "Verifier".into(),
+            verifier_version: "1.0".into(),
+            source_sha256: source.digest().unwrap(),
+            result: VerificationResult::Passed,
+            report: None,
+        };
+        stage.version = 2;
+        stage.kind = StageKind::Conversion;
+        stage.software = processing.software;
+        stage.conversion = Some(ConversionClaim {
+            source,
+            verification,
+            claimed_acquisition_time: Some(1),
+        });
+        stage
+    }
+
+    #[test]
+    fn conversion_root_and_processing_child_preserve_lineage() {
+        let mut conversion = conversion_stage();
+        let (_, mut child) = chain();
+        child.parents = vec![conversion.digest().unwrap()];
+        child.inputs[0].stage_sha256 = conversion.digest().unwrap();
+        let report = verify_lineage(&[conversion.clone(), child], None).unwrap();
+        assert!(report.acquisitions.is_empty());
+        assert_eq!(report.conversions, [conversion.digest().unwrap()]);
+        let bytes = conversion.canonical_bytes().unwrap();
+        conversion
+            .conversion
+            .as_mut()
+            .unwrap()
+            .source
+            .files
+            .reverse();
+        assert_eq!(bytes, conversion.canonical_bytes().unwrap());
+        let claim = conversion.conversion.as_mut().unwrap();
+        claim.verification.source_sha256 = "0".repeat(64);
+        assert!(conversion.validate().is_err());
+    }
+
+    #[test]
+    fn stage_versions_have_strict_distinct_shapes_and_bound_reports() {
+        let (old, _) = chain();
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&old.canonical_bytes().unwrap()).unwrap();
+        value["conversion"] = serde_json::Value::Null;
+        assert!(Stage::from_bytes(&serde_json::to_vec(&value).unwrap()).is_err());
+        let mut conversion = conversion_stage();
+        let bytes = conversion.canonical_bytes().unwrap();
+        assert_eq!(
+            Stage::from_bytes(&bytes)
+                .unwrap()
+                .canonical_bytes()
+                .unwrap(),
+            bytes
+        );
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        value.as_object_mut().unwrap().remove("conversion");
+        assert!(Stage::from_bytes(&serde_json::to_vec(&value).unwrap()).is_err());
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        value["version"] = 1.into();
+        assert!(Stage::from_bytes(&serde_json::to_vec(&value).unwrap()).is_err());
+        let duplicate = String::from_utf8(bytes)
+            .unwrap()
+            .replacen("{", "{\"version\":2,", 1);
+        assert!(Stage::from_bytes(duplicate.as_bytes()).is_err());
+        use crate::provenance::conversion::ReportReference;
+        conversion.conversion.as_mut().unwrap().verification.report = Some(ReportReference {
+            path: "missing.json".into(),
+            sha256: "a".repeat(64),
+        });
+        assert!(conversion.validate().is_err());
+        conversion.conversion.as_mut().unwrap().verification.report = Some(ReportReference {
+            path: conversion.manifest.files[0].path.clone(),
+            sha256: conversion.manifest.files[0].sha256.clone(),
+        });
+        assert!(conversion.validate().is_ok());
     }
 
     #[test]

@@ -5,6 +5,11 @@ immutable processing history. Python `mzpeak.stages` and Rust
 `provenance::stages` share acquisition/processing vectors in
 `test/data/provenance/`. It remains subject to specification review.
 
+Stage v1 and its canonical bytes are unchanged. The separate
+[vendor-attested conversion extension](provenance-vendor-conversion-v2.md) adds
+stage v2 conversion roots with external RAW inventories and explicit vendor
+verification claims. Later v1 processing can reference those roots normally.
+
 A signed stage object contains exactly `version`, `kind`, `manifest`, `parents`,
 `inputs`, and `software`. Version is integer `1`. Kind is `acquisition` or
 `processing`. The complete nested manifest and every lineage/software field are
