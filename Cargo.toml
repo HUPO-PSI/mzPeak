@@ -54,6 +54,10 @@ required-features = ["async"]
 name = "verify_signatures"
 required-features = ["verification"]
 
+[[example]]
+name = "provenance"
+required-features = ["verification"]
+
 [features]
 default = ["async", "verification"]
 

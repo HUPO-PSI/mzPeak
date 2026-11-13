@@ -1,0 +1,30 @@
+{
+  "roots_pem": [
+    "-----BEGIN CERTIFICATE-----\nMIIBqjCCAVCgAwIBAgIUJhBNHvMPeYaSoWeoB0bpaOVaTwYwCgYIKoZIzj0EAwIw\nITEfMB0GA1UEAwwWVEVTVCBPTkxZIGhpc3Rvcnkgcm9vdDAeFw0yOTAxMDEwMDAw\nMDBaFw0zMTAxMDEwMDAwMDBaMCExHzAdBgNVBAMMFlRFU1QgT05MWSBoaXN0b3J5\nIHJvb3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATQ1pRmk7WsOGV7ubdh6xcQ\nxjLaKNQ/xV+sutx7ZwHaMBxqCDLwxQTTrLbBqgGRIl/+6pqBGQGesnHUR671SW1j\no2YwZDASBgNVHRMBAf8ECDAGAQH/AgEAMA4GA1UdDwEB/wQEAwIBhjAdBgNVHQ4E\nFgQUScTIyby35dMcWgfb8bcwm+ru5eYwHwYDVR0jBBgwFoAUScTIyby35dMcWgfb\n8bcwm+ru5eYwCgYIKoZIzj0EAwIDSAAwRQIgRVjTjv5aFRBlvxhP9feeQsmbsrFb\n0x5eqeTENtuvBe4CIQDfC8qM2jOl5EBBQnNdFDsV31blkzkBusfpuRxjB2JfDA==\n-----END CERTIFICATE-----\n"
+  ],
+  "crls_pem": [
+    "-----BEGIN X509 CRL-----\nMIHNMHUCAQEwCgYIKoZIzj0EAwIwITEfMB0GA1UEAwwWVEVTVCBPTkxZIGhpc3Rv\ncnkgcm9vdBcNMjkxMjMxMDAwMDAwWhcNMzAwMTAyMDAwMDAwWqAjMCEwHwYDVR0j\nBBgwFoAUScTIyby35dMcWgfb8bcwm+ru5eYwCgYIKoZIzj0EAwIDSAAwRQIhAJp8\n4UL8d7/72RsQZmWUrB5G9xuOfLqeqZeTqWRhEESSAiBbAFSLLaFNNfL6mQFaFgYh\n1ysn6IRUP7DBWuHW983+Tg==\n-----END X509 CRL-----\n"
+  ],
+  "authorizations": [
+    {
+      "certificate_sha256": "b116bf11eee991c785d83ed39741a54ee772fea00abc9b454a0d718678f387f6",
+      "role": "acquisition",
+      "identity": "instrument-1",
+      "required_eku": null
+    },
+    {
+      "certificate_sha256": "e0f15194140458a415c978628e6a2637ee5ca1f712d6fd14caed98d8a48bcb5c",
+      "role": "processing",
+      "identity": "installation-1",
+      "required_eku": null
+    },
+    {
+      "certificate_sha256": "2849bef7cab8bb818d3c21e398ce1852f781b2e104493d79e2ab5f46cecdcadb",
+      "role": "software_release",
+      "identity": "publisher-1",
+      "required_eku": null
+    }
+  ],
+  "validation_time": 1893456000,
+  "require_pqc_chain": false
+}

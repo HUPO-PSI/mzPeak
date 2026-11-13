@@ -1,0 +1,135 @@
+[
+  {
+    "stage": {
+      "version": 1,
+      "kind": "acquisition",
+      "manifest": {
+        "version": 1,
+        "run_id": "run-1",
+        "stage_id": "acquisition",
+        "files": [
+          {
+            "path": "raw.bin",
+            "size": 26,
+            "sha256": "3b801db8bc72a2fa5da20beacfafbf41ca121837810e2e9b1efe146e4ddef9f6",
+            "chunks": [
+              {
+                "offset": 0,
+                "length": 4,
+                "sha256": "c0c13eb4cabb22b32ac501f8218534072e383f9bfc27deedf9418e7a79cd3553",
+                "row_group": 0,
+                "column": 0,
+                "column_path": "test.column0"
+              },
+              {
+                "offset": 4,
+                "length": 22,
+                "sha256": "8d9e8cd4e25b57a4a1f968c59eadd96a27d55e54322fb1a37cf2cb304c77b84c",
+                "row_group": 0,
+                "column": 1,
+                "column_path": "test.column1"
+              }
+            ]
+          },
+          {
+            "path": "snapshots/acquisition-index.json",
+            "size": 17,
+            "sha256": "c66aed1fcc1d095478ad3d6ddae9d293271a6d05faf83e9531fbd2d67ee6aef7",
+            "chunks": []
+          }
+        ]
+      },
+      "parents": [],
+      "inputs": [],
+      "software": null
+    },
+    "envelope": {
+      "version": 2,
+      "policy": "ecdsa",
+      "signatures": [
+        {
+          "algorithm": "ecdsa-p256-sha256",
+          "certificate_pem": "-----BEGIN CERTIFICATE-----\nMIIBmjCCAUCgAwIBAgIUMu7Jz9SzEX5KKT7aot/vxixyE4cwCgYIKoZIzj0EAwIw\nITEfMB0GA1UEAwwWVEVTVCBPTkxZIGhpc3Rvcnkgcm9vdDAeFw0yOTAxMDEwMDAw\nMDBaFw0zMTAxMDEwMDAwMDBaMBcxFTATBgNVBAMMDGluc3RydW1lbnQtMTBZMBMG\nByqGSM49AgEGCCqGSM49AwEHA0IABPL9NZ4NkxvHdldBOIop6R8TfpFW6bLhi/77\nQ5cn8s/wKX1X00XvH6isFgizT+dufSQOsQnqA5FHsAcde71SEh6jYDBeMAwGA1Ud\nEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgeAMB0GA1UdDgQWBBS6Ue2bAg+t21dwlx3z\nUzM2mFfP6zAfBgNVHSMEGDAWgBQLLxXa5WO2mBAgbEm3i5Na+//9zjAKBggqhkjO\nPQQDAgNIADBFAiEAsCGZv0kNcoMRctsZtgerNl+BUSoq8mrmzXNEljqEK1ICIAj1\nImjn9pfFdkL5KcfRvd82Z3q0b+k+H1kBOu4E+lGV\n-----END CERTIFICATE-----\n",
+          "intermediates_pem": [],
+          "cms_der_hex": "308202e806092a864886f70d010702a08202d9308202d5020101310d300b0609608648016503040201300b06092a864886f70d010701a082019e3082019a30820140a003020102021432eec9cfd4b3117e4a293edaa2dfefc62c721387300a06082a8648ce3d0403023021311f301d06035504030c1654455354204f4e4c5920686973746f727920726f6f74301e170d3239303130313030303030305a170d3331303130313030303030305a30173115301306035504030c0c696e737472756d656e742d313059301306072a8648ce3d020106082a8648ce3d03010703420004f2fd359e0d931bc7765741388a29e91f137e9156e9b2e18bfefb439727f2cff0297d57d345ef1fa8ac1608b34fe76e7d240eb109ea039147b0071d7bbd52121ea360305e300c0603551d130101ff04023000300e0603551d0f0101ff040403020780301d0603551d0e04160414ba51ed9b020faddb5770971df35333369857cfeb301f0603551d230418301680140b2f15dae563b69810206c49b78b935afbfffdce300a06082a8648ce3d0403020348003045022100b02199bf490d72831172db19b607ab365f81512a2af26ae6cd7344963a842b52022008f52268e7f697c57642f929c7d1bddf36677ab46fe93e1f59013aee04fa5195318201103082010c02010130393021311f301d06035504030c1654455354204f4e4c5920686973746f727920726f6f74021432eec9cfd4b3117e4a293edaa2dfefc62c721387300b0609608648016503040201a069301806092a864886f70d010903310b06092a864886f70d010701301c06092a864886f70d010905310f170d3236313130373136323730385a302f06092a864886f70d0109043122042089ec5ef78e29d786634c68d11eb62f9ba5699f9f51a6cdb08463d27e81172a1a300a06082a8648ce3d040302044830460221008deb49cbc5261cf42c404d3a672afefa7470d2e1227dd689a82cb66e72eddb86022100b5d67b78122fdb49bcd57602c67b3875cb98050b34c8777d5123a48bdfc4f365"
+        }
+      ]
+    }
+  },
+  {
+    "stage": {
+      "version": 1,
+      "kind": "processing",
+      "manifest": {
+        "version": 1,
+        "run_id": "run-1",
+        "stage_id": "processing",
+        "files": [
+          {
+            "path": "processed.json",
+            "size": 18,
+            "sha256": "c9e654e8902aa47de7edcd7ab902ed16ef68b2d1beb54a4644aada70c1964b49",
+            "chunks": []
+          },
+          {
+            "path": "raw.bin",
+            "size": 26,
+            "sha256": "3b801db8bc72a2fa5da20beacfafbf41ca121837810e2e9b1efe146e4ddef9f6",
+            "chunks": [
+              {
+                "offset": 0,
+                "length": 4,
+                "sha256": "c0c13eb4cabb22b32ac501f8218534072e383f9bfc27deedf9418e7a79cd3553",
+                "row_group": 0,
+                "column": 0,
+                "column_path": "test.column0"
+              },
+              {
+                "offset": 4,
+                "length": 22,
+                "sha256": "8d9e8cd4e25b57a4a1f968c59eadd96a27d55e54322fb1a37cf2cb304c77b84c",
+                "row_group": 0,
+                "column": 1,
+                "column_path": "test.column1"
+              }
+            ]
+          },
+          {
+            "path": "snapshots/processing-index.json",
+            "size": 46,
+            "sha256": "39b04987918e366e02898a6b3f510757dd23e7883b2d183db37ee8e5289d6bff",
+            "chunks": []
+          }
+        ]
+      },
+      "parents": [
+        "943a853c07674445c7a60ce27e08a720621675c7365b988c4f1b1a104ded8a35"
+      ],
+      "inputs": [
+        {
+          "stage_sha256": "943a853c07674445c7a60ce27e08a720621675c7365b988c4f1b1a104ded8a35",
+          "path": "raw.bin",
+          "sha256": "3b801db8bc72a2fa5da20beacfafbf41ca121837810e2e9b1efe146e4ddef9f6"
+        }
+      ],
+      "software": {
+        "name": "mzPeak certified converter",
+        "version": "1.0",
+        "release_sha256": "a8b077366207a4f60b23396338f9e2d65007c87d49e7bcc1f8f7d18db947d085",
+        "parameters_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      }
+    },
+    "envelope": {
+      "version": 2,
+      "policy": "ecdsa",
+      "signatures": [
+        {
+          "algorithm": "ecdsa-p256-sha256",
+          "certificate_pem": "-----BEGIN CERTIFICATE-----\nMIIBnDCCAUKgAwIBAgIUaGe8sqAHpYhqzi8A59k6pL3pXwswCgYIKoZIzj0EAwIw\nITEfMB0GA1UEAwwWVEVTVCBPTkxZIGhpc3Rvcnkgcm9vdDAeFw0yOTAxMDEwMDAw\nMDBaFw0zMTAxMDEwMDAwMDBaMBkxFzAVBgNVBAMMDmluc3RhbGxhdGlvbi0xMFkw\nEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEGpP+ssJSRPhhJYLFSsFXmEKV2rFU7rSK\n8rPaXbjg0DZbKKF/kfwPnuzp4EwaxjFeHLydxyb4iiZHXzS6CIirBaNgMF4wDAYD\nVR0TAQH/BAIwADAOBgNVHQ8BAf8EBAMCB4AwHQYDVR0OBBYEFCN/SlluHinIXNvf\ncXjlfsZUnqvDMB8GA1UdIwQYMBaAFAsvFdrlY7aYECBsSbeLk1r7//3OMAoGCCqG\nSM49BAMCA0gAMEUCIQDtglDjMrmo7odlcc7ADhkDgQhFNzvKbna8FpR9TdwjUgIg\nZmN3KtwBIaFY/uTUap2AoaP99X1jaw9GZMDInRUKa1s=\n-----END CERTIFICATE-----\n",
+          "intermediates_pem": [],
+          "cms_der_hex": "308202e906092a864886f70d010702a08202da308202d6020101310d300b0609608648016503040201300b06092a864886f70d010701a08201a03082019c30820142a00302010202146867bcb2a007a5886ace2f00e7d93aa4bde95f0b300a06082a8648ce3d0403023021311f301d06035504030c1654455354204f4e4c5920686973746f727920726f6f74301e170d3239303130313030303030305a170d3331303130313030303030305a30193117301506035504030c0e696e7374616c6c6174696f6e2d313059301306072a8648ce3d020106082a8648ce3d030107034200041a93feb2c25244f8612582c54ac157984295dab154eeb48af2b3da5db8e0d0365b28a17f91fc0f9eece9e04c1ac6315e1cbc9dc726f88a26475f34ba0888ab05a360305e300c0603551d130101ff04023000300e0603551d0f0101ff040403020780301d0603551d0e04160414237f4a596e1e29c85cdbdf7178e57ec6549eabc3301f0603551d230418301680140b2f15dae563b69810206c49b78b935afbfffdce300a06082a8648ce3d0403020348003045022100ed8250e332b9a8ee876571cec00e1903810845373bca6e76bc16947d4ddc235202206663772adc0121a158fee4d46a9d80a1a3fdf57d636b0f4664c0c89d150a6b5b3182010f3082010b02010130393021311f301d06035504030c1654455354204f4e4c5920686973746f727920726f6f7402146867bcb2a007a5886ace2f00e7d93aa4bde95f0b300b0609608648016503040201a069301806092a864886f70d010903310b06092a864886f70d010701301c06092a864886f70d010905310f170d3236313130373136323730385a302f06092a864886f70d010904312204202991a337efe269f47dbe139c8e4b0436085d7ced7c1dce9b148a7686927012b3300a06082a8648ce3d040302044730450220481faf06e44758026087ff05f17483125ad175a4e01f1303d0c2096a8a043d5a022100d6f571629d44184d95ece7016246fec40353dbfc4596b9dbac9242abb7b737c5"
+        }
+      ]
+    }
+  }
+]
