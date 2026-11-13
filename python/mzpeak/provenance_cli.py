@@ -15,6 +15,9 @@ import time
 
 from .manifest import Manifest, _keys, _load_json
 from .provenance_archive import capture_archive
+from .embedded import ProvenanceBundle, embed_provenance, read_embedded_provenance
+from .evidence import EvidenceBundle, TsaPolicy
+from .historical import verify_historical_archive_history
 from .signing import (
     Algorithm,
     OpenSslBackend,
@@ -232,6 +235,19 @@ def _releases(path):
     return result
 
 
+def _evidence(path):
+    if path is None:
+        return {}
+    value = _json(path)
+    if not isinstance(value, dict):
+        raise ValueError(
+            "evidence must be an object keyed by stage ID or release digest"
+        )
+    return {
+        k: EvidenceBundle.from_json(json.dumps(v).encode()) for k, v in value.items()
+    }
+
+
 def parser():
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument(
@@ -240,6 +256,22 @@ def parser():
         help="trusted OpenSSL executable (3.5+ for ML-DSA)",
     )
     sub = result.add_subparsers(dest="command", required=True)
+    signed_archive = sub.add_parser(
+        "sign-archive", help="sign an acquisition and embed its provenance in the ZIP"
+    )
+    signed_archive.add_argument("archive")
+    signed_archive.add_argument("--run-id", required=True)
+    signed_archive.add_argument("--stage-id", required=True)
+    signed_archive.add_argument("--signers", required=True)
+    signed_archive.add_argument(
+        "--policy", choices=[p.value for p in SignaturePolicy], required=True
+    )
+    embed = sub.add_parser(
+        "embed", help="add signed stages, approvals and evidence to the ZIP"
+    )
+    embed.add_argument("archive")
+    for name in ("records", "releases", "stage-evidence", "release-evidence"):
+        embed.add_argument("--" + name)
     capture = sub.add_parser(
         "capture", help="capture decompressed ZIP content inventory"
     )
@@ -263,7 +295,12 @@ def parser():
             else "sign a software release approval",
         )
         command.add_argument("input")
-        command.add_argument("output")
+        command.add_argument(
+            "output", nargs="?", help="explicit detached output (instead of --archive)"
+        )
+        command.add_argument(
+            "--archive", help="embed the signed record in this mzPeak ZIP"
+        )
         command.add_argument(
             "--signers", required=True, help="local signer provider configuration JSON"
         )
@@ -275,7 +312,11 @@ def parser():
         help="verify content, lineage, signatures and externally configured trust",
     )
     verify.add_argument("archive")
-    verify.add_argument("records")
+    verify.add_argument(
+        "records",
+        nargs="?",
+        help="explicit detached records; omitted means embedded provenance",
+    )
     verify.add_argument("--trust", required=True)
     verify.add_argument("--identities", required=True)
     verify.add_argument("--releases")
@@ -284,6 +325,13 @@ def parser():
         "--validation-time",
         type=_unix_second,
         help="explicit fixed Unix second for reproducible verification; default is the current clock",
+    )
+    verify.add_argument(
+        "--tsa-policy", help="external TSA policy for historical verification"
+    )
+    verify.add_argument("--evidence-policy-id")
+    verify.add_argument(
+        "--evidence-policy", help="external policy bytes bound by historical evidence"
     )
     verify.add_argument(
         "--heads",
@@ -299,7 +347,48 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         backend = OpenSslBackend(args.openssl)
-        if args.command == "capture":
+        if args.command == "sign-archive":
+            stage = Stage(
+                capture_archive(args.archive, args.run_id, args.stage_id), "acquisition"
+            )
+            envelope = backend.sign(
+                stage.canonical_bytes(),
+                _signers(args.signers),
+                SignaturePolicy(args.policy),
+            )
+            bundle = embed_provenance(
+                args.archive, ProvenanceBundle([SignedStage(stage, envelope)])
+            )
+            print(
+                json.dumps(
+                    {"archive": args.archive, "embedded_stages": len(bundle.records)}
+                )
+            )
+        elif args.command == "embed":
+            if not any(
+                (
+                    args.records,
+                    args.releases,
+                    args.stage_evidence,
+                    args.release_evidence,
+                )
+            ):
+                raise ValueError("supply records, approvals or evidence to embed")
+            bundle = embed_provenance(
+                args.archive,
+                ProvenanceBundle(
+                    _records(args.records) if args.records else [],
+                    _releases(args.releases),
+                    _evidence(args.stage_evidence),
+                    _evidence(args.release_evidence),
+                ),
+            )
+            print(
+                json.dumps(
+                    {"archive": args.archive, "embedded_stages": len(bundle.records)}
+                )
+            )
+        elif args.command == "capture":
             manifest = capture_archive(
                 args.archive, args.run_id, args.stage_id, args.select
             )
@@ -316,6 +405,10 @@ def main(argv=None):
                 json.dumps({"output": str(args.output), "stage_sha256": stage.digest()})
             )
         elif args.command in ("sign", "sign-release"):
+            if bool(args.output) == bool(args.archive):
+                raise ValueError(
+                    "select --archive for embedded output or an explicit detached output path"
+                )
             identities = _signers(args.signers)
             if args.command == "sign":
                 stage = Stage.from_bytes(_read(args.input))
@@ -337,8 +430,20 @@ def main(argv=None):
                     "statement": asdict(statement),
                     "envelope": _load_json(envelope.to_json()),
                 }
-            _write(args.output, value)
-            print(json.dumps({"output": str(args.output)}))
+            if args.archive:
+                if args.command == "sign":
+                    additions = ProvenanceBundle([SignedStage(stage, envelope)])
+                else:
+                    additions = ProvenanceBundle(
+                        releases={
+                            statement.release_sha256: SignedRelease(statement, envelope)
+                        }
+                    )
+                embed_provenance(args.archive, additions)
+                print(json.dumps({"archive": args.archive}))
+            else:
+                _write(args.output, value)
+                print(json.dumps({"output": str(args.output)}))
         else:
             # Sample the wall clock once for all current checks in this invocation.
             validation_time = (
@@ -349,30 +454,64 @@ def main(argv=None):
             if not 0 <= validation_time <= 2**63 - 1:
                 raise ValueError("current time is outside supported Unix seconds")
             time_source = "current" if args.validation_time is None else "explicit"
+            bundle = None if args.records else read_embedded_provenance(args.archive)
+            if bundle is not None and args.releases:
+                raise ValueError(
+                    "embed approvals for embedded verification; --releases is for detached records"
+                )
+            records = _records(args.records) if args.records else bundle.records
+            releases = _releases(args.releases) if args.records else bundle.releases
             heads = None if args.heads is None else _json(args.heads)
             if heads is not None and (
                 not isinstance(heads, list)
                 or not all(isinstance(v, str) for v in heads)
             ):
                 raise ValueError("heads must be an array of digests")
-            report = verify_archive_history(
+            historical = (
+                args.tsa_policy,
+                args.evidence_policy_id,
+                args.evidence_policy,
+            )
+            extra = {}
+            verifier = verify_archive_history
+            if any(historical):
+                if not all(historical) or bundle is None:
+                    raise ValueError(
+                        "historical verification requires embedded proof and all three external policy options"
+                    )
+                verifier = verify_historical_archive_history
+                extra = dict(
+                    tsa_policy=TsaPolicy(
+                        **_policy_at(args.tsa_policy, validation_time)
+                    ),
+                    policy_id=args.evidence_policy_id,
+                    policy_bytes=_read(args.evidence_policy),
+                    stage_evidence=bundle.stage_evidence,
+                    release_evidence=bundle.release_evidence,
+                )
+            report = verifier(
                 args.archive,
-                _records(args.records),
+                records,
                 _trust(args.trust, validation_time),
                 SignaturePolicy(args.policy),
                 _string_map(args.identities),
-                releases=_releases(args.releases),
+                releases=releases,
                 publishers=_string_map(args.publishers),
                 expected_heads=heads,
                 backend=backend,
+                **extra,
             )
             print(
                 json.dumps(
                     {
                         "accepted": report.accepted,
-                        "verification": "current"
-                        if args.validation_time is None
-                        else "fixed-time",
+                        "verification": (
+                            "historical"
+                            if extra
+                            else "current"
+                            if args.validation_time is None
+                            else "fixed-time"
+                        ),
                         "validation_time": validation_time,
                         "time_source": time_source,
                         "report": asdict(report),

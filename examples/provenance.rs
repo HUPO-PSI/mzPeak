@@ -1,5 +1,5 @@
 //! CLI for the experimental mzPeak provenance proposal. No keys are generated,
-//! no archive is modified, and no trust policy is inferred from archive content.
+//! public proofs can be embedded, and trust policy is never inferred from archive content.
 use std::{
     collections::BTreeMap,
     error::Error,
@@ -12,6 +12,9 @@ use std::{
 use clap::{Parser, Subcommand};
 use mzpeak_prototyping::provenance::{
     archive::capture_archive,
+    embedded::{ProvenanceBundle, embed_provenance, read_embedded_provenance},
+    evidence::TsaPolicy,
+    historical::{HistoricalPolicy, verify_historical_archive_history},
     manifest::Manifest,
     signing::{
         Algorithm, KeyProvider, OpenSslBackend, SignatureEnvelope, SignaturePolicy, SigningIdentity,
@@ -41,6 +44,30 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Sign an acquisition and embed its public provenance in the ZIP.
+    SignArchive {
+        archive: PathBuf,
+        #[arg(long)]
+        run_id: String,
+        #[arg(long)]
+        stage_id: String,
+        #[arg(long)]
+        signers: PathBuf,
+        #[arg(long, value_parser = ["ecdsa", "pqc", "both"])]
+        policy: String,
+    },
+    /// Add signed stages, publisher approvals and historical evidence to the ZIP.
+    Embed {
+        archive: PathBuf,
+        #[arg(long)]
+        records: Option<PathBuf>,
+        #[arg(long)]
+        releases: Option<PathBuf>,
+        #[arg(long)]
+        stage_evidence: Option<PathBuf>,
+        #[arg(long)]
+        release_evidence: Option<PathBuf>,
+    },
     /// Capture a ZIP's exact decompressed content inventory.
     Capture {
         archive: PathBuf,
@@ -57,7 +84,9 @@ enum Commands {
     /// Sign a stage with one or both configured algorithms.
     Sign {
         input: PathBuf,
-        output: PathBuf,
+        output: Option<PathBuf>,
+        #[arg(long)]
+        archive: Option<PathBuf>,
         #[arg(long)]
         signers: PathBuf,
         #[arg(long, value_parser = ["ecdsa", "pqc", "both"])]
@@ -66,7 +95,9 @@ enum Commands {
     /// Sign a publisher's approval of a particular software release.
     SignRelease {
         input: PathBuf,
-        output: PathBuf,
+        output: Option<PathBuf>,
+        #[arg(long)]
+        archive: Option<PathBuf>,
         #[arg(long)]
         signers: PathBuf,
         #[arg(long, value_parser = ["ecdsa", "pqc", "both"])]
@@ -75,7 +106,7 @@ enum Commands {
     /// Verify complete content/history against externally supplied trust.
     Verify {
         archive: PathBuf,
-        records: PathBuf,
+        records: Option<PathBuf>,
         #[arg(long)]
         trust: PathBuf,
         #[arg(long)]
@@ -87,6 +118,12 @@ enum Commands {
         /// Explicit fixed Unix second; by default use the current clock once.
         #[arg(long, value_parser = clap::value_parser!(i64).range(0..))]
         validation_time: Option<i64>,
+        #[arg(long)]
+        tsa_policy: Option<PathBuf>,
+        #[arg(long)]
+        evidence_policy_id: Option<String>,
+        #[arg(long)]
+        evidence_policy: Option<PathBuf>,
         /// Trusted head digest array; absent means no rollback assurance.
         #[arg(long)]
         heads: Option<PathBuf>,
@@ -317,6 +354,71 @@ fn run(cli: Cli) -> CliResult<bool> {
         ..Default::default()
     };
     match cli.command {
+        Commands::SignArchive {
+            archive,
+            run_id,
+            stage_id,
+            signers: config,
+            policy,
+        } => {
+            let stage = Stage {
+                version: 1,
+                kind: StageKind::Acquisition,
+                manifest: capture_archive(&archive, &run_id, &stage_id, None)?,
+                parents: vec![],
+                inputs: vec![],
+                software: None,
+            };
+            let envelope = backend.sign(
+                &stage.canonical_bytes()?,
+                &signers(&config)?,
+                signature_policy(&policy)?,
+            )?;
+            let bundle = embed_provenance(
+                &archive,
+                &ProvenanceBundle {
+                    records: vec![SignedStage { stage, envelope }],
+                    ..Default::default()
+                },
+            )?;
+            println!(
+                "{}",
+                serde_json::json!({"archive":archive,"embedded_stages":bundle.records.len()})
+            );
+        }
+        Commands::Embed {
+            archive,
+            records: input,
+            releases,
+            stage_evidence,
+            release_evidence,
+        } => {
+            if input.is_none()
+                && releases.is_none()
+                && stage_evidence.is_none()
+                && release_evidence.is_none()
+            {
+                return Err("supply records, approvals or evidence to embed".into());
+            }
+            let additions = ProvenanceBundle {
+                records: input.map(|p| records(&p)).transpose()?.unwrap_or_default(),
+                releases: releases.map(read_json).transpose()?.unwrap_or_default(),
+                stage_evidence: stage_evidence
+                    .map(read_json)
+                    .transpose()?
+                    .unwrap_or_default(),
+                release_evidence: release_evidence
+                    .map(read_json)
+                    .transpose()?
+                    .unwrap_or_default(),
+                ..Default::default()
+            };
+            let bundle = embed_provenance(&archive, &additions)?;
+            println!(
+                "{}",
+                serde_json::json!({"archive":archive,"embedded_stages":bundle.records.len()})
+            );
+        }
         Commands::Capture {
             archive,
             output,
@@ -351,38 +453,70 @@ fn run(cli: Cli) -> CliResult<bool> {
         Commands::Sign {
             input,
             output,
+            archive,
             signers: config,
             policy,
         } => {
+            if output.is_some() == archive.is_some() {
+                return Err("select --archive or an explicit detached output path".into());
+            }
             let stage: Stage = read_json(input)?;
             let envelope = backend.sign(
                 &stage.canonical_bytes()?,
                 &signers(&config)?,
                 signature_policy(&policy)?,
             )?;
-            write_new(&output, &SignedStage { stage, envelope })?;
-            println!("{}", serde_json::json!({"output":output}));
+            let record = SignedStage { stage, envelope };
+            if let Some(archive) = archive {
+                embed_provenance(
+                    &archive,
+                    &ProvenanceBundle {
+                        records: vec![record],
+                        ..Default::default()
+                    },
+                )?;
+                println!("{}", serde_json::json!({"archive":archive}));
+            } else if let Some(output) = output {
+                write_new(&output, &record)?;
+                println!("{}", serde_json::json!({"output":output}));
+            }
         }
         Commands::SignRelease {
             input,
             output,
+            archive,
             signers: config,
             policy,
         } => {
+            if output.is_some() == archive.is_some() {
+                return Err("select --archive or an explicit detached output path".into());
+            }
             let statement: ReleaseStatement = read_json(input)?;
             let envelope = backend.sign(
                 &statement.canonical_bytes()?,
                 &signers(&config)?,
                 signature_policy(&policy)?,
             )?;
-            write_new(
-                &output,
-                &SignedRelease {
-                    statement,
-                    envelope,
-                },
-            )?;
-            println!("{}", serde_json::json!({"output":output}));
+            let release = SignedRelease {
+                statement,
+                envelope,
+            };
+            if let Some(archive) = archive {
+                embed_provenance(
+                    &archive,
+                    &ProvenanceBundle {
+                        releases: BTreeMap::from([(
+                            release.statement.release_sha256.clone(),
+                            release,
+                        )]),
+                        ..Default::default()
+                    },
+                )?;
+                println!("{}", serde_json::json!({"archive":archive}));
+            } else if let Some(output) = output {
+                write_new(&output, &release)?;
+                println!("{}", serde_json::json!({"output":output}));
+            }
         }
         Commands::Verify {
             archive,
@@ -392,6 +526,9 @@ fn run(cli: Cli) -> CliResult<bool> {
             releases,
             publishers,
             validation_time,
+            tsa_policy,
+            evidence_policy_id,
+            evidence_policy,
             heads,
             policy,
         } => {
@@ -406,13 +543,29 @@ fn run(cli: Cli) -> CliResult<bool> {
                 "current"
             };
             let validation_time = verification_time(validation_time)?;
-            let records = records(&record_path)?;
+            let bundle = if record_path.is_none() {
+                Some(read_embedded_provenance(&archive)?)
+            } else {
+                None
+            };
+            if bundle.is_some() && releases.is_some() {
+                return Err(
+                    "embed approvals for embedded verification; --releases is for detached records"
+                        .into(),
+                );
+            }
+            let records = match record_path {
+                Some(path) => records(&path)?,
+                None => bundle.as_ref().unwrap().records.clone(),
+            };
             let trust: TrustPolicy = read_policy_at(trust, validation_time)?;
             let identities = string_map(Some(&identities))?;
             let publishers = string_map(publishers.as_deref())?;
             let heads: Option<Vec<String>> = heads.map(read_json).transpose()?;
-            let releases: BTreeMap<String, SignedRelease> =
-                releases.map(read_json).transpose()?.unwrap_or_default();
+            let releases: BTreeMap<String, SignedRelease> = match &bundle {
+                Some(bundle) => bundle.releases.clone(),
+                None => releases.map(read_json).transpose()?.unwrap_or_default(),
+            };
             for (digest, release) in &releases {
                 if digest != &release.statement.release_sha256 {
                     return Err("release map key does not match its statement".into());
@@ -425,6 +578,37 @@ fn run(cli: Cli) -> CliResult<bool> {
                 publishers: &publishers,
                 expected_heads: heads.as_deref(),
             };
+            if tsa_policy.is_some() || evidence_policy_id.is_some() || evidence_policy.is_some() {
+                let (Some(tsa_path), Some(policy_id), Some(policy_path), Some(bundle)) =
+                    (tsa_policy, evidence_policy_id, evidence_policy, bundle)
+                else {
+                    return Err("historical verification requires embedded proof and all three external policy options".into());
+                };
+                let tsa: TsaPolicy = read_policy_at(tsa_path, validation_time)?;
+                let policy_bytes = read(policy_path)?;
+                let historical = HistoricalPolicy {
+                    tsa: &tsa,
+                    policy_id: &policy_id,
+                    policy_bytes: &policy_bytes,
+                    stage_evidence: &bundle.stage_evidence,
+                    release_evidence: &bundle.release_evidence,
+                };
+                let report = verify_historical_archive_history(
+                    archive,
+                    &records,
+                    &policy,
+                    &releases,
+                    &backend,
+                    &historical,
+                )?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({"accepted":report.accepted(),"verification":"historical","validation_time":validation_time,"time_source":time_source,"report":report})
+                    )?
+                );
+                return Ok(report.accepted());
+            }
             let report = verify_archive_history(archive, &records, &policy, &releases, &backend)?;
             let accepted = report.accepted();
             println!(

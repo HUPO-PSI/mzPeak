@@ -14,11 +14,19 @@ bytes. Optional chunk records bind each selected byte range to a digest and,
 where applicable, the Parquet row group, column number and column path. Those
 coordinates are part of the signed payload, not unsigned lookup hints.
 
-The manifest is detached from its content. Only the exact proof-storage names
-`provenance/bundle-v1.json` and legacy `provenance.parquet` are exempt from
-content hashing; detached proofs may also live outside the archive. Other names
-under `provenance/` are reserved and rejected. Data consumers must not interpret
-proof-storage members as measurement content.
+The manifest is detached from the measurement bytes it describes, but the normal
+portable form stores provenance **inside the mzPeak ZIP**, in the reserved member
+`provenance/bundle-v1.json`. That bundle carries signed stages (including their
+manifests and public certificate chains), publisher approvals and archived
+timestamp/revocation evidence. Copying the `.mzpeak` file carries these proofs.
+Separate files are an explicit detached workflow, not the default exchange form.
+See [embedded provenance](provenance-embedded-v1.md) for storage and discovery.
+
+Provenance records do not hash themselves as measurement content. The legacy
+`provenance.parquet` filename is also reserved. Data consumers must not interpret
+arbitrary files in these reserved namespaces as certified measurement content.
+Trust roots, signer authorization and verification policy are independently
+selected by the recipient; embedding a certificate never makes it trusted.
 
 ## Schema and canonical bytes
 

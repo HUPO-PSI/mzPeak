@@ -3,8 +3,11 @@
 These commands exercise an experimental format proposal, not an approved mzPeak
 standard or a regulatory certification. The Python and Rust implementations use
 the same manifests, signed-stage records, signer configuration and trust policy.
-They do not change the input archive or generate signing keys. Outputs must name
-new files; an existing destination is never overwritten.
+The default exchange form embeds public proofs inside the mzPeak ZIP.
+`sign-archive`, `sign --archive`, `sign-release --archive` and `embed` update that
+archive atomically, preserving measurement content and existing proofs. No command
+generates signing keys. Explicit detached outputs must name new files and are
+never overwritten. See [embedded provenance](provenance-embedded-v1.md).
 
 Install Python with the provenance extra (`pip install 'python/[provenance]'`) or
 build Rust with `cargo build --example provenance`. Use OpenSSL 3.5 or newer for
@@ -18,6 +21,21 @@ An optional global `--openssl /trusted/path/to/openssl` precedes the subcommand.
 ## Capture and sign an acquisition
 
 ```sh
+python -m mzpeak.provenance_cli sign-archive small.mzpeak \
+  --run-id demo-run --stage-id acquisition \
+  --signers instrument-signers.json --policy ecdsa
+python -m mzpeak.provenance_cli verify small.mzpeak \
+  --trust trust.json --identities identities.json --policy ecdsa
+```
+
+The resulting file carries its signed stage and public certificates. Use `embed`
+to add publisher approvals and timestamp evidence. Verification discovers those
+records in the ZIP; historical verification additionally takes the recipient's
+TSA policy and bound policy identifier/bytes, as described in the embedded guide.
+
+For an explicitly detached, step-by-step workflow:
+
+```sh
 python -m mzpeak.provenance_cli capture small.mzpeak acquisition-manifest.json \
   --run-id demo-run --stage-id acquisition
 python -m mzpeak.provenance_cli init-acquisition acquisition-manifest.json acquisition-stage.json
@@ -25,11 +43,11 @@ python -m mzpeak.provenance_cli sign acquisition-stage.json acquisition-record.j
   --signers instrument-signers.json --policy ecdsa
 ```
 
-`capture` covers JSON metadata, the index, and complete Parquet files. Supported
-proof members are excluded; other reserved provenance names are rejected. Repeat
-`--select path` to capture just one processing stage's output inventory. The
-complete-history verifier checks the union of stage inventories and reports any
-other content as uncovered.
+`capture` covers JSON metadata, the index, and complete Parquet files. Only the
+exact proof members `provenance/bundle-v1.json` and `provenance.parquet` are excluded;
+other reserved provenance names are rejected. Repeat `--select path` to capture
+just one processing stage's output inventory. The complete-history verifier checks
+the union of stage inventories and reports any other content as uncovered.
 
 `init-acquisition` only constructs the stage object. Trust policy must explicitly
 authorize the certificate and instrument identity before verification accepts its
@@ -140,14 +158,21 @@ checks at an earlier date. For a reproducible test, explicitly pass
 `verification: "fixed-time"`, not `"current"`. Both modes report `validation_time`
 and `time_source` (`"current"` or `"explicit"`).
 
+Historical verification uses the same chosen time as its upper bound for timestamp
+`genTime`, ignoring any frozen `validation_time` in the TSA policy file. It keeps
+checking timestamp certificates and archived CRLs at the authenticated timestamp
+time, and data-signing certificates at that trusted time. This does not change the
+documented historical revocation policy or make a caller-selected time trusted
+timestamp evidence.
+
 The result is JSON with `accepted` and a structured `report` containing coverage,
 lineage, signature, certificate authorization/revocation and release results.
 Exit status is 0 for acceptance, 1 for a completed but unaccepted verification,
 and 2 for malformed input or an operational error. Errors are JSON on stderr.
 Missing `--heads` leaves `checkpoint_checked` false: internal consistency alone
 cannot detect removal of an entire final stage. The command performs current or
-explicit-time validation; RFC 3161 historical validation uses the separate
-`evidence` APIs, not a caller-chosen time asserted to be a trusted timestamp.
+explicit-time validation; the embedded historical mode additionally requires
+RFC 3161 evidence and all three external evidence-policy options.
 
 ## Reproduce the public interoperability fixture
 
