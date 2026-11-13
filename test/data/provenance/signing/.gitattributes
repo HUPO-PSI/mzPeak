@@ -1,0 +1,3 @@
+*.der binary
+*.bin binary
+*.json -text

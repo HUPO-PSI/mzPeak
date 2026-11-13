@@ -5,3 +5,5 @@ pub mod archive;
 pub mod trust;
 #[cfg(feature = "verification")]
 mod openssl_process;
+#[cfg(feature = "verification")]
+pub mod signing;
