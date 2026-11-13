@@ -264,8 +264,10 @@ mod verify {
         IncorrectContentType(const_oid::ObjectIdentifier),
         #[error("expected exactly one signer")]
         MissingSigner,
-        #[error("expected exactly one matching signer certificate")]
+        #[error("no matching signer certificate")]
         MissingCertificate,
+        #[error("multiple certificates match the signer issuer and serial number")]
+        AmbiguousSignerCertificate,
         #[error("signed attributes are required")]
         MissingSignedAttributes,
         #[error("expected one value for signed attribute {0:?}")]
@@ -377,7 +379,7 @@ mod verify {
                 .next()
                 .ok_or(VerificationError::MissingCertificate)?;
             if matching.next().is_some() {
-                return Err(VerificationError::MissingCertificate);
+                return Err(VerificationError::AmbiguousSignerCertificate);
             }
             let key = VerifyingKey::from_public_key_der(
                 &cert.tbs_certificate.subject_public_key_info.to_der()?,
