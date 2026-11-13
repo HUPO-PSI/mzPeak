@@ -222,7 +222,7 @@ mod verify {
                 },
             },
         },
-        signed_data::{SignedData, SignerIdentifier},
+        signed_data::{SignedAttributes, SignedData, SignerIdentifier},
     };
     use const_oid::db::{rfc5911, rfc5912, rfc8410};
     use ed25519_dalek::{VerifyingKey, pkcs8::DecodePublicKey};
@@ -385,11 +385,13 @@ mod verify {
                 &cert.tbs_certificate.subject_public_key_info.to_der()?,
             )
             .map_err(|_| VerificationError::InvalidSignature)?;
-            let signed_attrs = signer_info
+            let signed_attrs: &SignedAttributes = signer_info
                 .signed_attrs
                 .as_ref()
                 .ok_or(VerificationError::MissingSignedAttributes)?;
-            // DER parsing rejects non-canonical encodings. SignedAttributes encodes as SET OF here.
+            // Encoding SignedAttributes directly uses the universal SET OF tag (0x31),
+            // as required by RFC 5652 section 5.4. The [0] IMPLICIT tag (0xA0) applies
+            // only when encoding this value as a field of SignerInfo.
             let bytes = signed_attrs.to_der()?;
             let signature = ed25519::Signature::from_slice(signer_info.signature.as_bytes())
                 .map_err(|_| VerificationError::InvalidSignature)?;
