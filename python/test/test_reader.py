@@ -18,7 +18,6 @@ from mzpeak.filters import find_where_not_zero_run
 from mzpeak.mz_reader import BufferFormat
 from mzpeak.provenance import (
     checksum_parquet_segments,
-    segment_signatures_from_table,
     segment_signatures_to_table,
 )
 from pyteomics import mzml
@@ -303,9 +302,9 @@ def test_checksum_segments(small: MzPeakFile):
                 == "72ec021de3b510f505b51351e94419f22c0afd5965b8f0f0f08550b220db3bae4a61c05f9bd6c29963dcc7baa6d2a60ee9def1e9e4c0122bf387898e5a326ec3"
             )
 
-    table = segment_signatures_to_table(cols)
-    dup = segment_signatures_from_table(table)
-    assert cols == dup
+    # Checksums are intermediate state, not completed signature-table records.
+    with pytest.raises(ValueError, match="unsigned"):
+        segment_signatures_to_table(cols)
 
 
 def test_linear_grid(small: MzPeakFile):

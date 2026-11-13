@@ -1,0 +1,2 @@
+# Signatures bind exact bytes; checkout must not normalize the signed payload.
+metadata.json -text

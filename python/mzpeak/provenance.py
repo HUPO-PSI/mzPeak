@@ -2,12 +2,11 @@ import hashlib
 import hmac
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
-from dataclasses import fields as dataclasses_fields
 from datetime import UTC, datetime
 from typing import IO, TYPE_CHECKING, Self
 
 try:
-    from asn1crypto import algos, cms, pem
+    from asn1crypto import algos, cms, core, pem
     from asn1crypto import x509 as x509_asn1
     from cryptography import x509
     from cryptography.hazmat.primitives import serialization
@@ -32,6 +31,44 @@ class VerificationError(Exception):
     pass
 
 
+def _parse_cms_signature(signature: bytes) -> "cms.ContentInfo":
+    """Parse a complete CMS SignedData value without asserting validity or trust."""
+    if not has_crypto:
+        raise ImportError("CMS parsing requires the provenance dependencies")
+
+    def check_fields(value):
+        if isinstance(value, core.Sequence):
+            # asn1crypto permits extra elements even in a named ASN.1 SEQUENCE.
+            # Its field definitions are needed to reject that malformed input.
+            if value._fields and len(value) > len(value._fields):
+                raise ValueError("unexpected ASN.1 sequence field")
+            for index in range(len(value)):
+                check_fields(value[index])
+        elif isinstance(value, core.SequenceOf):
+            for child in value:
+                check_fields(child)
+        elif isinstance(value, core.Choice):
+            check_fields(value.chosen)
+        elif isinstance(value, core.Any):
+            check_fields(value.parsed)
+
+    try:
+        content_info = cms.ContentInfo.load(signature, strict=True)
+        if content_info["content_type"].native != "signed_data":
+            raise ValueError("expected CMS SignedData")
+        # asn1crypto decodes lazily. Traverse the body so malformed nested values
+        # cannot pass merely because the outer ContentInfo was readable.
+        decoded = content_info.native
+        check_fields(content_info)
+        if content_info.dump(force=True) != signature:
+            raise ValueError("expected ASN.1 DER encoding")
+        if not decoded["content"]["signer_infos"]:
+            raise ValueError("expected at least one CMS signer")
+    except (ValueError, TypeError, KeyError) as error:
+        raise ValueError("signature must contain a complete CMS SignedData value") from error
+    return content_info
+
+
 @dataclass
 class SegmentSignature:
     """
@@ -43,19 +80,19 @@ class SegmentSignature:
     # The name of the file the column chunk was read from
     filename: str
     # The index of the row group this column chunk belongs to
-    row_group: int
+    row_group: int | None
     # The index of the column within the row group
-    column: int
+    column: int | None
     # The dotted path of the column in the Parquet schema
-    path: str
+    path: str | None
     # The byte offset of the first page of the chunk in the file
-    offset: int
+    offset: int | None
     # The number of bytes in the chunk (total compressed size)
-    length: int
+    length: int | None
     # The SHA-512 digest of the chunk's bytes, potentially signed in Cryptographic Messaging Syntax (CMS) ASN.1 DER
     # using the provider's private key.
     signature: bytes
-    # Whether the chunk is signed or not
+    # In-memory completion state; never stored or used as a trust decision.
     signed: bool = False
 
     def copy(self) -> Self:
@@ -156,7 +193,7 @@ class SegmentSignature:
             raise ValueError("Cannot verify an unsigned segment")
         if not has_crypto:
             raise ImportError(f"Cannot verify {self}, do not have cryptography and/or asn1crypto")
-        content_info = cms.ContentInfo.load(self.signature)
+        content_info = _parse_cms_signature(self.signature)
         if content_info["content_type"].native != "signed_data":
             raise VerificationError("not a SignedData")
         signed_data = content_info["content"]
@@ -315,19 +352,19 @@ def checksum_stream(reader: IO[bytes], filename: str, bufsize: int = 2 ** 16) ->
     )
 
 def segment_signature_schema() -> "pyarrow.Schema":
-    """The Arrow schema used to store :class:`SegmentSignature` records"""
+    """Signature-table schema revision 1; see doc/provenance-signatures.md."""
     import pyarrow as pa
 
     return pa.schema(
         [
             pa.field("filename", pa.large_string(), False),
-            pa.field("row_group", pa.uint64(), False),
-            pa.field("column", pa.uint64(), False),
-            pa.field("path", pa.large_string(), False),
-            pa.field("offset", pa.uint64(), False),
-            pa.field("length", pa.uint64(), False),
+            pa.field("row_group", pa.uint64(), True),
+            pa.field("column", pa.uint64(), True),
+            pa.field("path", pa.large_string(), True),
+            pa.field("offset", pa.uint64(), True),
+            pa.field("length", pa.uint64(), True),
             pa.field("signature", pa.large_binary(), False),
-        ]
+        ], metadata={"mzpeak.provenance": "1"}
     )
 
 
@@ -335,11 +372,17 @@ def segment_signatures_to_table(
     checksums: Sequence[SegmentSignature],
 ) -> "pyarrow.Table":
     """
-    Convert a sequence of :class:`SegmentSignature` into a :class:`pyarrow.Table`
-    with the schema from :func:`segment_signature_schema`, suitable for writing to Parquet.
+    Store completed signatures using :func:`segment_signature_schema`.
+
+    Unsigned records and malformed CMS payloads raise :class:`ValueError`.
+    Structural parsing does not establish cryptographic validity or trust.
     """
     import pyarrow as pa
 
+    for record in checksums:
+        if not record.signed:
+            raise ValueError("cannot serialize an unsigned segment")
+        _parse_cms_signature(record.signature)
     schema = segment_signature_schema()
     return pa.table(
         {f.name: [getattr(c, f.name) for c in checksums] for f in schema}, schema=schema
@@ -353,16 +396,31 @@ def segment_signatures_from_table(
     Convert a table or record batch produced by :func:`segment_signatures_to_table`
     (or read back from a Parquet file holding it) into :class:`SegmentSignature` records.
 
-    Columns are looked up by name. A :class:`KeyError` is raised if one is missing and a
-    :class:`ValueError` if one contains nulls.
+    Nullable coordinates represent whole-file records. Every payload must parse as
+    complete CMS SignedData before its in-memory ``signed`` state is restored.
+    This does not establish cryptographic validity or trust. Unmarked tables are
+    accepted under the same rules; unsupported explicit schema revisions are rejected.
     """
-    names = [f.name for f in dataclasses_fields(SegmentSignature) if f.name != 'signed']
+    if len(set(table.schema.names)) != len(table.schema.names):
+        raise ValueError("duplicate column names")
+    revision = (table.schema.metadata or {}).get(b"mzpeak.provenance")
+    if revision is not None and revision != b"1":
+        raise ValueError(f"unsupported provenance schema revision {revision!r}")
+    schema = segment_signature_schema()
+    names = schema.names
     columns = {}
     for name in names:
         if name not in table.schema.names:
             raise KeyError(f"Missing column {name!r}")
         col = table.column(name)
-        if col.null_count > 0:
+        field = schema.field(name)
+        if col.type != field.type:
+            raise ValueError(f"Column {name!r} has unexpected type {col.type}")
+        if not field.nullable and col.null_count > 0:
             raise ValueError(f"Column {name!r} contains nulls")
         columns[name] = col.to_pylist()
-    return [SegmentSignature(*row) for row in zip(*(columns[n] for n in names))]
+    records = []
+    for row in zip(*(columns[name] for name in names)):
+        _parse_cms_signature(row[-1])
+        records.append(SegmentSignature(*row, signed=True))
+    return records

@@ -1,5 +1,5 @@
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import mzpeak
@@ -11,11 +11,17 @@ from pyarrow import parquet
 
 
 def sign_archive(archive: mzpeak.MzPeakFile, output_path: Path):
+    """Self-signed archive signing demo; does not certify archive identity or coverage."""
     blocks: list[provenance.SegmentSignature] = []
     for entry in archive.file_index:
-        blocks.extend(
-            provenance.checksum_parquet_segments(archive.open_stream(entry), entry.name)
-        )
+        with archive.open_stream(entry) as stream:
+            if entry.name.endswith(".parquet"):
+                blocks.extend(provenance.checksum_parquet_segments(stream, entry.name))
+            else:
+                blocks.append(provenance.checksum_stream(stream, entry.name))
+
+    if not blocks:
+        raise ValueError("archive contains no segments to sign")
 
     issuer = x509.Name(
         [
@@ -33,18 +39,23 @@ def sign_archive(archive: mzpeak.MzPeakFile, output_path: Path):
         issuer,
         public_key,
         x509.random_serial_number(),
-        datetime.now(timezone.utc),
-        datetime.now(timezone.utc) + timedelta(days=10),
+        datetime.now(UTC),
+        datetime.now(UTC) + timedelta(days=10),
     ).sign(private_key, None)
 
     for block in blocks:
         block.sign_with(private_key, cert)
-        block.read_and_digest(archive.open_stream(block.filename))
+        with archive.open_stream(block.filename) as stream:
+            if block.length is None:
+                digest = provenance.checksum_stream(stream, block.filename).signature
+            else:
+                digest = block.read_and_digest(stream)
+            block.verify_against(digest)
 
     table = provenance.segment_signatures_to_table(blocks)
 
-    writer = parquet.ParquetWriter(output_path, table.schema)
-    writer.write_table(table)
+    with parquet.ParquetWriter(output_path, table.schema) as writer:
+        writer.write_table(table)
 
 
 def main():
