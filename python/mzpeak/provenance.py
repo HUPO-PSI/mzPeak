@@ -9,6 +9,7 @@ try:
     from asn1crypto import algos, cms, core, pem
     from asn1crypto import x509 as x509_asn1
     from cryptography import x509
+    from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import ed25519
     has_crypto = True
@@ -103,6 +104,17 @@ class SegmentSignature:
             raise ValueError(f"Cannot sign {self}, it is already signed")
         if not has_crypto:
             raise ImportError(f"Cannot sign {self}, do not have cryptography and/or asn1crypto")
+        if not isinstance(private_key, ed25519.Ed25519PrivateKey):
+            raise ValueError("legacy segments require an Ed25519 private key")
+        cert_key = certificate.public_key()
+        if not isinstance(cert_key, ed25519.Ed25519PublicKey) or (
+            private_key.public_key().public_bytes(
+                serialization.Encoding.Raw, serialization.PublicFormat.Raw
+            ) != cert_key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        ):
+            raise ValueError("certificate does not match the signing key")
+        if len(self.signature) != hashlib.sha512().digest_size:
+            raise ValueError("unsigned segment must contain a SHA-512 digest")
 
         # We'll use the actual hashing machinery from :mod:`cryptography`, but as they do not
         # support the CMS standard, and their PKCS #7 implementation doesn't cover EdDSA, we
@@ -189,14 +201,34 @@ class SegmentSignature:
         return content_info
 
     def verify_against(self, digest: bytes):
+        """Check legacy CMS cryptography only; this does not establish CA trust.
+
+        The returned signing time is asserted by the signer, not a trusted timestamp.
+        Segment identity and coordinates are not authenticated by this legacy format.
+        """
         if not self.signed:
             raise ValueError("Cannot verify an unsigned segment")
         if not has_crypto:
             raise ImportError(f"Cannot verify {self}, do not have cryptography and/or asn1crypto")
+        try:
+            return self._verify_against(digest)
+        except VerificationError:
+            raise
+        except (
+            ValueError, TypeError, KeyError, IndexError, InvalidSignature, UnsupportedAlgorithm
+        ) as error:
+            raise VerificationError("malformed or invalid legacy CMS signature") from error
+
+    def _verify_against(self, digest: bytes):
+        if len(digest) != hashlib.sha512().digest_size:
+            raise VerificationError("digest must contain 64 bytes")
         content_info = _parse_cms_signature(self.signature)
         if content_info["content_type"].native != "signed_data":
             raise VerificationError("not a SignedData")
         signed_data = content_info["content"]
+
+        if signed_data["encap_content_info"]["content_type"].native != "data":
+            raise VerificationError("encapsulated content type must be id-data")
 
         if signed_data["encap_content_info"]["content"].native is not None:
             raise VerificationError("expected a detached signature")
@@ -206,11 +238,15 @@ class SegmentSignature:
             raise ValueError("expected exactly one signer")
         signer_info = signer_infos[0]
 
+        digests = signed_data["digest_algorithms"]
+        if len(digests) != 1 or digests[0]["algorithm"].native != "sha512":
+            raise VerificationError("SignedData digest algorithms must be SHA-512 only")
+
         # Check algorithms match expectations
         if signer_info["digest_algorithm"]["algorithm"].native != "sha512":
             raise VerificationError("digest algorithm must be SHA-512")
         sig_alg = signer_info["signature_algorithm"]
-        if sig_alg["algorithm"].native != "ed25519" or sig_alg["parameters"].native is not None:
+        if sig_alg["algorithm"].native != "ed25519" or sig_alg["parameters"].dump():
             raise ValueError("signature algorithm must be Ed25519 with absent parameters")
 
         # Locate the signer certificate by issuer + serial
@@ -220,16 +256,14 @@ class SegmentSignature:
         want_issuer = sid.chosen["issuer"]
         want_serial = sid.chosen["serial_number"].native
 
-        cert = next(
-            (c.chosen for c in signed_data["certificates"]
+        certs = [c.chosen for c in signed_data["certificates"]
             if c.name == "certificate"
             and c.chosen.issuer == want_issuer
-            and c.chosen.serial_number == want_serial),
-            None,
-        )
+            and c.chosen.serial_number == want_serial]
 
-        if cert is None:
-            raise VerificationError("message does not contain a certificate to retrieve a public key from")
+        if len(certs) != 1:
+            raise VerificationError("expected exactly one matching signer certificate")
+        cert = certs[0]
 
         public_key = serialization.load_der_public_key(cert.public_key.dump())
         if not isinstance(public_key, ed25519.Ed25519PublicKey):
@@ -260,29 +294,32 @@ class SegmentSignature:
         if not hmac.compare_digest(digest, claimed_digest):
             raise VerificationError("content does not match message-digest")
 
-        # Get the signing time, if available. This can be used to check
-        # if the ceritificate was valid when it was claimed to be used, and/or
-        # if it had been revoked.
-        signing_time = next(
-            (
-                a["values"][0].native
-                for a in signed_attrs
-                if a["type"].native == "signing_time"
-            ),
-            None,
+        # This is an authenticated claim by the signer, not evidence of wall-clock time.
+        signing_time = (
+            _single_attr(signed_attrs, "signing_time")
+            if any(a["type"].native == "signing_time" for a in signed_attrs)
+            else None
         )
         return cert, signing_time
 
     def read_and_digest(self, source: IO[bytes]):
-        if self.offset:
-            source.seek(self.offset)
-        if self.length:
-            buf = source.read(self.length)
-            if len(buf) != self.length:
-                raise ValueError("Length of segment does not matched expectation")
-        else:
-            buf = source.read()
-        return hashlib.sha512(buf).digest()
+        """Hash an exact bounded range, or the remaining bytes when length is None."""
+        offset = source.tell() if self.offset is None else self.offset
+        if offset < 0 or (self.length is not None and self.length < 0):
+            raise ValueError("segment offset and length must be nonnegative")
+        end = source.seek(0, 2)
+        source.seek(offset)
+        length = end - offset if self.length is None else self.length
+        if offset > end or length > end - offset:
+            raise EOFError("segment extends beyond the end of the stream")
+        digest = hashlib.sha512()
+        while length:
+            buf = source.read(min(length, 65536))
+            if not buf:
+                raise EOFError("stream ended before the complete segment was read")
+            digest.update(buf)
+            length -= len(buf)
+        return digest.digest()
 
 
 def checksum_parquet_segments(
@@ -311,7 +348,7 @@ def checksum_parquet_segments(
         for column in range(rg.num_columns):
             col = rg.column(column)
             # The chunk starts at the dictionary page when there is one, else the first data page
-            if col.dictionary_page_offset:
+            if col.dictionary_page_offset is not None:
                 offset = col.dictionary_page_offset
             else:
                 offset = col.data_page_offset
@@ -338,6 +375,8 @@ def checksum_parquet_segments(
 
 
 def checksum_stream(reader: IO[bytes], filename: str, bufsize: int = 2 ** 16) -> SegmentSignature:
+    if bufsize <= 0:
+        raise ValueError("bufsize must be positive")
     chk = hashlib.sha512()
     while buf := reader.read(bufsize):
         chk.update(buf)

@@ -213,7 +213,7 @@ impl ToMzPeakDataSeries for ThermoPeak {
 
     fn to_arrays(
         spectrum_index: u64,
-        spectrum_time: Option<f32>,
+        spectrum_time: Option<f64>,
         peaks: &[Self],
         overrides: &BufferOverrideTable,
     ) -> (arrow::datatypes::Fields, Vec<arrow::array::ArrayRef>) {
@@ -226,7 +226,7 @@ impl ToMzPeakDataSeries for ThermoPeak {
         arrays.push(index_array as ArrayRef);
         if let Some(spectrum_time) = spectrum_time {
             fields.push(BufferContext::Spectrum.time_field());
-            arrays.push(Arc::new(Float32Array::from_value(
+            arrays.push(Arc::new(Float64Array::from_value(
                 spectrum_time,
                 peaks.len(),
             )));

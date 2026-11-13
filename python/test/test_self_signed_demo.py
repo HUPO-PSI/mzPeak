@@ -184,8 +184,9 @@ def test_parsing_does_not_establish_signature_validity(signing_key):
     record.signature = content.dump()
     loaded = segment_signatures_from_table(segment_signatures_to_table([record]))[0]
     assert loaded.signed
-    with pytest.raises(InvalidSignature):
+    with pytest.raises(VerificationError) as error:
         loaded.verify_against(hashlib.sha512(b"abcdef").digest())
+    assert isinstance(error.value.__cause__, InvalidSignature)
 
 
 @pytest.fixture

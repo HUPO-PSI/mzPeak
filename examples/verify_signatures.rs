@@ -1,11 +1,7 @@
 use std::{fs, io, path};
 
 use clap::Parser;
-use env_logger;
-use mzpeak_prototyping::{
-    MzPeakReader,
-    validation,
-};
+use mzpeak_prototyping::{MzPeakReader, validation};
 
 #[derive(Parser)]
 struct App {
@@ -22,14 +18,36 @@ fn main() -> io::Result<()> {
         fs::File::open(&args.signatures)?,
     )?
     .build()?;
-    for batch in signatures_file.flatten().map(|b| validation::segment_signature_from_record_batch(&b)) {
-        for segment in batch? {
+    let mut count = 0;
+    for batch in signatures_file {
+        let batch = batch.map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        for segment in validation::segment_signature_from_record_batch(&batch)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+        {
             eprintln!("Verifying {segment:?}");
             let mut stream = reader.open_stream(&segment.filename)?;
             let digest = segment.read_digest_from(&mut stream)?;
-            assert!(segment.verify_against(&digest).unwrap());
+            let result = segment
+                .verify_against(&digest)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            if !result.is_valid() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "segment digest does not match",
+                ));
+            }
+            count += 1;
         }
     }
 
+    if count == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "signature table is empty",
+        ));
+    }
+    eprintln!(
+        "Checked {count} legacy signatures. Certificate trust, segment identity, and archive coverage were not established."
+    );
     Ok(())
 }
