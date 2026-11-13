@@ -1,5 +1,13 @@
-//! Explicit local trust anchors and role grants. Embedded certificates are not trust anchors.
+//! Certificate eligibility checks using caller-configured trust anchors and role/identity grants.
+//!
+//! This module defines the policy types and verifies certificates against that policy.
+//! The caller supplies trusted roots and grants from local configuration. Certificates
+//! embedded in an archive are untrusted inputs and cannot establish trust anchors.
 //! OpenSSL validates RFC 5280 paths and full-chain CRLs. No network fetches occur.
+use const_oid::{
+    ObjectIdentifier,
+    db::rfc5280::{ANY_EXTENDED_KEY_USAGE, ID_KP_CODE_SIGNING},
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{fs, process::Command};
@@ -39,7 +47,8 @@ pub struct TrustPolicy {
     pub validation_time: i64,
     #[serde(default)]
     pub crls_pem: Vec<String>,
-    /// Strict PQC-only profile: validate using only ML-DSA keys/signatures.
+    /// Strict post-quantum cryptography (PQC) profile: validate using only
+    /// ML-DSA certificate keys and signatures, including the trust anchor.
     /// Unused classical candidates do not constrain the selected path;
     /// dual data signatures alone do not upgrade a classical certificate path.
     #[serde(default)]
@@ -85,29 +94,24 @@ pub fn certificate_fingerprint(pem: &str) -> Result<String, String> {
         cert.to_der().map_err(|e| e.to_string())?,
     )))
 }
-fn pq(oid: &str) -> bool {
-    matches!(
-        oid,
-        "2.16.840.1.101.3.4.3.17" | "2.16.840.1.101.3.4.3.18" | "2.16.840.1.101.3.4.3.19"
-    )
+// const-oid 0.9.6 lacks the ML-DSA database entries. Keep named, typed
+// constants here until the X.509 dependencies use a version that includes them.
+const ID_ML_DSA_44: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.17");
+const ID_ML_DSA_65: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.18");
+const ID_ML_DSA_87: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.19");
+
+fn pq(oid: ObjectIdentifier) -> bool {
+    matches!(oid, ID_ML_DSA_44 | ID_ML_DSA_65 | ID_ML_DSA_87)
 }
 
 fn pq_certificate(cert: &Certificate) -> bool {
-    pq(&cert
-        .tbs_certificate
-        .subject_public_key_info
-        .algorithm
-        .oid
-        .to_string())
-        && pq(&cert.signature_algorithm.oid.to_string())
+    pq(cert.tbs_certificate.subject_public_key_info.algorithm.oid)
+        && pq(cert.signature_algorithm.oid)
 }
-fn permits_eku(cert: &Certificate, required: &str) -> bool {
+fn permits_eku(cert: &Certificate, required: &ObjectIdentifier) -> bool {
     match cert.tbs_certificate.get::<ExtendedKeyUsage>() {
         Ok(None) => true,
-        Ok(Some((_, eku))) => eku
-            .0
-            .iter()
-            .any(|oid| oid.to_string() == required || oid.to_string() == "2.5.29.37.0"),
+        Ok(Some((_, eku))) => eku.0.contains(required) || eku.0.contains(&ANY_EXTENDED_KEY_USAGE),
         Err(_) => false,
     }
 }
@@ -198,7 +202,7 @@ pub fn verify_certificate_with(
         }
         // Application authorization is independent of path and revocation.
         // A denied grant or EKU must not prevent those checks from running.
-        let authorize = (|| -> Result<Option<String>, String> {
+        let authorize = (|| -> Result<Option<ObjectIdentifier>, String> {
             let grants: Vec<_> = policy
                 .authorizations
                 .iter()
@@ -212,26 +216,28 @@ pub fn verify_certificate_with(
             if grants.len() != 1 {
                 return Err("no unique locally configured role and identity grant".into());
             }
-            let required =
-                grants[0]
-                    .required_eku
-                    .as_deref()
-                    .or(if role == SignerRole::SoftwareRelease {
-                        Some("1.3.6.1.5.5.7.3.3")
-                    } else {
-                        None
-                    });
+            let required = grants[0]
+                .required_eku
+                .as_deref()
+                .map(|oid| oid.parse::<ObjectIdentifier>())
+                .transpose()
+                .map_err(|e| format!("invalid required extended key usage OID: {e}"))?
+                .or(if role == SignerRole::SoftwareRelease {
+                    Some(ID_KP_CODE_SIGNING)
+                } else {
+                    None
+                });
             if let Some(oid) = required {
                 let eku = tbs
                     .get::<ExtendedKeyUsage>()
                     .map_err(|e| e.to_string())?
                     .ok_or("missing extendedKeyUsage")?
                     .1;
-                if !eku.0.iter().any(|v| v.to_string() == oid) {
+                if !eku.0.contains(&oid) {
                     return Err("certificate lacks locally required extended key usage".into());
                 }
             }
-            Ok(required.map(str::to_owned))
+            Ok(required)
         })();
         let required = match authorize {
             Ok(required) => {

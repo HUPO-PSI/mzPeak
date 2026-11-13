@@ -41,9 +41,11 @@ class Authorization:
 class TrustPolicy:
     """External policy for one signer.
 
-    ``require_pqc_chain`` selects a path using only ML-DSA certificate keys
-    and signatures. Unused classical candidates do not constrain that path; a mixed ECDSA/PQC signature envelope alone does
-    not make a classically issued certificate quantum resistant.
+    ``require_pqc_chain`` selects the strict post-quantum cryptography (PQC)
+    profile: a path using only ML-DSA certificate keys and signatures, including
+    the trust anchor. Unused classical candidates do not constrain that path;
+    a mixed ECDSA/PQC signature envelope alone does not make a classically
+    issued certificate quantum resistant.
     """
     roots_pem: list[str]
     authorizations: list[Authorization]

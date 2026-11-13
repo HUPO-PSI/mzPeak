@@ -11,6 +11,11 @@ and full-chain CRLs. It never fetches certificate-supplied URLs. Issuers require
 CA constraints; a signing leaf requires `CA:FALSE` and `digitalSignature` without
 `keyCertSign`. No private keys enter the trust verifier.
 
+Rust and Python invoke the external `openssl` executable so they share the same
+path and CRL validation backend. OpenSSL must be installed and available on
+`PATH`, or supplied explicitly through the verifier's executable argument.
+The strict ML-DSA profile requires an ML-DSA-capable backend (OpenSSL 3.5+).
+
 A `TrustPolicy` contains public root certificates, a Unix validation time, CRLs,
 and explicit `Authorization` grants. Each grant pins a DER certificate SHA-256,
 role (`acquisition`, `processing`, or `software_release`), expected instrument /
@@ -41,9 +46,10 @@ authorized path validates, an unrestricted path may still supply diagnostic
 path/revocation results, but authorization remains invalid. A revoked authorized
 path can never borrow the unrevoked result of an unauthorized alternative.
 
-`require_pqc_chain` requires every certificate public key and certificate
-signature in the validated path, including its trust anchor, to use standardized
-ML-DSA. Classical candidates are excluded before path building; unrelated
+The strict post-quantum cryptography (PQC) profile, `require_pqc_chain`, requires
+every certificate public key and certificate signature in the validated path,
+including its trust anchor, to use standardized ML-DSA. Classical candidates are
+excluded before path building; unrelated
 classical roots do not invalidate an otherwise eligible path. This is the strict
 PQC-only identity profile. The default ECDSA or dual-signature demo does not imply
 PQC certificate-chain assurance merely because an ML-DSA data signature passes.
