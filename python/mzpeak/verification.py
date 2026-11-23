@@ -330,7 +330,7 @@ def _check_stages(
         ]
         if stage.kind == "conversion":
             report.conversion = _check_conversion(stage, identity, conversion_policy)
-        if stage.software is None:
+        if stage.software is None or releases is None:
             continue
         report.software_release = CheckStatus.INVALID
         software = stage.software
@@ -417,20 +417,39 @@ def verify_archive_history(
     expected_heads=None,
     backend=None,
     conversion_policy=None,
+    baseline=False,
 ):
-    """Streaming ZIP variant; rejects ambiguous names before content validation."""
+    """Check the ZIP inventory, with an explicit single-signer baseline option."""
     from .provenance_archive import verify_archive
 
     records = list(records)
+    if baseline and (
+        required_policy == SignaturePolicy.BOTH
+        or publishers
+        or conversion_policy is not None
+        or releases
+    ):
+        raise ValueError(
+            "baseline verification requires a single algorithm and no publisher or conversion policy"
+        )
     _validate_conversion_policy(conversion_policy, records)
     lineage = verify_lineage([r.stage for r in records], expected_heads)
+    if baseline and (
+        len(lineage.acquisitions) != 1
+        or lineage.conversions
+        or len(lineage.heads) != 1
+        or any(len(r.stage.parents) > 1 or len(r.envelope.signatures) != 1 for r in records)
+    ):
+        raise ValueError(
+            "baseline requires one acquisition, a linear history, and one signer per stage"
+        )
     coverage = verify_archive(archive, _union_manifest(records))
     reports = _check_stages(
         records,
         trust,
         required_policy,
         identities,
-        releases or {},
+        None if baseline else releases or {},
         publishers or {},
         backend or OpenSslBackend(),
         conversion_policy,

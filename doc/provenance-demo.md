@@ -25,13 +25,20 @@ python -m mzpeak.provenance_cli sign-archive small.mzpeak \
   --run-id demo-run --stage-id acquisition \
   --signers instrument-signers.json --policy ecdsa
 python -m mzpeak.provenance_cli verify small.mzpeak \
-  --trust trust.json --identities identities.json --policy ecdsa
+  --baseline --trust trust.json --identities identities.json --policy ecdsa
 ```
 
-The resulting file carries its signed stage and public certificates. Use `embed`
-to add publisher approvals and timestamp evidence. Verification discovers those
-records in the ZIP; historical verification additionally takes the recipient's
-TSA policy and bound policy identifier/bytes, as described in the embedded guide.
+The baseline uses one signing identity and one algorithm, `ecdsa` or `pqc`.
+The file carries its signed stage and public certificates. Baseline verification
+checks every covered byte, the certificate path and revocation, and the role
+and identity selected by the recipient. It also accepts a linear sequence of
+single-signer processing steps originating at that acquisition. Publisher
+approval and trusted time are outside this check. See the
+[baseline profile](provenance-baseline.md) for acceptance and reporting rules.
+
+Use `embed` to add publisher approvals and timestamp evidence for the full
+history verifier. Historical verification takes the recipient's TSA policy and
+bound policy identifier and bytes, as described in the embedded guide.
 
 For an explicitly detached, step-by-step workflow:
 

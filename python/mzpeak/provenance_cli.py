@@ -365,6 +365,11 @@ def parser():
     )
     verify.add_argument("--trust", required=True)
     verify.add_argument("--identities", required=True)
+    verify.add_argument(
+        "--baseline",
+        action="store_true",
+        help="check embedded, single-signer acquisition history at the selected time",
+    )
     verify.add_argument("--releases")
     verify.add_argument("--publishers")
     verify.add_argument(
@@ -513,6 +518,20 @@ def main(argv=None):
                 _write(args.output, value)
                 print(json.dumps({"output": str(args.output)}))
         else:
+            historical = (args.tsa_policy, args.evidence_policy_id, args.evidence_policy)
+            if args.baseline and any(
+                option is not None
+                for option in (
+                    args.records,
+                    args.releases,
+                    args.publishers,
+                    args.conversion_policy,
+                    *historical,
+                )
+            ):
+                raise ValueError(
+                    "--baseline requires embedded acquisition history without extension policy options"
+                )
             # Sample the wall clock once for all current checks in this invocation.
             validation_time = (
                 int(time.time())
@@ -535,14 +554,10 @@ def main(argv=None):
                 or not all(isinstance(v, str) for v in heads)
             ):
                 raise ValueError("heads must be an array of digests")
-            historical = (
-                args.tsa_policy,
-                args.evidence_policy_id,
-                args.evidence_policy,
-            )
-            extra = {}
+            extra = {"baseline": True} if args.baseline else {}
             verifier = verify_archive_history
-            if any(historical):
+            is_historical = any(option is not None for option in historical)
+            if is_historical:
                 if not all(historical) or bundle is None:
                     raise ValueError(
                         "historical verification requires embedded proof and all three external policy options"
@@ -563,7 +578,7 @@ def main(argv=None):
                 _trust(args.trust, validation_time),
                 SignaturePolicy(args.policy),
                 _string_map(args.identities),
-                releases=releases,
+                releases=None if args.baseline else releases,
                 publishers=_string_map(args.publishers),
                 expected_heads=heads,
                 conversion_policy=_conversion_policy(args.conversion_policy),
@@ -576,7 +591,7 @@ def main(argv=None):
                         "accepted": report.accepted,
                         "verification": (
                             "historical"
-                            if extra
+                            if is_historical
                             else "current"
                             if args.validation_time is None
                             else "fixed-time"
@@ -584,6 +599,7 @@ def main(argv=None):
                         "validation_time": validation_time,
                         "time_source": time_source,
                         "report": asdict(report),
+                        **({"profile": "baseline"} if args.baseline else {}),
                     },
                     sort_keys=True,
                     indent=2,

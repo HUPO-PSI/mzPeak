@@ -301,7 +301,7 @@ fn union_manifest(records: &[SignedStage]) -> Result<Manifest, ManifestError> {
 fn check_stages(
     records: &[SignedStage],
     policy: &HistoryPolicy<'_>,
-    releases: &BTreeMap<String, SignedRelease>,
+    releases: Option<&BTreeMap<String, SignedRelease>>,
     backend: &OpenSslBackend,
 ) -> Result<Vec<StageReport>, HistoryError> {
     let mut reports = Vec::new();
@@ -364,7 +364,7 @@ fn check_stages(
                 identity,
             )?);
         }
-        if let Some(software) = &stage.software {
+        if let (Some(software), Some(releases)) = (&stage.software, releases) {
             report.software_release = Some(CheckStatus::Invalid);
             match (
                 releases.get(&software.release_sha256),
@@ -440,7 +440,7 @@ pub fn verify_history(
     let stages: Vec<_> = records.iter().map(|r| r.stage.clone()).collect();
     let lineage = verify_lineage(&stages, policy.expected_heads)?;
     let coverage = union_manifest(records)?.verify_files(files)?;
-    let reports = check_stages(records, policy, releases, backend)?;
+    let reports = check_stages(records, policy, Some(releases), backend)?;
     Ok(HistoryReport {
         coverage,
         lineage,
@@ -455,9 +455,54 @@ pub fn verify_archive_history(
     releases: &BTreeMap<String, SignedRelease>,
     backend: &OpenSslBackend,
 ) -> Result<HistoryReport, HistoryError> {
+    verify_archive_history_with_releases(archive, records, policy, Some(releases), backend)
+}
+
+/// Verify the single-signer acquisition profile and its linear processing additions.
+///
+/// This explicitly selected profile checks the same signatures, roles, lineage,
+/// coverage and checkpoint as full verification. It does not assess publisher
+/// approvals, historical time, or vendor conversions.
+pub fn verify_baseline_archive_history(
+    archive: impl AsRef<std::path::Path>,
+    records: &[SignedStage],
+    policy: &HistoryPolicy<'_>,
+    backend: &OpenSslBackend,
+) -> Result<HistoryReport, HistoryError> {
+    if policy.required_signatures == SignaturePolicy::Both
+        || !policy.publishers.is_empty()
+        || policy.conversion.is_some()
+    {
+        return Err(ManifestError::Invalid(
+            "baseline verification requires a single algorithm and no publisher or conversion policy".into(),
+        ).into());
+    }
+    verify_archive_history_with_releases(archive, records, policy, None, backend)
+}
+
+fn verify_archive_history_with_releases(
+    archive: impl AsRef<std::path::Path>,
+    records: &[SignedStage],
+    policy: &HistoryPolicy<'_>,
+    releases: Option<&BTreeMap<String, SignedRelease>>,
+    backend: &OpenSslBackend,
+) -> Result<HistoryReport, HistoryError> {
     validate_conversion_sources(records, policy)?;
     let stages: Vec<_> = records.iter().map(|r| r.stage.clone()).collect();
     let lineage = verify_lineage(&stages, policy.expected_heads)?;
+    if releases.is_none()
+        && (lineage.acquisitions.len() != 1
+            || !lineage.conversions.is_empty()
+            || lineage.heads.len() != 1
+            || records.iter().any(|record| {
+                record.stage.parents.len() > 1 || record.envelope.signatures.len() != 1
+            }))
+    {
+        return Err(ManifestError::Invalid(
+            "baseline requires one acquisition, a linear history, and one signer per stage".into(),
+        )
+        .into());
+    }
     let coverage = super::archive::verify_archive(archive, &union_manifest(records)?)?;
     let reports = check_stages(records, policy, releases, backend)?;
     Ok(HistoryReport {
