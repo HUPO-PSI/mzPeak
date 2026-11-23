@@ -273,6 +273,73 @@ def archive(tmp_path):
 
 
 @pytest.mark.parametrize("language", ["python", "rust"])
+def test_baseline_checks_coverage_and_identity_without_publisher_approval(
+    language, archive, tmp_path
+):
+    cli = command(language)
+    path, _, args = archive
+    success(cli, "embed", path, "--records", HISTORY / "records.json")
+    args = [arg for arg in args if arg != HISTORY / "records.json"]
+    for flag in ("--releases", "--publishers"):
+        index = args.index(flag)
+        del args[index : index + 2]
+
+    full = invoke(cli, *args)
+    assert full.returncode == 1, full.stderr
+    assert json.loads(full.stdout)["report"]["stages"][1]["software_release"] == "invalid"
+    report = success(cli, *args, "--baseline")
+    assert report["profile"] == "baseline"
+    assert report["verification"] == "fixed-time"
+    assert report["report"]["stages"][1]["software_release"] is None
+    assert report["report"]["lineage"]["checkpoint_checked"]
+
+    invalid = invoke(cli, *args, "--baseline", "--tsa-policy", "tsa.json")
+    assert invalid.returncode == 2
+    both_args = args.copy()
+    both_args[both_args.index("--policy") + 1] = "both"
+    assert invoke(cli, *both_args, "--baseline").returncode == 2
+
+    wrong_identity = write_json(
+        tmp_path / "wrong-identity.json",
+        {"acquisition": "instrument-1", "processing": "unrecognized-installation"},
+    )
+    wrong_args = args.copy()
+    wrong_args[wrong_args.index("--identities") + 1] = wrong_identity
+    assert invoke(cli, *wrong_args, "--baseline").returncode == 1
+
+    with zipfile.ZipFile(path, "a") as writer:
+        writer.writestr("unsigned.txt", b"not covered")
+    result = invoke(cli, *args, "--baseline")
+    assert result.returncode == 1, result.stderr
+    assert json.loads(result.stdout)["report"]["coverage"]["uncovered"] == ["unsigned.txt"]
+
+
+@pytest.mark.parametrize("language", ["python", "rust"])
+def test_baseline_rejects_a_vendor_conversion_origin(language, tmp_path):
+    cli = command(language)
+    data = ROOT / "test/data/provenance/conversion"
+    path = tmp_path / "converted.mzpeak"
+    with zipfile.ZipFile(path, "w") as writer:
+        for name, body in json.loads((data / "files.json").read_text()).items():
+            writer.writestr(name, bytes.fromhex(body))
+    success(cli, "embed", path, "--records", data / "records.json")
+    result = invoke(
+        cli,
+        "verify",
+        path,
+        "--baseline",
+        "--trust",
+        data / "trust.json",
+        "--identities",
+        data / "identities.json",
+        "--policy",
+        "ecdsa",
+    )
+    assert result.returncode == 2, result.stdout
+    assert "baseline requires one acquisition" in result.stderr
+
+
+@pytest.mark.parametrize("language", ["python", "rust"])
 def test_cli_accepts_complete_history_and_rejects_changed_bytes(language, archive):
     cli = command(language)
     path, files, args = archive

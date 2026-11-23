@@ -24,7 +24,7 @@ use mzpeak_prototyping::provenance::{
     trust::TrustPolicy,
     verification::{
         ConversionPolicy, HistoryPolicy, ReleaseStatement, SignedRelease, SignedStage,
-        verify_archive_history,
+        verify_archive_history, verify_baseline_archive_history,
     },
 };
 use serde::{
@@ -129,6 +129,9 @@ enum Commands {
     Verify {
         archive: PathBuf,
         records: Option<PathBuf>,
+        /// Check embedded, single-signer acquisition history at the selected validation time.
+        #[arg(long, conflicts_with_all = ["records", "releases", "publishers", "conversion_policy", "tsa_policy", "evidence_policy_id", "evidence_policy"])]
+        baseline: bool,
         #[arg(long)]
         trust: PathBuf,
         #[arg(long)]
@@ -603,6 +606,7 @@ fn run(cli: Cli) -> CliResult<bool> {
         Commands::Verify {
             archive,
             records: record_path,
+            baseline,
             trust,
             identities,
             releases,
@@ -696,14 +700,17 @@ fn run(cli: Cli) -> CliResult<bool> {
                 );
                 return Ok(report.accepted());
             }
-            let report = verify_archive_history(archive, &records, &policy, &releases, &backend)?;
+            let report = if baseline {
+                verify_baseline_archive_history(archive, &records, &policy, &backend)?
+            } else {
+                verify_archive_history(archive, &records, &policy, &releases, &backend)?
+            };
             let accepted = report.accepted();
-            println!(
-                "{}",
-                serde_json::to_string_pretty(
-                    &serde_json::json!({"accepted":accepted,"verification":verification,"validation_time":validation_time,"time_source":time_source,"report":report})
-                )?
-            );
+            let mut result = serde_json::json!({"accepted":accepted,"verification":verification,"validation_time":validation_time,"time_source":time_source,"report":report});
+            if baseline {
+                result["profile"] = serde_json::json!("baseline");
+            }
+            println!("{}", serde_json::to_string_pretty(&result)?);
             return Ok(accepted);
         }
     }
