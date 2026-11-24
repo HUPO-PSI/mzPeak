@@ -619,6 +619,14 @@ pub struct DataProcessing {
     pub methods: Vec<ProcessingMethod>,
 }
 
+impl DataProcessing {
+    fn renumber_methods(&mut self) {
+        for (i, meth) in self.methods.iter_mut().enumerate() {
+            meth.order = 1 + i as i8;
+        }
+    }
+}
+
 impl From<DataProcessing> for mzdata::meta::DataProcessing {
     fn from(value: DataProcessing) -> Self {
         Self {
@@ -630,10 +638,12 @@ impl From<DataProcessing> for mzdata::meta::DataProcessing {
 
 impl From<&mzdata::meta::DataProcessing> for DataProcessing {
     fn from(value: &mzdata::meta::DataProcessing) -> Self {
-        Self {
+        let mut this = Self {
             id: value.id.clone(),
             methods: value.methods.iter().map(|v| v.into()).collect(),
-        }
+        };
+        this.renumber_methods();
+        this
     }
 }
 
@@ -710,6 +720,14 @@ pub struct InstrumentConfiguration {
     pub scan_settings_reference: Option<String>
 }
 
+impl InstrumentConfiguration {
+    fn renumber_components(&mut self) {
+        for (i, comp) in self.components.iter_mut().enumerate() {
+            comp.order = (i as u8 + 1)
+        }
+    }
+}
+
 impl From<InstrumentConfiguration> for mzdata::meta::InstrumentConfiguration {
     fn from(value: InstrumentConfiguration) -> Self {
         Self {
@@ -723,13 +741,15 @@ impl From<InstrumentConfiguration> for mzdata::meta::InstrumentConfiguration {
 
 impl From<&mzdata::meta::InstrumentConfiguration> for InstrumentConfiguration {
     fn from(value: &mzdata::meta::InstrumentConfiguration) -> Self {
-        Self {
+        let mut this = Self {
             components: value.components.iter().map(Component::from).collect(),
             parameters: value.iter_params().cloned().map(MetaParam::from).collect(),
             software_reference: value.software_reference.clone(),
             id: value.id,
             scan_settings_reference: None
-        }
+        };
+        this.renumber_components();
+        this
     }
 }
 

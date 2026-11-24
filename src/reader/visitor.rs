@@ -527,6 +527,7 @@ impl<'a> VisitorBuilderBase<'a, Indexed<ScanEvent>> for MzScanVisitor<'a> {
     }
 }
 
+// TODO: add IM ramp splitting
 #[derive(Debug, Clone, Copy, Default)]
 struct ScanWindowSchema {
     lower_limit: Option<usize>,
@@ -1044,7 +1045,7 @@ impl<'a> MzScanVisitor<'a> {
     }
 }
 
-
+// TODO: add ms_level
 pub struct MzPrecursorVisitor<'a> {
     pub(crate) descriptions: &'a mut [DoubleIndexed<Precursor>],
     pub(crate) metadata_map: &'a MetadataMapping,
