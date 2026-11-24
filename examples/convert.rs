@@ -1,6 +1,6 @@
 use clap::Parser;
 use mzdata::{
-    self, io::MZReaderType, meta::{DataProcessing, ProcessingMethod, Software}, params::Param, prelude::*, spectrum::{ArrayType, bindata::BinaryArrayMap3D},
+    self, io::MZReaderType, meta::{ProcessingMethod, Software}, params::Param, prelude::*, spectrum::{ArrayType, bindata::BinaryArrayMap3D},
 };
 use mzpeak_prototyping::{
     archive::make_common_encryption_properties,
@@ -424,17 +424,17 @@ pub fn add_processing_metadata(writer: &mut MzPeakWriterType<fs::File>) {
             "mzpeak_prototyping_convert",
         )],
     ));
-    writer.data_processings_mut().push(DataProcessing {
-        id: "mzpeak_conversion1".to_string(),
-        methods: vec![ProcessingMethod {
-            order: 1,
+    for method in writer.data_processings_mut() {
+        let order = method.highest_order() + 1;
+        method.push(ProcessingMethod {
+            order,
             software_reference: "mzpeak_prototyping_convert1".to_string(),
             params: vec![Param::new_key_value(
                 "conversion options",
                 std::env::args().skip(1).collect::<Vec<String>>().join(" "),
             )],
-        }],
-    });
+        });
+    }
 }
 
 pub fn convert_file(input_path: &Path, output_path: &Path, args: &ConvertArgs) -> io::Result<()> {

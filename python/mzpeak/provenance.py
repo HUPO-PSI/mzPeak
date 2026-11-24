@@ -32,6 +32,13 @@ class VerificationError(Exception):
     pass
 
 
+def _convert_cert(certificate: "x509.Certifiate") -> "x509_asn1.Certificate":
+    '''Translate from :mod:`cryptography` to :mod:`asn1crypto`'s representation of x509'''
+    _, _, cert_bytes = pem.unarmor(certificate.public_bytes(serialization.Encoding.PEM))
+    cert_asn1 = x509_asn1.Certificate.load(cert_bytes)
+    return cert_asn1
+
+
 @dataclass
 class SegmentSignature:
     """
@@ -61,7 +68,7 @@ class SegmentSignature:
     def copy(self) -> Self:
         return self.__class__(**asdict(self))
 
-    def sign_with(self, private_key: "ed25519.Ed25519PrivateKey", certificate: "x509.Certificate") -> "cms.ContentInfo":
+    def sign_with(self, private_key: "ed25519.Ed25519PrivateKey", certificate: "x509.Certificate", additional_certificates: "list[x509.Certificate] | None" = None) -> "cms.ContentInfo":
         if self.signed:
             raise ValueError(f"Cannot sign {self}, it is already signed")
         if not has_crypto:
@@ -106,8 +113,7 @@ class SegmentSignature:
 
         # Now we translate from :mod:`cryptography` to :mod:`asn1crypto`'s representation of x509
         # certificate so
-        _, _, cert_bytes = pem.unarmor(certificate.public_bytes(serialization.Encoding.PEM))
-        cert_asn1 = x509_asn1.Certificate.load(cert_bytes)
+        cert_asn1 = _convert_cert(certificate)
 
         signer_info = cms.SignerInfo(
             {
@@ -131,14 +137,17 @@ class SegmentSignature:
             }
         )
 
+        certificate_set = [cms.CertificateChoices(name="certificate", value=cert_asn1)]
+        if additional_certificates:
+            for c in additional_certificates:
+                certificate_set.append(cms.CertificateChoices(name="certificate", value=_convert_cert(c)))
+
         signed_data = cms.SignedData(
             {
                 "version": "v1",
                 "digest_algorithms": [sha512],
                 "encap_content_info": {"content_type": "data"},
-                "certificates": [
-                    cms.CertificateChoices(name="certificate", value=cert_asn1)
-                ],
+                "certificates": certificate_set,
                 "signer_infos": [signer_info],
             }
         )
@@ -183,13 +192,13 @@ class SegmentSignature:
         want_issuer = sid.chosen["issuer"]
         want_serial = sid.chosen["serial_number"].native
 
-        cert = next(
-            (c.chosen for c in signed_data["certificates"]
-            if c.name == "certificate"
-            and c.chosen.issuer == want_issuer
-            and c.chosen.serial_number == want_serial),
-            None,
-        )
+        chain = []
+        cert = None
+        for c in signed_data['certificates']:
+            if c.name == 'certificate' and c.chosen.issuer == want_issuer and c.chosen.serial_number == want_serial:
+                cert = c.chosen
+            else:
+                chain.append(c)
 
         if cert is None:
             raise VerificationError("message does not contain a certificate to retrieve a public key from")
@@ -234,7 +243,7 @@ class SegmentSignature:
             ),
             None,
         )
-        return cert, signing_time
+        return cert, chain, signing_time
 
     def read_and_digest(self, source: IO[bytes]):
         if self.offset:
@@ -365,4 +374,4 @@ def segment_signatures_from_table(
         if col.null_count > 0:
             raise ValueError(f"Column {name!r} contains nulls")
         columns[name] = col.to_pylist()
-    return [SegmentSignature(*row) for row in zip(*(columns[n] for n in names))]
+    return [SegmentSignature(*row, signed=True) for row in zip(*(columns[n] for n in names))]

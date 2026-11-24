@@ -200,15 +200,21 @@ impl SegmentSignature {
 mod verify {
     use std::ops::Not;
 
-use super::*;
+    use super::*;
     use cms::{
-        attr::{MessageDigest, SigningTime}, cert::{
-            CertificateChoices, x509::{
-                attr::{Attribute, AttributeType, AttributeValue}, der::{
-                    Decode, Encode, Tagged, asn1::{OctetString, OctetStringRef, SetOfVec, UtcTime},
+        attr::{MessageDigest, SigningTime},
+        cert::{
+            CertificateChoices,
+            x509::{
+                attr::{Attribute, AttributeType, AttributeValue},
+                der::{
+                    Decode, Encode, Tagged,
+                    asn1::{OctetString, OctetStringRef, SetOfVec, UtcTime},
                 },
             },
-        }, content_info::ContentInfo, signed_data::{SignedAttributes, SignedData, SignerIdentifier, SignerInfo},
+        },
+        content_info::ContentInfo,
+        signed_data::{SignedAttributes, SignedData, SignerIdentifier, SignerInfo},
     };
     use const_oid::db::{rfc5911, rfc5912, rfc8410};
     use ed25519::SignatureEncoding;
@@ -216,8 +222,15 @@ use super::*;
 
     #[derive(Debug, Clone)]
     pub enum VerificationStatus {
-        VerifiedSignature(CertificateChoices, Option<UtcTime>),
-        Invalid,
+        /// The signature itself was verified, and the chain of trust was
+        /// extracted but the chain is not yet validated
+        VerifiedSignature {
+            signing_certificate: CertificateChoices,
+            intermediate_certificates: Vec<CertificateChoices>,
+            signing_time: Option<UtcTime>,
+        },
+        /// The signature itself did not pass verification
+        InvalidSignature,
     }
 
     impl Not for VerificationStatus {
@@ -225,13 +238,17 @@ use super::*;
 
         fn not(self) -> Self::Output {
             match self {
-                VerificationStatus::VerifiedSignature(_, _) => false,
-                VerificationStatus::Invalid => true,
+                VerificationStatus::VerifiedSignature {
+                    signing_certificate: _,
+                    intermediate_certificates: _,
+                    signing_time: _,
+                } => false,
+                VerificationStatus::InvalidSignature => true,
             }
         }
     }
 
-    #[derive(Debug, Clone, thiserror::Error)]
+    #[derive(Debug, thiserror::Error)]
     pub enum VerificationError {
         #[error("DER decoding error: {0}")]
         DerError(
@@ -253,6 +270,26 @@ use super::*;
         MissingSignedAttributes,
         #[error("Missing signed attribute {0:?}")]
         MissingSignedAttribute(const_oid::ObjectIdentifier),
+        #[error("Signature verification error: {0}")]
+        SignatureError(
+            #[source]
+            #[from]
+            ed25519_dalek::SignatureError
+        ),
+    }
+
+
+    fn find_attr_single_attr_value(
+        signed_attrs: &SetOfVec<Attribute>,
+        attr: const_oid::ObjectIdentifier,
+    ) -> Option<&AttributeValue> {
+        let content_tp = signed_attrs.iter().find(|v| v.oid == attr)?;
+        if content_tp.values.len() != 1 {
+            log::error!("Found {} values for {:?}", content_tp.values.len(), attr);
+            None
+        } else {
+            content_tp.values.get(0)
+        }
     }
 
     impl SegmentSignature {
@@ -265,7 +302,10 @@ use super::*;
         //     Attribute { oid: rfc5911::ID_CONTENT_TYPE, values: [] }
         // }
 
-        pub fn verify_against(&self, digest: &[u8]) -> Result<VerificationStatus, VerificationError> {
+        pub fn verify_against(
+            &self,
+            digest: &[u8],
+        ) -> Result<VerificationStatus, VerificationError> {
             if !self.signed {
                 panic!("Can't verify unsigned data")
             }
@@ -303,25 +343,27 @@ use super::*;
                 ));
             }
 
+            // Find the signing certificate
             let sid = &signer_info.sid;
-            let cert = if let SignerIdentifier::IssuerAndSerialNumber(issuer_serial) = sid {
-                content.certificates.as_ref().and_then(|cs| {
-                    cs.as_ref().iter().find_map(|c| match c {
-                        cms::cert::CertificateChoices::Certificate(c) => {
-                            if c.tbs_certificate.issuer == issuer_serial.issuer
-                                && c.tbs_certificate.serial_number == issuer_serial.serial_number
+            let mut intermediate_certs = Vec::new();
+            let mut cert = None;
+            if let SignerIdentifier::IssuerAndSerialNumber(issuer_serial) = sid {
+                if let Some(cs) = content.certificates.as_ref() {
+                    cs.as_ref().iter().for_each(|c| match c {
+                        cms::cert::CertificateChoices::Certificate(c_inner) => {
+                            if c_inner.tbs_certificate.issuer == issuer_serial.issuer
+                                && c_inner.tbs_certificate.serial_number
+                                    == issuer_serial.serial_number
                             {
-                                Some(c)
+                                cert = Some(c_inner.clone());
                             } else {
-                                None
+                                intermediate_certs.push(c.clone())
                             }
                         }
-                        cms::cert::CertificateChoices::Other(_) => None,
+                        cms::cert::CertificateChoices::Other(_) => intermediate_certs.push(c.clone()),
                     })
-                })
-            } else {
-                None
-            };
+                }
+            }
 
             if cert.is_none() {
                 log::error!("Certificate not found");
@@ -339,26 +381,14 @@ use super::*;
                 return Err(VerificationError::MissingSignedAttributes);
             }
 
+            // Recreate signed attributes for verification, retagged according https://www.rfc-editor.org/info/rfc5652/#section-5.4
             let mut raw_to_verify = Vec::new();
             let signed_attrs = signer_info.signed_attrs.as_ref().unwrap();
             signed_attrs.encode_to_vec(&mut raw_to_verify)?;
             raw_to_verify[0] = 49;
             let signature =
                 ed25519::Signature::from_slice(signer_info.signature.as_bytes()).unwrap();
-            pk.verify(&raw_to_verify, &signature).unwrap();
-
-            fn find_attr_single_attr_value(
-                signed_attrs: &SetOfVec<Attribute>,
-                attr: const_oid::ObjectIdentifier,
-            ) -> Option<&AttributeValue> {
-                let content_tp = signed_attrs.iter().find(|v| v.oid == attr)?;
-                if content_tp.values.len() != 1 {
-                    log::error!("Found {} values for {:?}", content_tp.values.len(), attr);
-                    None
-                } else {
-                    content_tp.values.get(0)
-                }
-            }
+            pk.verify(&raw_to_verify, &signature)?;
 
             let content_tp = find_attr_single_attr_value(signed_attrs, rfc5911::ID_MESSAGE_DIGEST)
                 .ok_or(VerificationError::MissingSignedAttribute(
@@ -367,7 +397,7 @@ use super::*;
             let message_digest = content_tp.decode_as::<OctetString>()?;
             if digest != message_digest.as_bytes() {
                 log::warn!("The encoded digest was {message_digest:?}, did not match {digest:?}");
-                return Ok(VerificationStatus::Invalid);
+                return Ok(VerificationStatus::InvalidSignature);
             }
 
             let signing_time = find_attr_single_attr_value(signed_attrs, rfc5911::ID_SIGNING_TIME);
@@ -376,7 +406,12 @@ use super::*;
             } else {
                 None
             };
-            Ok(VerificationStatus::VerifiedSignature(CertificateChoices::Certificate(cert.clone()), sigining_time))
+
+            Ok(VerificationStatus::VerifiedSignature {
+                signing_certificate: CertificateChoices::Certificate(cert),
+                intermediate_certificates: intermediate_certs,
+                signing_time: sigining_time,
+            })
         }
     }
 }

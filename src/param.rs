@@ -198,14 +198,18 @@ pub struct MetaParam {
     pub name: Option<String>,
     #[serde(
         serialize_with = "opt_curie_serialize",
-        deserialize_with = "opt_curie_deserialize"
+        deserialize_with = "opt_curie_deserialize",
+        skip_serializing_if="Option::is_none",
+        default,
     )]
     pub accession: Option<CURIE>,
     #[serde(default)]
     pub value: serde_json::Value,
     #[serde(
         serialize_with = "opt_curie_serialize",
-        deserialize_with = "opt_curie_deserialize"
+        deserialize_with = "opt_curie_deserialize",
+        skip_serializing_if="Option::is_none",
+        default,
     )]
     pub unit: Option<CURIE>,
 }
@@ -702,6 +706,8 @@ pub struct InstrumentConfiguration {
     pub software_reference: String,
     /// A unique identifier translated to an ordinal identifying this configuration
     pub id: u32,
+    /// A reference to the scan settings that governed this configuration, if any.
+    pub scan_settings_reference: Option<String>
 }
 
 impl From<InstrumentConfiguration> for mzdata::meta::InstrumentConfiguration {
@@ -722,6 +728,7 @@ impl From<&mzdata::meta::InstrumentConfiguration> for InstrumentConfiguration {
             parameters: value.iter_params().cloned().map(MetaParam::from).collect(),
             software_reference: value.software_reference.clone(),
             id: value.id,
+            scan_settings_reference: None
         }
     }
 }

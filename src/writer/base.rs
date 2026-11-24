@@ -456,7 +456,7 @@ pub trait AbstractMzPeakWriter {
         self.add_index_metadata(SCAN_SETTINGS_LIST_KEY, &tmp)?;
 
         // We always build the run data structure
-        let tmp = self.mz_metadata().run_description().unwrap().clone();
+        let tmp = self.mz_metadata().run_description().map(crate::param::MassSpectrometryRun::from).unwrap();
         self.add_index_metadata(MS_RUN_KEY, &tmp)?;
 
         self.add_index_metadata(CV_LIST_KEY, &self.controlled_vocabularies().to_vec())?;

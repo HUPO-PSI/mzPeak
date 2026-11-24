@@ -12,7 +12,10 @@ use arrow::{
 };
 use mzpeaks::{CentroidPeak, DeconvolutedPeak};
 use parquet::{
-    arrow::{ArrowWriter, arrow_writer::ArrowWriterOptions}, basic::Compression, encryption::encrypt::FileEncryptionProperties, file::{metadata::KeyValue, properties::DEFAULT_MAX_ROW_GROUP_SIZE},
+    arrow::{ArrowWriter, arrow_writer::ArrowWriterOptions},
+    basic::Compression,
+    encryption::encrypt::FileEncryptionProperties,
+    file::{metadata::KeyValue, properties::DEFAULT_MAX_ROW_GROUP_SIZE},
 };
 
 use mzdata::{
@@ -370,7 +373,6 @@ pub fn sample_array_types_from_spectrum_source<
 
 /// Array type inference from inputs
 impl MzPeakWriterBuilder {
-
     /// Check the kinds of arrays to expect from sampled spectra *without* updating any configurations.
     ///
     /// This is useful for planning how to extract certain higher order configuration states like grid
@@ -848,7 +850,10 @@ impl<
 
     fn flush_data_arrays(&mut self) -> io::Result<()> {
         let use_chunks = self.use_chunked_encoding().is_some();
-        let nb_rows = self.write_batch_config.row_group_size.unwrap_or(DEFAULT_MAX_ROW_GROUP_SIZE);
+        let nb_rows = self
+            .write_batch_config
+            .row_group_size
+            .unwrap_or(DEFAULT_MAX_ROW_GROUP_SIZE);
         for batch in self.spectrum_data_buffers.drain() {
             if let Some(writer) = self.archive_writer.as_mut() {
                 if writer.in_progress_rows() + batch.num_rows() > nb_rows {
@@ -885,7 +890,10 @@ impl<
     }
 
     fn flush_chromatogram_data_records(&mut self) -> io::Result<()> {
-        let nb_rows = self.write_batch_config.row_group_size.unwrap_or(DEFAULT_MAX_ROW_GROUP_SIZE);
+        let nb_rows = self
+            .write_batch_config
+            .row_group_size
+            .unwrap_or(DEFAULT_MAX_ROW_GROUP_SIZE);
         for batch in self.chromatogram_data_buffers.drain() {
             if let Some(writer) = self.archive_writer.as_mut() {
                 if writer.in_progress_rows() + batch.num_rows() > nb_rows {
