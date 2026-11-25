@@ -28,14 +28,14 @@ estimate_local_median <- function(x) {
       n <- length(chunk)
       if (n == 2) {
         if (is.na(chunk[1])) {
-          dx = (chunk[2]^seq(length(delta_model)))
+          dx = sum(delta_model * chunk[2]^(seq_along(delta_model) - 1))
           chunk[1] <- chunk[2] - dx
         } else {
-          dx = (chunk[1]^seq(length(delta_model)))
+          dx = sum(delta_model * chunk[1]^(seq_along(delta_model) - 1))
           chunk[2] <- chunk[1] + dx
         }
       } else if (n == 3) {
-        dx = (chunk[2]^seq(length(delta_model)))
+        dx = sum(delta_model * chunk[2]^(seq_along(delta_model) - 1))
         chunk[1] = chunk[2] - dx
         chunk[3] = chunk[2] + dx
       } else {
