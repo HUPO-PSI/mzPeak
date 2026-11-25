@@ -22,6 +22,42 @@ Other languages are planned in the future in rough order of priority:
 - C++
 - Java
 
+## Parquet provenance (§6.4)
+
+Build the experimental authenticated-history tool with
+`cargo install --path . --bin mzpeak-provenance`. Run
+`mzpeak-provenance --help` for the signing, verification and evidence commands.
+The Python installation provides `mzpeak-provenance-python` and
+`mzpeak.provenance_cli` over the same binary. Set `MZPEAK_PROVENANCE_BIN`
+when the Rust binary is outside `PATH`. OpenSSL 3.5 or newer is needed for
+ML-DSA and OpenSSL 3 can be used for the classical algorithms.
+
+An acquisition request is a JSON file containing `{"kind":"acquisition"}`.
+Processing requests contain `inputs` with earlier glob `stage` and whole-member
+`row` indices, plus `software` with `name`, `version`, `release_sha512` and
+`parameters_sha512`. Use `parquet_chunks: true` to sign named column chunks.
+The local signing profile contains `oids` (`stage` and `publisher_approval`)
+and a `signers` array. Each signer supplies `algorithm`, `certificate_pem`,
+optional `intermediates_pem` and `crls_pem`, and a `key` such as
+`{"type":"software","path":"instrument-key.pem"}`. For a PKCS #11 key use
+`{"type":"pkcs11","uri":"pkcs11:object=instrument-key","config":"openssl.cnf"}`.
+The two extension OIDs are pending assignment in the draft. Supply the same
+assigned or locally designated OIDs to both the writer and verifier.
+
+```sh
+mzpeak-provenance append run.mzpeak --profile signing.json --stage acquisition.json
+mzpeak-provenance verify run.mzpeak --policy recipient.json
+```
+
+The local recipient policy contains `oids`, `identities` keyed by glob index,
+and `trust` with `roots_pem`, `crls_pem` and `authorizations`. Each authorization
+has `certificate_sha256` (the DER leaf fingerprint), `identity` and `role`
+(`acquisition`, `processing`, `vendor_conversion`, `software_release` or
+`archive_approval`). Keep an expected checkpoint outside the archive to check
+for rollback. Timestamp requests are prepared locally and can be sent to a TSA
+by a gateway. The current historical verifier supports whole-second tokens
+without a nonzero accuracy field.
+
 ## Table of contents
 - [mzPeak file format prototyping](#mzpeak-file-format-prototyping)
   - [Table of contents](#table-of-contents)
