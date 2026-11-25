@@ -766,7 +766,7 @@ impl<'a> ChunkDecoder<'a> {
                 }
             } else if let Some(view_rows) = view.as_struct_opt() {
                 for i in 0..view_rows.len() {
-                    rows[i].push((name.clone(), Some(view.slice(i, 1))));
+                    rows[i].push((name.clone(), if view_rows.is_null(i) { None } else { Some(view.slice(i, 1)) }));
                 }
             } else {
                 panic!(
@@ -1000,7 +1000,7 @@ impl<'a> ChunkScanDecoder<'a> {
                 }
             } else if let Some(view_rows) = view.as_struct_opt() {
                 for i in 0..view_rows.len() {
-                    rows[i].push((name.clone(), Some(view.slice(i, 1))));
+                    rows[i].push((name.clone(), if view_rows.is_null(i) { None } else { Some(view.slice(i, 1)) }));
                 }
             } else {
                 panic!(
