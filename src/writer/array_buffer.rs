@@ -297,6 +297,7 @@ impl PointBuffers {
         peaks: &[T],
     ) -> (Vec<AuxiliaryArray>, usize) {
         let n_pts = peaks.len();
+        self.point_count += n_pts as u64;
         let (fields, chunks) = T::to_arrays(series_index, series_time, peaks, &self.overrides);
         let mut visited = HashSet::new();
         for (f, arr) in fields.iter().zip(chunks.into_iter()) {
@@ -384,7 +385,7 @@ impl PointBuffers {
                         .map(|a| a.data_type())
                 }) {
                     filled += 1;
-                    chunk.push(new_null_array(t, size));
+                    chunk.push(new_null_array(t, n));
                 } else {
                     log::error!("Failed to store a value for {f}");
                 }
@@ -393,6 +394,7 @@ impl PointBuffers {
         if filled > 0 {
             log::trace!("Filled {filled} columns with nulls for {index_of_insertion:?}");
         }
+        self.point_count += n as u64;
         n
     }
 
@@ -455,7 +457,6 @@ impl ArrayBufferWriter for PointBuffers {
         size: usize,
         is_profile: bool,
     ) -> usize {
-        self.point_count += size as u64;
         self.add_arrays(fields, arrays, size, is_profile)
     }
 
