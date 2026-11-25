@@ -51,8 +51,14 @@ jobs:
       - name: install library
         shell: bash
         run: |
-          pip install -v python/
+          pip install -v './python[provenance]'
           pip install coverage pytest pytest-cov pytest-xdist scipy pynumpress pyteomics -U
+      - name: Build Parquet provenance backend
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cargo build --locked --bin mzpeak-provenance --no-default-features --features verification
+          echo "MZPEAK_PROVENANCE_BIN=$PWD/target/debug/mzpeak-provenance" >> "$GITHUB_ENV"
       - name: run tests
         shell: bash
         run: |

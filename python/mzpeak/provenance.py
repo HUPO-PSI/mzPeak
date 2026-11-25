@@ -346,13 +346,17 @@ def segment_signatures_to_table(
     """
     Convert a sequence of :class:`SegmentSignature` into a :class:`pyarrow.Table`
     with the schema from :func:`segment_signature_schema`, suitable for writing to Parquet.
+    Temporary tables containing unsigned checksums also carry their signed state.
     """
     import pyarrow as pa
 
     schema = segment_signature_schema()
-    return pa.table(
+    table = pa.table(
         {f.name: [getattr(c, f.name) for c in checksums] for f in schema}, schema=schema
     )
+    if any(not record.signed for record in checksums):
+        table = table.append_column("signed", pa.array([record.signed for record in checksums], type=pa.bool_()))
+    return table
 
 
 def segment_signatures_from_table(
@@ -363,7 +367,8 @@ def segment_signatures_from_table(
     (or read back from a Parquet file holding it) into :class:`SegmentSignature` records.
 
     Columns are looked up by name. A :class:`KeyError` is raised if one is missing and a
-    :class:`ValueError` if one contains nulls.
+    :class:`ValueError` if one contains nulls. Legacy tables without a signed-state
+    column still contain completed signatures by convention.
     """
     names = [f.name for f in dataclasses_fields(SegmentSignature) if f.name != 'signed']
     columns = {}
@@ -374,4 +379,15 @@ def segment_signatures_from_table(
         if col.null_count > 0:
             raise ValueError(f"Column {name!r} contains nulls")
         columns[name] = col.to_pylist()
-    return [SegmentSignature(*row, signed=True) for row in zip(*(columns[n] for n in names))]
+    flags = [True] * table.num_rows
+    if "signed" in table.schema.names:
+        import pyarrow as pa
+
+        state = table.column("signed")
+        if state.type != pa.bool_() or state.null_count:
+            raise ValueError("Column 'signed' must contain boolean flags")
+        flags = state.to_pylist()
+    return [
+        SegmentSignature(*row, signed=signed)
+        for row, signed in zip(zip(*(columns[n] for n in names)), flags)
+    ]

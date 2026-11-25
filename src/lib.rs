@@ -7,6 +7,9 @@ pub mod spectrum;
 
 pub mod validation;
 
+#[cfg(feature = "verification")]
+pub mod provenance;
+
 pub mod reader;
 pub mod writer;
 

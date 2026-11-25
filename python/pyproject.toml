@@ -13,6 +13,9 @@ dependencies = [
 
 license = "Apache-2.0"
 
+[project.scripts]
+mzpeak-provenance-python = "mzpeak.provenance_cli:main"
+
 [project.optional-dependencies]
 sql = ["datafusion"]
 cli = ["click"]

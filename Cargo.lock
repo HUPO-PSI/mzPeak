@@ -2747,6 +2747,7 @@ dependencies = [
  "cms",
  "const-oid 0.9.6",
  "csv",
+ "der 0.7.10",
  "ed25519",
  "ed25519-dalek",
  "env_logger",
@@ -2780,6 +2781,8 @@ dependencies = [
  "tokio-stream",
  "url",
  "walkdir",
+ "windows-sys 0.61.2",
+ "x509-cert",
  "zip 4.6.1",
 ]
 
