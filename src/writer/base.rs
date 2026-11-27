@@ -250,9 +250,8 @@ impl GenericDataArrayWriter {
                 )?;
 
                 if let Some(chunks) = chunks {
-                    let size = chunks.len();
                     let (fields, arrays, _nulls) = chunks.into_parts();
-                    buffer.add_arrays(fields, arrays, size, is_profile);
+                    buffer.add_arrays(fields, arrays, n_pts, is_profile);
                 }
 
                 (auxiliary_arrays, n_pts)
@@ -312,9 +311,8 @@ impl GenericDataArrayWriter {
                 buffer_ref.grid_policies(),
             )?;
             if let Some(chunks) = chunks {
-                let size = chunks.len();
                 let (fields, arrays, _nulls) = chunks.into_parts();
-                buffer_ref.add_arrays(fields, arrays, size, false);
+                buffer_ref.add_arrays(fields, arrays, n_pts, false);
             }
             Ok(EntryMetadataDerivedFromData::new(
                 None,
@@ -577,9 +575,8 @@ pub trait AbstractMzPeakWriter {
                 )?;
 
                 if let Some(chunks) = chunks {
-                    let size = chunks.len();
                     let (fields, arrays, _nulls) = chunks.into_parts();
-                    buffer_ref.add_arrays(fields, arrays, size, true);
+                    buffer_ref.add_arrays(fields, arrays, n_pts, true);
                 }
 
                 (Some(auxiliary_arrays), n_pts)
@@ -771,9 +768,8 @@ pub trait AbstractMzPeakWriter {
             )?;
 
             if let Some(chunks) = chunks {
-                let size = chunks.len();
                 let (fields, arrays, _nulls) = chunks.into_parts();
-                buffer_ref.add_arrays(fields, arrays, size, is_profile);
+                buffer_ref.add_arrays(fields, arrays, n_pts, is_profile);
             }
 
             (delta_model, Some(auxiliary_arrays), n_pts)
@@ -846,9 +842,8 @@ pub trait AbstractMzPeakWriter {
             )?;
 
             if let Some(chunks) = chunks {
-                let size = chunks.len();
                 let (fields, arrays, _nulls) = chunks.into_parts();
-                buffer_ref.add_arrays(fields, arrays, size, false);
+                buffer_ref.add_arrays(fields, arrays, n_pts, false);
             }
             Ok(EntryMetadataDerivedFromData::new(
                 None,

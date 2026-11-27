@@ -297,7 +297,8 @@ impl PointDataCacheBlock {
         let (start, end) = self.find_span_for_query(index);
 
         if !(start.is_some() && end.is_some()) {
-            panic!("Could not find start and end in binary search");
+            log::debug!("No rows for index {index} in this data file");
+            return Ok(None);
             // for (i, idx) in indices.iter().enumerate() {
             //     if idx.unwrap() == index {
             //         if start.is_some() {

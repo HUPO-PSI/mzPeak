@@ -289,7 +289,7 @@ MZPeakSpectrumDataFile <- R6::R6Class(
           k <- dim(points)[2]
           points <- points[, 2:k]
           if (any(is.na(points[, 1]))) {
-            model = self$mz_delta_models[[index + 2]]
+            model = self$mz_delta_models[[index + 1]]
             points[[1]] <- .fill_nulls_with_model_or_local(points[[1]], model)
             na_mask <- is.na(points[[2]])
             points[na_mask, 2] = 0
@@ -446,8 +446,9 @@ MZPeakFile <- R6::R6Class(
         self$spectrum_metadata = MZPeakSpectrumMetadataFile$new(self$handle$connect_file(spectrum_metadata_name))
       }
 
-      if (any(names(self$spectrum_metadata$spectra) == "mz_delta_model")) {
-        self$spectrum_data$set_mz_delta_models(self$spectrum_metadata$spectra$mz_delta_model$as_vector())
+      delta_col <- intersect(c("polynomial_delta_coordinate_interpolation", "mz_delta_model"), names(self$spectrum_metadata$spectra))
+      if (length(delta_col) > 0) {
+        self$spectrum_data$set_mz_delta_models(self$spectrum_metadata$spectra[[delta_col[1]]]$as_vector())
       }
 
       spectrum_peak_name <- (
